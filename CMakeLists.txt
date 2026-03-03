@@ -39,7 +39,7 @@ endif()
 ament_python_install_package(${PROJECT_NAME})
 
 install(
-  DIRECTORY config description launch worlds maps
+  DIRECTORY config description launch worlds
   DESTINATION share/${PROJECT_NAME}
 )
 
