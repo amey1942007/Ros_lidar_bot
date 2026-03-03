@@ -18,19 +18,34 @@ def generate_launch_description():
 
     # ── World selector ──────────────────────────────────────────────────────
     # Available worlds:
-    #   empty             — basic open world with a few obstacles (default)
-    #   maze_world        — walled maze with corridors
-    #   open_obstacles    — wide open space with many scattered objects
-    #   room_world        — multi-room building with doorways
-    #   corridor_world    — long main corridor with branching side corridors
-    # Usage: ros2 launch Ros_lidar_bot launch_sim.launch.py world:=maze_world
+    #   empty       — basic open world with a few obstacles (default)
+    #   maze_world  — walled maze with corridors
+    #   open_obstacles — wide open space with many scattered objects
+    #   room_world  — multi-room building with doorways
+    #   corridor_world — long main corridor with branching side corridors
+    #
+    # SLAM accuracy test worlds (20×20m arenas):
+    #   circles  — spiral of cylinders, increasing radii
+    #   boxes    — Tetris-shaped rectangles
+    #   zigzag   — snaking corridor with wall teeth
+    #   spiral   — spiral labyrinth (4 nested rings)
+    #   star     — 5-pointed gold star
+    #   cross    — plus-sign dividing 4 rooms
+    #   arena    — octagonal arena with pillars
+    #   grid     — 4×4 checkerboard of shapes
+    #   scatter  — chaotic mix of shapes & angles
+    #   castle   — castle with towers, gate, keep
+    #
+    # Usage: ros2 launch Ros_lidar_bot launch_sim.launch.py world:=star
     # ────────────────────────────────────────────────────────────────────────
     world_arg = DeclareLaunchArgument(
         'world',
         default_value='empty',
         description=(
             'World to load. Options: empty | maze_world | '
-            'open_obstacles | room_world | corridor_world'
+            'open_obstacles | room_world | corridor_world | '
+            'circles | boxes | zigzag | spiral | star | '
+            'cross | arena | grid | scatter | castle'
         )
     )
 
