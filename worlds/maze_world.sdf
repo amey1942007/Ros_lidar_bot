@@ -1,0 +1,194 @@
+<?xml version="1.0" ?>
+<!--
+  WORLD: Maze with Dense Obstacles
+  ════════════════════════════════════════════════════════════════════
+  Boundary: x=±7, y=±7  (14×14 m)   Robot spawns at (0, 0)
+
+  Internal divider walls:
+    H1 (y= 3): x=-7→-1   gap: x=-1→+7  (8 m, RIGHT side)
+    H2 (y=-3): x=+1→+7   gap: x=-7→+1  (8 m, LEFT side)
+
+  14 Obstacles spread across 5 zones — all passages ≥ 1.5 m.
+  No obstacle within 1.0 m of any wall or within 1.5 m of origin.
+
+  Zone map:
+    CENTER    : y=-3→3 (all x) — obs_c1…c6
+    NORTH-RIGHT: y>3, x>-1    — obs_nr1, nr2
+    NORTH-LEFT : y>3, x<-1    — obs_nl1, nl2
+    SOUTH-LEFT : y<-3, x<1   — obs_sl1, sl2
+    SOUTH-RIGHT: y<-3, x>1   — obs_sr1, sr2
+  ════════════════════════════════════════════════════════════════════
+-->
+<sdf version="1.6">
+  <world name="default">
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <plugin filename="libignition-gazebo-physics-system.so"
+            name="ignition::gazebo::systems::Physics"/>
+    <plugin filename="libignition-gazebo-user-commands-system.so"
+            name="ignition::gazebo::systems::UserCommands"/>
+    <plugin filename="libignition-gazebo-scene-broadcaster-system.so"
+            name="ignition::gazebo::systems::SceneBroadcaster"/>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.85 0.85 0.85 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range><constant>0.9</constant>
+        <linear>0.01</linear><quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- Ground -->
+    <model name="ground_plane"><static>true</static>
+      <link name="link">
+        <collision name="col"><geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry></collision>
+        <visual name="vis"><geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+          <material><ambient>0.82 0.82 0.75 1</ambient><diffuse>0.82 0.82 0.75 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- ── Outer boundary ─────────────────────────────────── -->
+    <model name="wall_n"><static>true</static><pose>0 7 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>14.2 0.2 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>14.2 0.2 1</size></box></geometry>
+          <material><ambient>0.5 0.5 0.5 1</ambient><diffuse>0.5 0.5 0.5 1</diffuse></material></visual></link>
+    </model>
+    <model name="wall_s"><static>true</static><pose>0 -7 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>14.2 0.2 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>14.2 0.2 1</size></box></geometry>
+          <material><ambient>0.5 0.5 0.5 1</ambient><diffuse>0.5 0.5 0.5 1</diffuse></material></visual></link>
+    </model>
+    <model name="wall_e"><static>true</static><pose>7 0 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.2 14 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.2 14 1</size></box></geometry>
+          <material><ambient>0.5 0.5 0.5 1</ambient><diffuse>0.5 0.5 0.5 1</diffuse></material></visual></link>
+    </model>
+    <model name="wall_w"><static>true</static><pose>-7 0 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.2 14 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.2 14 1</size></box></geometry>
+          <material><ambient>0.5 0.5 0.5 1</ambient><diffuse>0.5 0.5 0.5 1</diffuse></material></visual></link>
+    </model>
+
+    <!-- ── H1: y=3, x=-7→-1  gap RIGHT (x=-1→7, 8 m) ──── -->
+    <model name="h1"><static>true</static><pose>-4 3 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>6 0.2 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>6 0.2 1</size></box></geometry>
+          <material><ambient>0.25 0.45 0.8 1</ambient><diffuse>0.25 0.45 0.8 1</diffuse></material></visual></link>
+    </model>
+
+    <!-- ── H2: y=-3, x=1→7  gap LEFT (x=-7→1, 8 m) ────── -->
+    <model name="h2"><static>true</static><pose>4 -3 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>6 0.2 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>6 0.2 1</size></box></geometry>
+          <material><ambient>0.25 0.45 0.8 1</ambient><diffuse>0.25 0.45 0.8 1</diffuse></material></visual></link>
+    </model>
+
+    <!-- ══ OBSTACLES ══════════════════════════════════════════
+         All boxes: 0.6×0.6×1.0 m  (center z=0.5)
+         All cyls : r=0.3, len=1.5  (center z=0.75)
+         Min gap to any wall: 1.1 m  |  Min gap to H1/H2: 1.5 m
+         Min gap to each other: 1.5 m center-to-center
+       ══════════════════════════════════════════════════════════ -->
+
+    <!-- CENTER ZONE (y=-1.5 to 1.5) ──────────────────────── -->
+    <!-- obs_c1: (2.5, 0) red box — 4.5m from H1, clear of origin -->
+    <model name="obs_c1"><static>true</static><pose>2.5 0 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.6 0.6 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.6 0.6 1</size></box></geometry>
+          <material><ambient>0.9 0.2 0.2 1</ambient><diffuse>0.9 0.2 0.2 1</diffuse></material></visual></link>
+    </model>
+    <!-- obs_c2: (-2.5, 0) blue cylinder — symmetric to c1 -->
+    <model name="obs_c2"><static>true</static><pose>-2.5 0 0.75 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry>
+          <material><ambient>0.2 0.2 0.9 1</ambient><diffuse>0.2 0.2 0.9 1</diffuse></material></visual></link>
+    </model>
+    <!-- obs_c3: (5.0, 1.3) orange box — 1.6m from east wall, 1.7m below H1 -->
+    <model name="obs_c3"><static>true</static><pose>5.0 1.3 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.6 0.6 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.6 0.6 1</size></box></geometry>
+          <material><ambient>0.9 0.5 0.1 1</ambient><diffuse>0.9 0.5 0.1 1</diffuse></material></visual></link>
+    </model>
+    <!-- obs_c4: (-5.0, -1.3) green cylinder — 1.6m from west wall, 1.7m above H2 -->
+    <model name="obs_c4"><static>true</static><pose>-5.0 -1.3 0.75 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry>
+          <material><ambient>0.1 0.7 0.3 1</ambient><diffuse>0.1 0.7 0.3 1</diffuse></material></visual></link>
+    </model>
+    <!-- obs_c5: (4.0, -1.3) purple box -->
+    <model name="obs_c5"><static>true</static><pose>4.0 -1.3 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.6 0.6 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.6 0.6 1</size></box></geometry>
+          <material><ambient>0.6 0.1 0.8 1</ambient><diffuse>0.6 0.1 0.8 1</diffuse></material></visual></link>
+    </model>
+    <!-- obs_c6: (-4.0, 1.3) cyan cylinder -->
+    <model name="obs_c6"><static>true</static><pose>-4.0 1.3 0.75 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry>
+          <material><ambient>0.0 0.7 0.8 1</ambient><diffuse>0.0 0.7 0.8 1</diffuse></material></visual></link>
+    </model>
+
+    <!-- NORTH-RIGHT ZONE (y>3, x>-1) ── enter via H1 right gap -->
+    <!-- obs_nr1: (2.0, 5.0) teal box — 1.9m below north wall, 1.9m above H1 -->
+    <model name="obs_nr1"><static>true</static><pose>2.0 5.0 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.6 0.6 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.6 0.6 1</size></box></geometry>
+          <material><ambient>0.1 0.6 0.5 1</ambient><diffuse>0.1 0.6 0.5 1</diffuse></material></visual></link>
+    </model>
+    <!-- obs_nr2: (5.0, 5.0) pink cylinder — 1.6m from east wall, 3m from nr1 -->
+    <model name="obs_nr2"><static>true</static><pose>5.0 5.0 0.75 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry>
+          <material><ambient>0.9 0.3 0.6 1</ambient><diffuse>0.9 0.3 0.6 1</diffuse></material></visual></link>
+    </model>
+
+    <!-- NORTH-LEFT ZONE (y>3, x<-1) ── travel west at y>3 via H1 gap -->
+    <!-- obs_nl1: (-2.5, 5.0) lime box — 1.9m from H1 north face -->
+    <model name="obs_nl1"><static>true</static><pose>-2.5 5.0 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.6 0.6 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.6 0.6 1</size></box></geometry>
+          <material><ambient>0.5 0.8 0.1 1</ambient><diffuse>0.5 0.8 0.1 1</diffuse></material></visual></link>
+    </model>
+    <!-- obs_nl2: (-5.5, 5.0) red cylinder — 1.1m from west wall (passable), 3m from nl1 -->
+    <model name="obs_nl2"><static>true</static><pose>-5.5 5.0 0.75 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry>
+          <material><ambient>0.9 0.2 0.2 1</ambient><diffuse>0.9 0.2 0.2 1</diffuse></material></visual></link>
+    </model>
+
+    <!-- SOUTH-LEFT ZONE (y<-3, x<1) ── enter via H2 left gap -->
+    <!-- obs_sl1: (-2.5, -5.0) orange box — 1.9m above south wall -->
+    <model name="obs_sl1"><static>true</static><pose>-2.5 -5.0 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.6 0.6 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.6 0.6 1</size></box></geometry>
+          <material><ambient>0.9 0.5 0.1 1</ambient><diffuse>0.9 0.5 0.1 1</diffuse></material></visual></link>
+    </model>
+    <!-- obs_sl2: (-5.5, -5.0) cyan cylinder — 3m from sl1 -->
+    <model name="obs_sl2"><static>true</static><pose>-5.5 -5.0 0.75 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry>
+          <material><ambient>0.0 0.7 0.8 1</ambient><diffuse>0.0 0.7 0.8 1</diffuse></material></visual></link>
+    </model>
+
+    <!-- SOUTH-RIGHT ZONE (y<-3, x>1) ── travel east at y<-3 via H2 gap -->
+    <!-- obs_sr1: (3.0, -5.0) yellow box -->
+    <model name="obs_sr1"><static>true</static><pose>3.0 -5.0 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.6 0.6 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.6 0.6 1</size></box></geometry>
+          <material><ambient>0.8 0.8 0.1 1</ambient><diffuse>0.8 0.8 0.1 1</diffuse></material></visual></link>
+    </model>
+    <!-- obs_sr2: (5.5, -5.0) purple cylinder — 1.1m from east wall, 2.5m from sr1 -->
+    <model name="obs_sr2"><static>true</static><pose>5.5 -5.0 0.75 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry>
+          <material><ambient>0.6 0.1 0.8 1</ambient><diffuse>0.6 0.1 0.8 1</diffuse></material></visual></link>
+    </model>
+
+  </world>
+</sdf>

@@ -1,0 +1,203 @@
+<?xml version="1.0" ?>
+<!--
+  WORLD: Warehouse with Shelving Aisles
+  ════════════════════════════════════════════════════════════════════
+  Boundary: x=±10, y=±10  (20×20 m)   Robot spawns at (0, 0)
+
+  Layout:
+    3 rows of shelving units (long thin boxes 4.0×0.4 m) running N/S
+    Each aisle between shelving rows is 2.0 m wide — safe for robot
+    8 cylindrical pillars at regular positions
+    10 scattered box obstacles (crates) in the open loading zones
+    All passages ≥ 1.5 m wide
+  ════════════════════════════════════════════════════════════════════
+-->
+<sdf version="1.6">
+  <world name="default">
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <plugin filename="libignition-gazebo-physics-system.so"
+            name="ignition::gazebo::systems::Physics"/>
+    <plugin filename="libignition-gazebo-user-commands-system.so"
+            name="ignition::gazebo::systems::UserCommands"/>
+    <plugin filename="libignition-gazebo-scene-broadcaster-system.so"
+            name="ignition::gazebo::systems::SceneBroadcaster"/>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.85 0.85 0.85 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range><constant>0.9</constant>
+        <linear>0.01</linear><quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- Ground — concrete tone -->
+    <model name="ground_plane"><static>true</static>
+      <link name="link">
+        <collision name="collision"><geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry></collision>
+        <visual name="visual"><geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+          <material><ambient>0.72 0.72 0.7 1</ambient><diffuse>0.72 0.72 0.7 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- Outer warehouse walls (20×20 m) -->
+    <model name="wall_n"><static>true</static><pose>0 10 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>20.2 0.2 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>20.2 0.2 1</size></box></geometry>
+          <material><ambient>0.55 0.5 0.45 1</ambient><diffuse>0.55 0.5 0.45 1</diffuse></material></visual></link>
+    </model>
+    <model name="wall_s"><static>true</static><pose>0 -10 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>20.2 0.2 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>20.2 0.2 1</size></box></geometry>
+          <material><ambient>0.55 0.5 0.45 1</ambient><diffuse>0.55 0.5 0.45 1</diffuse></material></visual></link>
+    </model>
+    <model name="wall_e"><static>true</static><pose>10 0 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.2 20 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.2 20 1</size></box></geometry>
+          <material><ambient>0.55 0.5 0.45 1</ambient><diffuse>0.55 0.5 0.45 1</diffuse></material></visual></link>
+    </model>
+    <model name="wall_w"><static>true</static><pose>-10 0 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.2 20 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.2 20 1</size></box></geometry>
+          <material><ambient>0.55 0.5 0.45 1</ambient><diffuse>0.55 0.5 0.45 1</diffuse></material></visual></link>
+    </model>
+
+    <!-- ════ SHELVING ROWS ════════════════════════════════════════
+         3 rows of shelving, each = two 4m units end-to-end with a 1m gap in middle
+         Row positions (x-axis): x=-5.5, x=0 (central aisle robot path), x=+5.5
+         Each shelf unit: 4.0×0.4×1.0 m (long side along Y)
+         Aisle between rows: 2.0 m (from x=-4.3 to x=-2.3 etc)
+         Robot spawns at (0,0) in the central main aisle (x=-2→+2)
+    ════════════════════════════════════════════════════════════== -->
+
+    <!-- ROW WEST (x=-6): two shelf sections with 1.5m gap in middle so passages exist -->
+    <!-- North section: y=2.5→8.5 (len=6, cy=5.5) -->
+    <model name="shelf_w_N"><static>true</static><pose>-6 5.5 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.4 6 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.4 6 1</size></box></geometry>
+          <material><ambient>0.45 0.35 0.25 1</ambient><diffuse>0.45 0.35 0.25 1</diffuse></material></visual></link>
+    </model>
+    <!-- South section: y=-8.5→-2.5 (len=6, cy=-5.5) -->
+    <model name="shelf_w_S"><static>true</static><pose>-6 -5.5 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.4 6 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.4 6 1</size></box></geometry>
+          <material><ambient>0.45 0.35 0.25 1</ambient><diffuse>0.45 0.35 0.25 1</diffuse></material></visual></link>
+    </model>
+    <!-- Gap in west row: y=-2.5→+2.5 = 5m wide — robot can cross aisle to far west zone -->
+
+    <!-- ROW CENTER-LEFT (x=-2.5): split into two sections with 2m gap at y=0 area -->
+    <!-- North section: y=2→8.5 (len=6.5, cy=5.25) -->
+    <model name="shelf_cl_N"><static>true</static><pose>-2.5 5.25 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.4 6.5 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.4 6.5 1</size></box></geometry>
+          <material><ambient>0.45 0.35 0.25 1</ambient><diffuse>0.45 0.35 0.25 1</diffuse></material></visual></link>
+    </model>
+    <!-- South section: y=-8.5→-2 (len=6.5, cy=-5.25) -->
+    <model name="shelf_cl_S"><static>true</static><pose>-2.5 -5.25 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.4 6.5 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.4 6.5 1</size></box></geometry>
+          <material><ambient>0.45 0.35 0.25 1</ambient><diffuse>0.45 0.35 0.25 1</diffuse></material></visual></link>
+    </model>
+    <!-- Gap at y=-2→+2 = 4m — robot passes through central aisle ✓ -->
+
+    <!-- ROW CENTER-RIGHT (x=+2.5): mirrored of center-left -->
+    <model name="shelf_cr_N"><static>true</static><pose>2.5 5.25 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.4 6.5 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.4 6.5 1</size></box></geometry>
+          <material><ambient>0.45 0.35 0.25 1</ambient><diffuse>0.45 0.35 0.25 1</diffuse></material></visual></link>
+    </model>
+    <model name="shelf_cr_S"><static>true</static><pose>2.5 -5.25 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.4 6.5 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.4 6.5 1</size></box></geometry>
+          <material><ambient>0.45 0.35 0.25 1</ambient><diffuse>0.45 0.35 0.25 1</diffuse></material></visual></link>
+    </model>
+
+    <!-- ROW EAST (x=+6): mirrored of west -->
+    <model name="shelf_e_N"><static>true</static><pose>6 5.5 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.4 6 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.4 6 1</size></box></geometry>
+          <material><ambient>0.45 0.35 0.25 1</ambient><diffuse>0.45 0.35 0.25 1</diffuse></material></visual></link>
+    </model>
+    <model name="shelf_e_S"><static>true</static><pose>6 -5.5 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.4 6 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.4 6 1</size></box></geometry>
+          <material><ambient>0.45 0.35 0.25 1</ambient><diffuse>0.45 0.35 0.25 1</diffuse></material></visual></link>
+    </model>
+
+    <!-- ════ PILLARS (cylindrical support columns) ════════════════
+         4 pillars per side row — structural columns marking aisle ends
+    ════════════════════════════════════════════════════════════== -->
+    <model name="pillar_1"><static>true</static><pose>-8.0  8.0 0.75 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><cylinder><radius>0.25</radius><length>1.5</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.25</radius><length>1.5</length></cylinder></geometry>
+          <material><ambient>0.6 0.55 0.5 1</ambient><diffuse>0.6 0.55 0.5 1</diffuse></material></visual></link>
+    </model>
+    <model name="pillar_2"><static>true</static><pose>8.0  8.0 0.75 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><cylinder><radius>0.25</radius><length>1.5</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.25</radius><length>1.5</length></cylinder></geometry>
+          <material><ambient>0.6 0.55 0.5 1</ambient><diffuse>0.6 0.55 0.5 1</diffuse></material></visual></link>
+    </model>
+    <model name="pillar_3"><static>true</static><pose>-8.0 -8.0 0.75 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><cylinder><radius>0.25</radius><length>1.5</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.25</radius><length>1.5</length></cylinder></geometry>
+          <material><ambient>0.6 0.55 0.5 1</ambient><diffuse>0.6 0.55 0.5 1</diffuse></material></visual></link>
+    </model>
+    <model name="pillar_4"><static>true</static><pose>8.0 -8.0 0.75 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><cylinder><radius>0.25</radius><length>1.5</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.25</radius><length>1.5</length></cylinder></geometry>
+          <material><ambient>0.6 0.55 0.5 1</ambient><diffuse>0.6 0.55 0.5 1</diffuse></material></visual></link>
+    </model>
+
+    <!-- ════ CRATE OBSTACLES (loading zone, east & west ends) ════ -->
+    <!-- East loading zone (x=7 to 9.5, y varies) -->
+    <model name="crate_1"><static>true</static><pose>8.0  3.0 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.8 0.8 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.8 0.8 1</size></box></geometry>
+          <material><ambient>0.7 0.5 0.2 1</ambient><diffuse>0.7 0.5 0.2 1</diffuse></material></visual></link>
+    </model>
+    <model name="crate_2"><static>true</static><pose>8.0 -3.0 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.8 0.8 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.8 0.8 1</size></box></geometry>
+          <material><ambient>0.7 0.5 0.2 1</ambient><diffuse>0.7 0.5 0.2 1</diffuse></material></visual></link>
+    </model>
+    <!-- West loading zone -->
+    <model name="crate_3"><static>true</static><pose>-8.0  3.0 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.8 0.8 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.8 0.8 1</size></box></geometry>
+          <material><ambient>0.2 0.6 0.7 1</ambient><diffuse>0.2 0.6 0.7 1</diffuse></material></visual></link>
+    </model>
+    <model name="crate_4"><static>true</static><pose>-8.0 -3.0 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.8 0.8 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.8 0.8 1</size></box></geometry>
+          <material><ambient>0.2 0.6 0.7 1</ambient><diffuse>0.2 0.6 0.7 1</diffuse></material></visual></link>
+    </model>
+    <!-- Scattered crates in aisles between shelving -->
+    <model name="crate_5"><static>true</static><pose>-4.0  0.0 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.7 0.7 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.7 0.7 1</size></box></geometry>
+          <material><ambient>0.9 0.3 0.2 1</ambient><diffuse>0.9 0.3 0.2 1</diffuse></material></visual></link>
+    </model>
+    <model name="crate_6"><static>true</static><pose>4.0   0.0 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.7 0.7 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.7 0.7 1</size></box></geometry>
+          <material><ambient>0.9 0.3 0.2 1</ambient><diffuse>0.9 0.3 0.2 1</diffuse></material></visual></link>
+    </model>
+    <model name="crate_7"><static>true</static><pose>0.0   8.0 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>1.2 0.5 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>1.2 0.5 1</size></box></geometry>
+          <material><ambient>0.5 0.8 0.1 1</ambient><diffuse>0.5 0.8 0.1 1</diffuse></material></visual></link>
+    </model>
+    <model name="crate_8"><static>true</static><pose>0.0  -8.0 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>1.2 0.5 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>1.2 0.5 1</size></box></geometry>
+          <material><ambient>0.5 0.8 0.1 1</ambient><diffuse>0.5 0.8 0.1 1</diffuse></material></visual></link>
+    </model>
+
+  </world>
+</sdf>

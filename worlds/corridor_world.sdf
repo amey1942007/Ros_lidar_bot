@@ -1,0 +1,182 @@
+<?xml version="1.0" ?>
+<!--
+  WORLD: Long Corridor with Branches — Dense Obstacles
+  ════════════════════════════════════════════════════════════════════
+  Geometry (widened for safe obstacle placement):
+    MAIN CORRIDOR : x=-1.5→+1.5  (3 m wide), y=-10→+10
+    LEFT BRANCH   : x=-1.5→-8,   y=-6→-3    (3 m wide)
+    RIGHT BRANCH  : x=+1.5→+9,   y=+2→+5    (3 m wide)
+
+  Obstaclse placed off-center so robot always has ≥1.5 m clear lane.
+  Branches each have 2 obstacles.  Main corridor has 5 slalom obstacles.
+  Robot spawns at (0, 0) — clear spawn zone.
+  ════════════════════════════════════════════════════════════════════
+-->
+<sdf version="1.6">
+  <world name="default">
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <plugin filename="libignition-gazebo-physics-system.so"
+            name="ignition::gazebo::systems::Physics"/>
+    <plugin filename="libignition-gazebo-user-commands-system.so"
+            name="ignition::gazebo::systems::UserCommands"/>
+    <plugin filename="libignition-gazebo-scene-broadcaster-system.so"
+            name="ignition::gazebo::systems::SceneBroadcaster"/>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.85 0.85 0.85 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range><constant>0.9</constant>
+        <linear>0.01</linear><quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- Ground -->
+    <model name="ground_plane"><static>true</static>
+      <link name="link">
+        <collision name="collision"><geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry></collision>
+        <visual name="visual"><geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+          <material><ambient>0.75 0.75 0.8 1</ambient><diffuse>0.75 0.75 0.8 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- ════ MAIN CORRIDOR  x=-1.5→+1.5  ════════════════════════
+         West wall at x=-1.5, East wall at x=+1.5
+         Left-branch gap in WEST wall:  y=-6 to y=-3  (3 m)
+         Right-branch gap in EAST wall: y=+2 to y=+5  (3 m)
+    ═════════════════════════════════════════════════════════════== -->
+    <!-- West wall: south of left-branch gap y=-10→-6 (len=4, cy=-8) -->
+    <model name="west_s1"><static>true</static><pose>-1.5 -8 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.2 4 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.2 4 1</size></box></geometry>
+          <material><ambient>0.6 0.6 0.7 1</ambient><diffuse>0.6 0.6 0.7 1</diffuse></material></visual></link>
+    </model>
+    <!-- West wall: north of left-branch gap y=-3→+10 (len=13, cy=3.5) -->
+    <model name="west_s2"><static>true</static><pose>-1.5 3.5 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.2 13 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.2 13 1</size></box></geometry>
+          <material><ambient>0.6 0.6 0.7 1</ambient><diffuse>0.6 0.6 0.7 1</diffuse></material></visual></link>
+    </model>
+    <!-- East wall: south of right-branch gap y=-10→+2 (len=12, cy=-4) -->
+    <model name="east_s1"><static>true</static><pose>1.5 -4 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.2 12 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.2 12 1</size></box></geometry>
+          <material><ambient>0.6 0.6 0.7 1</ambient><diffuse>0.6 0.6 0.7 1</diffuse></material></visual></link>
+    </model>
+    <!-- East wall: north of right-branch gap y=+5→+10 (len=5, cy=7.5) -->
+    <model name="east_s2"><static>true</static><pose>1.5 7.5 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.2 5 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.2 5 1</size></box></geometry>
+          <material><ambient>0.6 0.6 0.7 1</ambient><diffuse>0.6 0.6 0.7 1</diffuse></material></visual></link>
+    </model>
+    <!-- North and South caps -->
+    <model name="main_north"><static>true</static><pose>0 10 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>3.2 0.2 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>3.2 0.2 1</size></box></geometry>
+          <material><ambient>0.6 0.6 0.7 1</ambient><diffuse>0.6 0.6 0.7 1</diffuse></material></visual></link>
+    </model>
+    <model name="main_south"><static>true</static><pose>0 -10 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>3.2 0.2 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>3.2 0.2 1</size></box></geometry>
+          <material><ambient>0.6 0.6 0.7 1</ambient><diffuse>0.6 0.6 0.7 1</diffuse></material></visual></link>
+    </model>
+
+    <!-- Main corridor SLALOM obstacles (3m wide, obstacles offset to sides)
+         Obstacle at x=+0.6 → right gap to east wall (x=1.5): 1.5-0.6-0.3=0.6m, left gap: 0.6+0.3+1.5=2.4m
+         Obstacle at x=-0.6 → mirrored
+         Robot always has ≥ 1.5 m clear path on the open side              -->
+    <model name="main_obs1"><static>true</static><pose>0.6 -7 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.6 0.6 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.6 0.6 1</size></box></geometry>
+          <material><ambient>0.9 0.2 0.2 1</ambient><diffuse>0.9 0.2 0.2 1</diffuse></material></visual></link>
+    </model>
+    <model name="main_obs2"><static>true</static><pose>-0.6 -3.5 0.75 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry>
+          <material><ambient>0.2 0.2 0.9 1</ambient><diffuse>0.2 0.2 0.9 1</diffuse></material></visual></link>
+    </model>
+    <!-- Skip y=-2 to 1 — clear spawn zone -->
+    <model name="main_obs3"><static>true</static><pose>0.6 6.5 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.6 0.6 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.6 0.6 1</size></box></geometry>
+          <material><ambient>0.9 0.5 0.1 1</ambient><diffuse>0.9 0.5 0.1 1</diffuse></material></visual></link>
+    </model>
+    <model name="main_obs4"><static>true</static><pose>-0.6 8.5 0.75 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry>
+          <material><ambient>0.1 0.7 0.3 1</ambient><diffuse>0.1 0.7 0.3 1</diffuse></material></visual></link>
+    </model>
+
+    <!-- ════ LEFT BRANCH (x=-1.5→-8, y=-6→-3, 3 m wide) ═══════
+         South wall: y=-6, North wall: y=-3, West cap: x=-8
+    ═════════════════════════════════════════════════════════════== -->
+    <model name="lb_south"><static>true</static><pose>-4.75 -6 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>6.5 0.2 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>6.5 0.2 1</size></box></geometry>
+          <material><ambient>0.7 0.5 0.5 1</ambient><diffuse>0.7 0.5 0.5 1</diffuse></material></visual></link>
+    </model>
+    <model name="lb_north"><static>true</static><pose>-4.75 -3 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>6.5 0.2 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>6.5 0.2 1</size></box></geometry>
+          <material><ambient>0.7 0.5 0.5 1</ambient><diffuse>0.7 0.5 0.5 1</diffuse></material></visual></link>
+    </model>
+    <model name="lb_west"><static>true</static><pose>-8 -4.5 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.2 3.2 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.2 3.2 1</size></box></geometry>
+          <material><ambient>0.7 0.5 0.5 1</ambient><diffuse>0.7 0.5 0.5 1</diffuse></material></visual></link>
+    </model>
+    <!-- Left branch obstacles — offset from south wall, leaving ≥1.5m lanes -->
+    <model name="lb_obs1"><static>true</static><pose>-3.5 -5.2 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.6 0.6 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.6 0.6 1</size></box></geometry>
+          <material><ambient>0.9 0.3 0.6 1</ambient><diffuse>0.9 0.3 0.6 1</diffuse></material></visual></link>
+    </model>
+    <model name="lb_obs2"><static>true</static><pose>-6.0 -3.8 0.75 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry>
+          <material><ambient>0.0 0.7 0.8 1</ambient><diffuse>0.0 0.7 0.8 1</diffuse></material></visual></link>
+    </model>
+
+    <!-- ════ RIGHT BRANCH (x=+1.5→+9, y=+2→+5, 3 m wide) ══════
+         South wall: y=+2, North wall: y=+5, East cap: x=+9
+    ═════════════════════════════════════════════════════════════== -->
+    <model name="rb_south"><static>true</static><pose>5.25 2 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>7.5 0.2 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>7.5 0.2 1</size></box></geometry>
+          <material><ambient>0.5 0.7 0.5 1</ambient><diffuse>0.5 0.7 0.5 1</diffuse></material></visual></link>
+    </model>
+    <model name="rb_north"><static>true</static><pose>5.25 5 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>7.5 0.2 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>7.5 0.2 1</size></box></geometry>
+          <material><ambient>0.5 0.7 0.5 1</ambient><diffuse>0.5 0.7 0.5 1</diffuse></material></visual></link>
+    </model>
+    <model name="rb_east"><static>true</static><pose>9 3.5 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.2 3.2 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.2 3.2 1</size></box></geometry>
+          <material><ambient>0.5 0.7 0.5 1</ambient><diffuse>0.5 0.7 0.5 1</diffuse></material></visual></link>
+    </model>
+    <!-- Right branch obstacles -->
+    <model name="rb_obs1"><static>true</static><pose>4.0 2.8 0.75 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry>
+          <material><ambient>0.8 0.8 0.1 1</ambient><diffuse>0.8 0.8 0.1 1</diffuse></material></visual></link>
+    </model>
+    <model name="rb_obs2"><static>true</static><pose>7.0 4.2 0.5 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><box><size>0.6 0.6 1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.6 0.6 1</size></box></geometry>
+          <material><ambient>0.6 0.1 0.8 1</ambient><diffuse>0.6 0.1 0.8 1</diffuse></material></visual></link>
+    </model>
+    <model name="rb_obs3"><static>true</static><pose>5.5 3.5 0.75 0 0 0</pose>
+      <link name="link"><collision name="c"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.3</radius><length>1.5</length></cylinder></geometry>
+          <material><ambient>0.9 0.3 0.6 1</ambient><diffuse>0.9 0.3 0.6 1</diffuse></material></visual></link>
+    </model>
+
+  </world>
+</sdf>
