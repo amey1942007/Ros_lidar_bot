@@ -1,0 +1,42 @@
+<?xml version="1.0" ?>
+<!-- WORLD: Arena — Octagonal arena boundary with pillar obstacles inside -->
+<sdf version="1.6">
+  <world name="default">
+    <physics name="1ms" type="ignored"><max_step_size>0.001</max_step_size><real_time_factor>1.0</real_time_factor></physics>
+    <plugin filename="libignition-gazebo-physics-system.so" name="ignition::gazebo::systems::Physics"/>
+    <plugin filename="libignition-gazebo-user-commands-system.so" name="ignition::gazebo::systems::UserCommands"/>
+    <plugin filename="libignition-gazebo-scene-broadcaster-system.so" name="ignition::gazebo::systems::SceneBroadcaster"/>
+    <light type="directional" name="sun"><cast_shadows>true</cast_shadows><pose>0 0 10 0 0 0</pose><diffuse>0.85 0.85 0.85 1</diffuse><specular>0.2 0.2 0.2 1</specular><attenuation><range>1000</range><constant>0.9</constant><linear>0.01</linear><quadratic>0.001</quadratic></attenuation><direction>-0.5 0.1 -0.9</direction></light>
+    <model name="ground"><static>true</static><link name="l"><collision name="c"><geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry></collision><visual name="v"><geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry><material><ambient>0.85 0.8 0.75 1</ambient><diffuse>0.85 0.8 0.75 1</diffuse></material></visual></link></model>
+
+    <!-- Octagonal arena (8 walls, radius ~7m) -->
+    <!-- N -->
+    <model name="o1"><static>true</static><pose>0 7 0.5 0 0 0</pose><link name="l"><collision name="c"><geometry><box><size>5.8 0.15 1</size></box></geometry></collision><visual name="v"><geometry><box><size>5.8 0.15 1</size></box></geometry><material><ambient>0.5 0.35 0.2 1</ambient><diffuse>0.5 0.35 0.2 1</diffuse></material></visual></link></model>
+    <!-- NE -->
+    <model name="o2"><static>true</static><pose>4.95 4.95 0.5 0 0 -0.7854</pose><link name="l"><collision name="c"><geometry><box><size>5.8 0.15 1</size></box></geometry></collision><visual name="v"><geometry><box><size>5.8 0.15 1</size></box></geometry><material><ambient>0.5 0.35 0.2 1</ambient><diffuse>0.5 0.35 0.2 1</diffuse></material></visual></link></model>
+    <!-- E -->
+    <model name="o3"><static>true</static><pose>7 0 0.5 0 0 0</pose><link name="l"><collision name="c"><geometry><box><size>0.15 5.8 1</size></box></geometry></collision><visual name="v"><geometry><box><size>0.15 5.8 1</size></box></geometry><material><ambient>0.5 0.35 0.2 1</ambient><diffuse>0.5 0.35 0.2 1</diffuse></material></visual></link></model>
+    <!-- SE -->
+    <model name="o4"><static>true</static><pose>4.95 -4.95 0.5 0 0 0.7854</pose><link name="l"><collision name="c"><geometry><box><size>5.8 0.15 1</size></box></geometry></collision><visual name="v"><geometry><box><size>5.8 0.15 1</size></box></geometry><material><ambient>0.5 0.35 0.2 1</ambient><diffuse>0.5 0.35 0.2 1</diffuse></material></visual></link></model>
+    <!-- S -->
+    <model name="o5"><static>true</static><pose>0 -7 0.5 0 0 0</pose><link name="l"><collision name="c"><geometry><box><size>5.8 0.15 1</size></box></geometry></collision><visual name="v"><geometry><box><size>5.8 0.15 1</size></box></geometry><material><ambient>0.5 0.35 0.2 1</ambient><diffuse>0.5 0.35 0.2 1</diffuse></material></visual></link></model>
+    <!-- SW -->
+    <model name="o6"><static>true</static><pose>-4.95 -4.95 0.5 0 0 -0.7854</pose><link name="l"><collision name="c"><geometry><box><size>5.8 0.15 1</size></box></geometry></collision><visual name="v"><geometry><box><size>5.8 0.15 1</size></box></geometry><material><ambient>0.5 0.35 0.2 1</ambient><diffuse>0.5 0.35 0.2 1</diffuse></material></visual></link></model>
+    <!-- W -->
+    <model name="o7"><static>true</static><pose>-7 0 0.5 0 0 0</pose><link name="l"><collision name="c"><geometry><box><size>0.15 5.8 1</size></box></geometry></collision><visual name="v"><geometry><box><size>0.15 5.8 1</size></box></geometry><material><ambient>0.5 0.35 0.2 1</ambient><diffuse>0.5 0.35 0.2 1</diffuse></material></visual></link></model>
+    <!-- NW -->
+    <model name="o8"><static>true</static><pose>-4.95 4.95 0.5 0 0 0.7854</pose><link name="l"><collision name="c"><geometry><box><size>5.8 0.15 1</size></box></geometry></collision><visual name="v"><geometry><box><size>5.8 0.15 1</size></box></geometry><material><ambient>0.5 0.35 0.2 1</ambient><diffuse>0.5 0.35 0.2 1</diffuse></material></visual></link></model>
+
+    <!-- Ring of 8 pillars (cylinders) inside the arena -->
+    <model name="p1"><static>true</static><pose>0 4 0.5 0 0 0</pose><link name="l"><collision name="c"><geometry><cylinder><radius>0.3</radius><length>1</length></cylinder></geometry></collision><visual name="v"><geometry><cylinder><radius>0.3</radius><length>1</length></cylinder></geometry><material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual></link></model>
+    <model name="p2"><static>true</static><pose>2.83 2.83 0.5 0 0 0</pose><link name="l"><collision name="c"><geometry><cylinder><radius>0.3</radius><length>1</length></cylinder></geometry></collision><visual name="v"><geometry><cylinder><radius>0.3</radius><length>1</length></cylinder></geometry><material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual></link></model>
+    <model name="p3"><static>true</static><pose>4 0 0.5 0 0 0</pose><link name="l"><collision name="c"><geometry><cylinder><radius>0.3</radius><length>1</length></cylinder></geometry></collision><visual name="v"><geometry><cylinder><radius>0.3</radius><length>1</length></cylinder></geometry><material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual></link></model>
+    <model name="p4"><static>true</static><pose>2.83 -2.83 0.5 0 0 0</pose><link name="l"><collision name="c"><geometry><cylinder><radius>0.3</radius><length>1</length></cylinder></geometry></collision><visual name="v"><geometry><cylinder><radius>0.3</radius><length>1</length></cylinder></geometry><material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual></link></model>
+    <model name="p5"><static>true</static><pose>0 -4 0.5 0 0 0</pose><link name="l"><collision name="c"><geometry><cylinder><radius>0.3</radius><length>1</length></cylinder></geometry></collision><visual name="v"><geometry><cylinder><radius>0.3</radius><length>1</length></cylinder></geometry><material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual></link></model>
+    <model name="p6"><static>true</static><pose>-2.83 -2.83 0.5 0 0 0</pose><link name="l"><collision name="c"><geometry><cylinder><radius>0.3</radius><length>1</length></cylinder></geometry></collision><visual name="v"><geometry><cylinder><radius>0.3</radius><length>1</length></cylinder></geometry><material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual></link></model>
+    <model name="p7"><static>true</static><pose>-4 0 0.5 0 0 0</pose><link name="l"><collision name="c"><geometry><cylinder><radius>0.3</radius><length>1</length></cylinder></geometry></collision><visual name="v"><geometry><cylinder><radius>0.3</radius><length>1</length></cylinder></geometry><material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual></link></model>
+    <model name="p8"><static>true</static><pose>-2.83 2.83 0.5 0 0 0</pose><link name="l"><collision name="c"><geometry><cylinder><radius>0.3</radius><length>1</length></cylinder></geometry></collision><visual name="v"><geometry><cylinder><radius>0.3</radius><length>1</length></cylinder></geometry><material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual></link></model>
+    <!-- Center pedestal -->
+    <model name="center"><static>true</static><pose>0 0 0.5 0 0 0</pose><link name="l"><collision name="c"><geometry><cylinder><radius>0.5</radius><length>1</length></cylinder></geometry></collision><visual name="v"><geometry><cylinder><radius>0.5</radius><length>1</length></cylinder></geometry><material><ambient>0.3 0.3 0.3 1</ambient><diffuse>0.3 0.3 0.3 1</diffuse></material></visual></link></model>
+  </world>
+</sdf>
