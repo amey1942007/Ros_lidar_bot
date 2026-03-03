@@ -14,33 +14,33 @@ slam_toolbox:
     debug_logging: false
     throttle_scans: 1
     transform_publish_period: 0.02
-    map_update_interval: 0.3
-    resolution: 0.05
-    max_laser_range: 20.0
-    minimum_time_interval: 0.1
-    minimum_travel_distance: 0.1
-    minimum_travel_heading: 0.1
-    scan_buffer_size: 30       # larger buffer averages out collision noise
-    scan_buffer_maximum_scan_distance: 10.0
-    link_match_minimum_response_fine: 0.4  # require stronger scan match confidence
-    link_scan_maximum_distance: 0.5         # reject large position jumps from wheel slip
+    map_update_interval: 0.1
+    resolution: 0.03
+    max_laser_range: 12.0
+    minimum_time_interval: 0.05
+    minimum_travel_distance: 0.03
+    minimum_travel_heading: 0.05
+    scan_buffer_size: 50       # large buffer averages noise, reduces shadows
+    scan_buffer_maximum_scan_distance: 12.0
+    link_match_minimum_response_fine: 0.5   # balanced scan match confidence
+    link_scan_maximum_distance: 0.5          # allow slightly larger corrections
     loop_search_maximum_distance: 3.0
     do_loop_closing: true
     loop_match_minimum_chain_size: 15            # need more scans before attempting loop closure
     loop_match_maximum_variance_coarse: 1.5      # tighter loop closure variance
     loop_match_minimum_response_coarse: 0.55     # higher confidence needed to trigger loop close
     loop_match_minimum_response_fine: 0.65       # higher fine match threshold
-    correlation_search_space_dimension: 0.5
+    correlation_search_space_dimension: 0.6
     correlation_search_space_resolution: 0.01
-    correlation_search_space_smear_deviation: 0.1
+    correlation_search_space_smear_deviation: 0.05
     loop_search_space_dimension: 8.0
     loop_search_space_resolution: 0.05
     loop_search_space_smear_deviation: 0.03
-    distance_variance_penalty: 1.5   # strongly penalize sudden position jumps
-    angle_variance_penalty: 2.0       # strongly penalize sudden heading jumps
+    distance_variance_penalty: 1.0   # balanced position penalty
+    angle_variance_penalty: 1.5       # balanced heading penalty
     fine_search_angle_offset: 0.00349
     coarse_search_angle_offset: 0.349
     coarse_angle_resolution: 0.0349
-    minimum_angle_penalty: 0.7
-    minimum_distance_penalty: 0.7
+    minimum_angle_penalty: 0.5
+    minimum_distance_penalty: 0.5
     use_response_expansion: true
