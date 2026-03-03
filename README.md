@@ -78,6 +78,26 @@ Included within `/worlds`:
 - 💥 _Collision hazards_ > `open_obstacles_world.sdf`
 - 🏗️ _Shelves on shelves_ > `warehouse_world.sdf`
 
+### 🧪 SLAM Accuracy Test Worlds
+10 creative worlds for benchmarking SLAM mapping accuracy. Each is a 20×20m arena — compare the SLAM map against the known layout to judge accuracy!
+
+```bash
+ros2 launch Ros_lidar_bot launch_sim.launch.py world:=star
+```
+
+| World | What's Inside | Tests |
+|---|---|---|
+| `circles` | Spiral of cylinders (increasing radii) | Curved surface detection |
+| `boxes` | Tetris-shaped rectangles | Straight edges & right angles |
+| `zigzag` | Snaking corridor with wall teeth | Tight corridor navigation |
+| `spiral` | 4-ring spiral labyrinth | Multi-turn mapping |
+| `star` | 5-pointed gold star | Diagonal edge detection |
+| `cross` | Plus-sign wall dividing 4 rooms | Room connectivity |
+| `arena` | Octagonal boundary + 8 pillars | Non-rectangular boundaries |
+| `grid` | 4×4 checkerboard of shapes | Repeating pattern handling |
+| `scatter` | 14 random shapes & angles | Chaotic environment |
+| `castle` | Castle with towers, gate, keep | Complex multi-feature scene |
+
 ### 🎮 Teleoperation Keyboard Control
 Control the wheel velocities via WASD (Cmd_Vel overrides)! 🏎️
 ```bash
