@@ -33,6 +33,7 @@ setup(
     entry_points={
         'console_scripts': [
             'teleop = Ros_lidar_bot.teleop_node:main',
+            'odom_check = Ros_lidar_bot.odom_check:main',
         ],
     },
 )

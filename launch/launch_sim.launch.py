@@ -101,10 +101,17 @@ def generate_launch_description():
         package='ros_gz_bridge',
         executable='parameter_bridge',
         arguments=[
-            '/odom@nav_msgs/msg/Odometry@ignition.msgs.Odometry',
-            '/cmd_vel@geometry_msgs/msg/Twist@ignition.msgs.Twist',
-            '/tf@tf2_msgs/msg/TFMessage@ignition.msgs.Pose_V',
-            '/scan@sensor_msgs/msg/LaserScan@ignition.msgs.LaserScan',
+            # /clock  — Gazebo sim-time → ROS (CRITICAL: fixes odometry timestamp drift)
+            '/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock',
+            # /odom   — Gazebo → ROS
+            '/odom@nav_msgs/msg/Odometry[ignition.msgs.Odometry',
+            # /cmd_vel — ROS → Gazebo only (robot actuation)
+            '/cmd_vel@geometry_msgs/msg/Twist]ignition.msgs.Twist',
+            # /tf     — Gazebo → ROS
+            '/tf@tf2_msgs/msg/TFMessage[ignition.msgs.Pose_V',
+            # /scan   — Gazebo → ROS
+            '/scan@sensor_msgs/msg/LaserScan[ignition.msgs.LaserScan',
+            # joint states — Gazebo → ROS
             '/world/default/model/my_bot/joint_state@sensor_msgs/msg/JointState[ignition.msgs.Model',
         ],
         remappings=[
