@@ -67,6 +67,22 @@ Activate the Gazebo Simulator and Robot State Publisher:
 ros2 launch Ros_lidar_bot launch_sim.launch.py
 ```
 
+### 🧭 Autonomous Frontier Exploration (SLAM + Nav2 + Explore Lite)
+If SLAM is already configured and you want full autonomous map exploration,
+launch the integrated stack below. It brings up:
+- Gazebo + robot spawn
+- SLAM Toolbox (online async)
+- Nav2 navigation stack
+- `explore_lite` frontier explorer
+
+```bash
+ros2 launch Ros_lidar_bot autonomous_explore.launch.py world:=maze_world
+```
+
+Once running, the robot will continuously pick frontier goals and explore unknown
+space while extending the map. This launch uses Nav2 SLAM mode (no AMCL), avoiding
+map→odom TF conflicts during online mapping.
+
 ### 🌎 Testing In the Wild (Simulated Worlds)
 We included more than just a boring empty floor. Want to stress test the collision dynamics? Feel free to swap your gazebos execution with any included `.sdf` file!
 Included within `/worlds`:
