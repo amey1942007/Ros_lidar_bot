@@ -2,7 +2,7 @@
 
 import os
 
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.conditions import IfCondition
@@ -11,9 +11,25 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, Pyth
 from launch_ros.actions import Node
 
 
+def _first_available_package(*package_names):
+    for name in package_names:
+        try:
+            get_package_share_directory(name)
+            return name
+        except PackageNotFoundError:
+            continue
+    raise PackageNotFoundError(
+        'None of these simulation/bridge packages were found: ' + ', '.join(package_names)
+    )
+
+
 def generate_launch_description():
     package_name = 'Ros_lidar_bot'
     pkg_share = get_package_share_directory(package_name)
+
+    sim_launch_pkg = _first_available_package('ros_ign_gazebo', 'ros_gz_sim')
+    bridge_pkg = _first_available_package('ros_ign_bridge', 'ros_gz_bridge')
+    spawn_pkg = _first_available_package('ros_ign_gazebo', 'ros_gz_sim')
 
     world_arg = DeclareLaunchArgument(
         'world',
@@ -47,7 +63,7 @@ def generate_launch_description():
     explore_arg = DeclareLaunchArgument(
         'explore',
         default_value='false',
-        description='Launch explore_lite frontier exploration (requires nav2:=true)'
+        description='Launch explore_lite frontier exploration (requires nav2:=true and slam:=true)'
     )
 
     autostart_arg = DeclareLaunchArgument(
@@ -89,19 +105,22 @@ def generate_launch_description():
         launch_arguments={'use_sim_time': LaunchConfiguration('use_sim_time')}.items()
     )
 
+    sim_launch_file = 'ign_gazebo.launch.py' if sim_launch_pkg == 'ros_ign_gazebo' else 'gz_sim.launch.py'
+    sim_args_key = 'ign_args' if sim_launch_pkg == 'ros_ign_gazebo' else 'gz_args'
+
     gz_sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([
-                get_package_share_directory('ros_gz_sim'),
+                get_package_share_directory(sim_launch_pkg),
                 'launch',
-                'gz_sim.launch.py'
+                sim_launch_file
             ])
         ),
-        launch_arguments={'gz_args': ['-r ', world_file]}.items()
+        launch_arguments={sim_args_key: ['-r ', world_file]}.items()
     )
 
     spawn_entity = Node(
-        package='ros_gz_sim',
+        package=spawn_pkg,
         executable='create',
         arguments=[
             '-topic', 'robot_description',
@@ -113,7 +132,7 @@ def generate_launch_description():
     )
 
     bridge = Node(
-        package='ros_gz_bridge',
+        package=bridge_pkg,
         executable='parameter_bridge',
         arguments=[
             '/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock',
@@ -164,7 +183,8 @@ def generate_launch_description():
 
     explore_condition = IfCondition(PythonExpression([
         '"', LaunchConfiguration('explore'), '" == "true" and "',
-        LaunchConfiguration('nav2'), '" == "true"'
+        LaunchConfiguration('nav2'), '" == "true" and "',
+        LaunchConfiguration('slam'), '" == "true"'
     ]))
 
     explore_node = Node(

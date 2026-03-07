@@ -9,15 +9,15 @@ This package now supports **one unified launch file** for:
 
 ## 1) Dependencies
 
-Use ROS 2 Humble and install the standard dependencies:
+Use ROS 2 Humble + Gazebo Ignition and install the standard dependencies:
 
 ```bash
 sudo apt update
 sudo apt install -y \
   ros-humble-nav2-bringup \
   ros-humble-slam-toolbox \
-  ros-humble-ros-gz-sim \
-  ros-humble-ros-gz-bridge \
+  ros-humble-ros-ign-gazebo \
+  ros-humble-ros-ign-bridge \
   ros-humble-xacro
 ```
 

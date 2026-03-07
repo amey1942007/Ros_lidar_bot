@@ -68,6 +68,8 @@ ros2 launch Ros_lidar_bot launch_sim.launch.py
 ```
 
 ### 🧭 Autonomous Frontier Exploration (SLAM + Nav2 + Explore Lite)
+> ✅ Compatibility note: this setup targets **ROS2 Humble + Gazebo Ignition**.
+
 If SLAM is already configured and you want full autonomous map exploration,
 launch the integrated stack below. It brings up:
 - Gazebo + robot spawn
