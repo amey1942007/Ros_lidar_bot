@@ -128,12 +128,12 @@
 <joint name  = "casterwheel" type = "fixed">
     <parent link = "chassis"/>
     <child link = "caster_wheel"/>
-    <origin xyz = "0.1 0 0" rpy = "0 0 0"/>
+    <origin xyz = "-0.15 0 0.025" rpy = "0 0 0"/>
 </joint>
 
 <link name = "caster_wheel">
     <visual>
-        <origin xyz = "0.3 0 0"/>
+        <origin xyz = "0 0 0"/>
         <geometry>
             <sphere radius = "0.05"/>
         </geometry>
@@ -142,13 +142,13 @@
         </material>
     </visual>
     <collision>
-        <origin xyz = "0.3 0 0"/>
+        <origin xyz = "0 0 0"/>
         <geometry>
             <sphere radius = "0.05"/>
         </geometry>
     </collision>
     <xacro:inertial_sphere mass = "0.04" radius="0.05">
-        <origin xyz ="0.3 0 0" rpy="0 0 0"/>
+        <origin xyz ="0 0 0" rpy="0 0 0"/>
     </xacro:inertial_sphere>
 </link>
 

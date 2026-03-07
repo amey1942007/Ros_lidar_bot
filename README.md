@@ -76,11 +76,11 @@ launch the integrated stack below. It brings up:
 - `explore_lite` frontier explorer
 
 ```bash
-ros2 launch Ros_lidar_bot autonomous_explore.launch.py world:=maze_world
+ros2 launch Ros_lidar_bot launch_sim.launch.py world:=maze_world slam:=true nav2:=true explore:=true
 ```
 
 Once running, the robot will continuously pick frontier goals and explore unknown
-space while extending the map. This launch uses Nav2 SLAM mode (no AMCL), avoiding
+space while extending the map. This mode uses Nav2 SLAM mode (no AMCL), avoiding
 map→odom TF conflicts during online mapping.
 
 ### 🌎 Testing In the Wild (Simulated Worlds)
@@ -114,6 +114,8 @@ ros2 launch Ros_lidar_bot launch_sim.launch.py world:=star
 | `scatter` | 14 random shapes & angles | Chaotic environment |
 | `castle` | Castle with towers, gate, keep | Complex multi-feature scene |
 
+For a complete autonomous setup walkthrough (including `explore_lite` installation), see `AUTONOMY_RUN_GUIDE.md`.
+
 ### 🎮 Teleoperation Keyboard Control
 Control the wheel velocities via WASD (Cmd_Vel overrides)! 🏎️
 ```bash
@@ -139,7 +141,7 @@ Wondering how the puzzle fits together? Here's the layout and breakdown!
 
 #### 🚀 `launch/`
 * `rsp.launch.py`: Broadcasts your entire models TF Tree parameters.
-* `launch_sim.launch.py`: Coordinates the Gazebo node with your robot's model spawn vector.
+* `launch_sim.launch.py`: Unified launch for Gazebo + spawn + bridge, with optional SLAM/Nav2/explore_lite via launch arguments.
 
 #### 🐍 `Ros_lidar_bot/`
 * `teleop_node.py`: A native ROS python-node broadcasting twists keyboard interrupts.

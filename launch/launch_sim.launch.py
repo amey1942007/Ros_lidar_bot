@@ -3,13 +3,11 @@
 import os
 
 from ament_index_python.packages import get_package_share_directory
-
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
-
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -22,9 +20,9 @@ def generate_launch_description():
         default_value='empty',
         description=(
             'World to load. Options: empty | maze_world | '
-            'open_obstacles | room_world | corridor_world | '
+            'open_obstacles_world | room_world | corridor_world | '
             'circles | boxes | zigzag | spiral | star | '
-            'cross | arena | grid | scatter | castle'
+            'cross | arena | grid | scatter | castle | office_world | warehouse_world'
         )
     )
 
@@ -37,18 +35,50 @@ def generate_launch_description():
     slam_arg = DeclareLaunchArgument(
         'slam',
         default_value='true',
-        description='Launch SLAM toolbox with simulation'
+        description='Enable SLAM (used by Nav2 bringup when nav2:=true)'
     )
 
-    world_with_extension = LaunchConfiguration('world')
+    nav2_arg = DeclareLaunchArgument(
+        'nav2',
+        default_value='false',
+        description='Launch Nav2 bringup stack'
+    )
 
-    # Build world path including extension based on world name
-    from launch.substitutions import PythonExpression
+    explore_arg = DeclareLaunchArgument(
+        'explore',
+        default_value='false',
+        description='Launch explore_lite frontier exploration (requires nav2:=true)'
+    )
+
+    autostart_arg = DeclareLaunchArgument(
+        'autostart',
+        default_value='true',
+        description='Autostart Nav2 lifecycle nodes'
+    )
+
+    explore_delay_arg = DeclareLaunchArgument(
+        'explore_delay',
+        default_value='8.0',
+        description='Delay in seconds before starting explore_lite'
+    )
+
+    nav2_params_arg = DeclareLaunchArgument(
+        'nav2_params_file',
+        default_value=os.path.join(pkg_share, 'config', 'nav2_params.yaml'),
+        description='Path to Nav2 parameter file'
+    )
+
+    explore_params_arg = DeclareLaunchArgument(
+        'explore_params_file',
+        default_value=os.path.join(pkg_share, 'config', 'explore_lite.yaml'),
+        description='Path to explore_lite parameter file'
+    )
+
     world_file = PythonExpression([
         '"', os.path.join(pkg_share, 'worlds'), '/" + "',
-        world_with_extension,
+        LaunchConfiguration('world'),
         '" + (".world" if "',
-        world_with_extension,
+        LaunchConfiguration('world'),
         '" == "empty" else ".sdf")'
     ])
 
@@ -67,9 +97,7 @@ def generate_launch_description():
                 'gz_sim.launch.py'
             ])
         ),
-        launch_arguments={
-            'gz_args': ['-r ', world_file]
-        }.items()
+        launch_arguments={'gz_args': ['-r ', world_file]}.items()
     )
 
     spawn_entity = Node(
@@ -101,7 +129,26 @@ def generate_launch_description():
         output='screen'
     )
 
+    nav2_bringup = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            get_package_share_directory('nav2_bringup'),
+            '/launch/bringup_launch.py'
+        ]),
+        launch_arguments={
+            'slam': LaunchConfiguration('slam'),
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'autostart': LaunchConfiguration('autostart'),
+            'params_file': LaunchConfiguration('nav2_params_file'),
+            'use_composition': 'False'
+        }.items(),
+        condition=IfCondition(LaunchConfiguration('nav2'))
+    )
+
     slam_params_file = os.path.join(pkg_share, 'config', 'mapper_params_online_async.yaml')
+    standalone_slam_condition = IfCondition(PythonExpression([
+        '"', LaunchConfiguration('slam'), '" == "true" and "',
+        LaunchConfiguration('nav2'), '" == "false"'
+    ]))
 
     slam_toolbox = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
@@ -112,16 +159,46 @@ def generate_launch_description():
             'slam_params_file': slam_params_file,
             'use_sim_time': LaunchConfiguration('use_sim_time')
         }.items(),
-        condition=IfCondition(LaunchConfiguration('slam'))
+        condition=standalone_slam_condition
+    )
+
+    explore_condition = IfCondition(PythonExpression([
+        '"', LaunchConfiguration('explore'), '" == "true" and "',
+        LaunchConfiguration('nav2'), '" == "true"'
+    ]))
+
+    explore_node = Node(
+        package='explore_lite',
+        executable='explore',
+        name='explore',
+        output='screen',
+        parameters=[
+            LaunchConfiguration('explore_params_file'),
+            {'use_sim_time': LaunchConfiguration('use_sim_time')}
+        ]
+    )
+
+    delayed_explore = TimerAction(
+        period=LaunchConfiguration('explore_delay'),
+        actions=[explore_node],
+        condition=explore_condition
     )
 
     return LaunchDescription([
         world_arg,
         use_sim_time_arg,
         slam_arg,
+        nav2_arg,
+        explore_arg,
+        autostart_arg,
+        explore_delay_arg,
+        nav2_params_arg,
+        explore_params_arg,
         rsp,
         gz_sim,
         spawn_entity,
         bridge,
+        nav2_bringup,
         slam_toolbox,
+        delayed_explore,
     ])
