@@ -6,7 +6,10 @@ slam_toolbox:
     scan_topic: /scan
     use_sim_time: true
 
-    # ── Pose-graph solver (enables full graph optimization) ────────────────
+    # ── Pose-graph solver ────────────────────────────────────────────────────
+    # CeresSolver is accurate but CPU-heavy. For a presentation where smooth
+    # real-time performance matters more than perfect accuracy, keep it but
+    # reduce the search spaces below.
     solver_plugin: solver_plugins::CeresSolver
     ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
     ceres_preconditioner: SCHUR_JACOBI
@@ -14,43 +17,83 @@ slam_toolbox:
     ceres_dogleg_type: TRADITIONAL_DOGLEG
     ceres_loss_function: None
 
-    # ── Pose extrapolator (reduces sensitivity to odometry drift) ──────────
+    # ── TF / timing ──────────────────────────────────────────────────────────
     use_pose_extrapolator: true
-    transform_timeout: 0.5      # wait up to 0.5s for TF transforms
-    tf_buffer_duration: 30.0    # keep 30s of TF history
+    transform_timeout: 0.2      # was 0.5 — shorter wait = less pipeline stall
+    tf_buffer_duration: 30.0
 
-    # General SLAM settings
+    # ── Core SLAM settings ───────────────────────────────────────────────────
     mode: mapping
     debug_logging: false
-    throttle_scans: 1
-    transform_publish_period: 0.02
-    map_update_interval: 0.1
-    resolution: 0.03
-    max_laser_range: 12.0
-    minimum_time_interval: 0.05
-    minimum_travel_distance: 0.03
+
+    # throttle_scans: process every Nth scan. 1=all, 2=every other, etc.
+    # Set to 2 to halve the SLAM CPU load while keeping map quality good.
+    throttle_scans: 2
+
+    # transform_publish_period: how often SLAM publishes map→odom TF (seconds).
+    # 0.05 = 20 Hz. Smoother than 0.02 (50 Hz) without meaningful quality loss.
+    transform_publish_period: 0.05
+
+    # map_update_interval: how often the occupancy grid is rebuilt (seconds).
+    # 0.1 (10 Hz) was the main lag source — rebuilding the full map grid 10×/s
+    # is very expensive. 0.5 (2 Hz) is plenty for a live demo.
+    map_update_interval: 0.5
+
+    # resolution: map cell size in metres. 0.05m (5cm) is a good balance —
+    # still produces a very clear, detailed map but uses 2.7× less memory
+    # and computation than 0.03m (3cm).
+    resolution: 0.05
+
+    max_laser_range: 10.0       # was 12.0 — trim to realistic indoor range
+
+    # minimum_time_interval: don't process scans faster than this (seconds).
+    # 0.1 = 10 Hz max, matching the lidar update_rate in lidar.xacro.
+    minimum_time_interval: 0.1
+
+    minimum_travel_distance: 0.05   # was 0.03
     minimum_travel_heading: 0.05
-    scan_buffer_size: 50       # large buffer averages noise, reduces shadows
-    scan_buffer_maximum_scan_distance: 12.0
-    link_match_minimum_response_fine: 0.5   # balanced scan match confidence
-    link_scan_maximum_distance: 0.5          # allow slightly larger corrections
-    loop_search_maximum_distance: 3.0
+
+    # scan_buffer_size: number of recent scans kept for scan-matching.
+    # 50 was the #1 cause of lag — the solver had to iterate over 50 scans
+    # every frame. 10 is plenty for reliable indoor mapping.
+    scan_buffer_size: 10
+
+    scan_buffer_maximum_scan_distance: 10.0   # was 12.0
+
+    # ── Scan matching ────────────────────────────────────────────────────────
+    link_match_minimum_response_fine: 0.45
+    link_scan_maximum_distance: 0.5
+
+    # ── Loop closure ─────────────────────────────────────────────────────────
+    # These settings govern the global search for loop-closure candidates.
+    # Reducing the search space significantly cuts CPU spikes.
+    loop_search_maximum_distance: 2.0          # was 3.0
     do_loop_closing: true
-    loop_match_minimum_chain_size: 15            # need more scans before attempting loop closure
-    loop_match_maximum_variance_coarse: 1.5      # tighter loop closure variance
-    loop_match_minimum_response_coarse: 0.55     # higher confidence needed to trigger loop close
-    loop_match_minimum_response_fine: 0.65       # higher fine match threshold
-    correlation_search_space_dimension: 0.6
+    loop_match_minimum_chain_size: 10          # was 15 — detect loops sooner
+    loop_match_maximum_variance_coarse: 3.0    # was 1.5 — more tolerant
+    loop_match_minimum_response_coarse: 0.35   # was 0.55 — more tolerant
+    loop_match_minimum_response_fine: 0.45     # was 0.65
+
+    # ── Correlation search (fine scan-matching) ───────────────────────────────
+    correlation_search_space_dimension: 0.5    # was 0.6
     correlation_search_space_resolution: 0.01
     correlation_search_space_smear_deviation: 0.05
-    loop_search_space_dimension: 8.0
+
+    # ── Loop-closure search space ─────────────────────────────────────────────
+    # Was 8.0m — that's an 8m × 8m brute-force grid search every time a
+    # closure candidate is tested. 4.0m is sufficient for indoor environments
+    # and cuts the search area by 75%.
+    loop_search_space_dimension: 4.0
     loop_search_space_resolution: 0.05
     loop_search_space_smear_deviation: 0.03
-    distance_variance_penalty: 1.0   # balanced position penalty
-    angle_variance_penalty: 1.5       # balanced heading penalty
+
+    # ── Variance penalties ────────────────────────────────────────────────────
+    distance_variance_penalty: 0.5    # was 1.0
+    angle_variance_penalty: 1.0       # was 1.5
+
     fine_search_angle_offset: 0.00349
     coarse_search_angle_offset: 0.349
     coarse_angle_resolution: 0.0349
-    minimum_angle_penalty: 0.5
+    minimum_angle_penalty: 0.9
     minimum_distance_penalty: 0.5
     use_response_expansion: true

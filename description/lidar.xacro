@@ -3,7 +3,7 @@
 
     <!-- LIDAR SENSOR -->
 
-    <!-- Lidar Joint -->
+    <!-- Lidar Joint — fixed mount on top of chassis -->
     <joint name="laser_joint" type="fixed">
         <parent link="chassis"/>
         <child link="laser_frame"/>
@@ -32,12 +32,13 @@
         </inertial>
     </link>
 
-    <!-- Gazebo Lidar Color -->
-    <gazebo reference="laser_frame">
-        <material>Gazebo/Black</material>
-    </gazebo>
-
-    <!-- Ignition Gazebo Lidar Plugin (GPU Lidar sensor) -->
+    <!--
+        Ignition Gazebo GPU LiDAR sensor.
+        • topic="scan"  → bridged to ROS as /scan
+        • <ignition_frame_id> sets the frame_id in the ROS LaserScan header.
+          USE <ignition_frame_id> for Ignition Gazebo 6 (Fortress) + ROS2 Humble.
+          <gz_frame_id> is for the newer Gazebo (Harmonic+) and will be IGNORED here.
+    -->
     <gazebo reference="laser_frame">
         <sensor name="gpu_lidar" type="gpu_lidar">
             <pose>0 0 0 0 0 0</pose>
@@ -69,9 +70,14 @@
         </sensor>
     </gazebo>
 
-    <!-- Ignition Gazebo Sensors Plugin (required to activate sensors) -->
+    <!--
+        Ignition Gazebo Sensors System — REQUIRED to activate any sensor.
+        Short-name form for Fortress/Humble: "ignition-gazebo-sensors-system"
+        (NOT libignition-gazebo-sensors-system.so — that's the old hardcoded path form)
+    -->
     <gazebo>
-        <plugin filename="libignition-gazebo-sensors-system.so" name="ignition::gazebo::systems::Sensors">
+        <plugin filename="ignition-gazebo-sensors-system"
+                name="ignition::gazebo::systems::Sensors">
             <render_engine>ogre2</render_engine>
         </plugin>
     </gazebo>

@@ -1,40 +1,70 @@
 <?xml version = "1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
+<!--
+  Differential Drive plugin for Ignition Gazebo 6 (Fortress) + ROS2 Humble.
+
+  IMPORTANT notes on names:
+    • filename="ignition-gazebo-diff-drive-system"  ← Fortress short-name (NO lib prefix, NO .so)
+    • libgz-sim-diff-drive-system.so                ← Harmonic/Iron ONLY, does NOT exist in Humble
+-->
 <gazebo>
   <plugin
-    filename="libgz-sim-diff-drive-system.so"
-    name="gz::sim::systems::DiffDrive">
+    filename="ignition-gazebo-diff-drive-system"
+    name="ignition::gazebo::systems::DiffDrive">
 
-        <!--Wheel information -->
-        <left_joint>left_wheel_joint</left_joint>
-        <right_joint>right_wheel_joint</right_joint>
+      <!-- Wheel joints (must match joint names in robot_core.xacro) -->
+      <left_joint>left_wheel_joint</left_joint>
+      <right_joint>right_wheel_joint</right_joint>
 
-        <wheel_separation>0.35</wheel_separation>
-        <wheel_radius>0.05</wheel_radius>
+      <!-- Physical parameters — must match the URDF geometry exactly -->
+      <wheel_separation>0.35</wheel_separation>
+      <wheel_radius>0.05</wheel_radius>
 
-        <!-- limits — kept low to prevent wheel slip and odometry drift -->
-        <max_wheel_torque>20</max_wheel_torque>
-        <max_wheel_acceleration>1.5</max_wheel_acceleration>
+      <!-- Conservative limits: prevents wheel slip which ruins odometry -->
+      <max_wheel_torque>20</max_wheel_torque>
+      <max_wheel_acceleration>1.5</max_wheel_acceleration>
 
-        <frame_id>odom</frame_id>
-        <child_frame_id>base_link</child_frame_id>
-        <tf_topic>/tf</tf_topic>
-        <odom_topic>/odom</odom_topic>
+      <!-- TF frame IDs — must match SLAM/URDF frame names -->
+      <frame_id>odom</frame_id>
+      <child_frame_id>base_link</child_frame_id>
 
-        <!-- outputs-->
-        <robot_base_frame>base_link</robot_base_frame>
+      <!--
+        Topic — use ABSOLUTE path (leading slash) so it matches the
+        ros_gz_bridge entry exactly:  /cmd_vel@Twist]ignition.msgs.Twist
+        If you use a relative name like "cmd_vel", Ignition may namespace it
+        under the model and the bridge will never deliver commands → no motion.
+      -->
+      <topic>/cmd_vel</topic>
+      <tf_topic>/tf</tf_topic>
+      <odom_topic>/odom</odom_topic>
+      <robot_base_frame>base_link</robot_base_frame>
 
-        <!-- topics-->
-        <topic>cmd_vel</topic> 
-        <publish_odom>true</publish_odom>
-        <publish_odom_tf>true</publish_odom_tf>
-        <publish_wheel_tf>true</publish_wheel_tf>
+      <!-- Publishing -->
+      <publish_odom>true</publish_odom>
+
+      <!-- odom→base_link TF published via Ignition /tf topic → bridged to ROS -->
+      <publish_odom_tf>true</publish_odom_tf>
+
+      <!--
+        publish_wheel_tf: publishes base_link→left_wheel / base_link→right_wheel
+        via Ignition /tf (bridged to ROS).  This lets robot_state_publisher
+        skip the wheel joint TF so we do NOT need the joint_states bridge.
+      -->
+      <publish_wheel_tf>true</publish_wheel_tf>
+
   </plugin>
-
 </gazebo>
+
+<!--
+  Caster wheel friction.
+  In Ignition Gazebo URDF extensions (sdformat_urdf / gz_urdf for Fortress),
+  the correct format inside <gazebo reference="..."> IS the simple element form:
+    <mu1>value</mu1>   (not <mu1 value="..."/>)
+  Keep values very low so the caster slides freely and the robot can turn.
+  The <surface><friction><ode> block does NOT work through URDF→SDF conversion.
+-->
 <gazebo reference="caster_wheel">
-  <!-- Near-zero friction so caster spins freely without resisting motion -->
   <mu1>0.001</mu1>
   <mu2>0.001</mu2>
   <kp>1000000.0</kp>
