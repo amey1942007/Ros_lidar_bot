@@ -1,9 +1,10 @@
 <?xml version="1.0"?>
-<robot xmlns:xacro="http://www.ros.org/wiki/xacro"  name="robot">
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="robot">
 
-  <xacro:include filename="$(find Ros_lidar_bot)/description/robot_core.xacro"/>
+  <!-- slam.xacro already pulls in materials.xacro, slam.ros2control, and slam.gazebo -->
+  <xacro:include filename="$(find Ros_lidar_bot)/description/slam.xacro"/>
 
+  <!-- Differential drive plugin + caster friction (Ignition Gazebo Fortress) -->
   <xacro:include filename="$(find Ros_lidar_bot)/description/robot_control.xacro"/>
 
-  <xacro:include filename="$(find Ros_lidar_bot)/description/lidar.xacro"/>
 </robot>

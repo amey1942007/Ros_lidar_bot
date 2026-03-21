@@ -18,8 +18,8 @@
       <right_joint>right_wheel_joint</right_joint>
 
       <!-- Physical parameters — must match the URDF geometry exactly -->
-      <wheel_separation>0.35</wheel_separation>
-      <wheel_radius>0.05</wheel_radius>
+      <wheel_separation>0.230</wheel_separation>
+      <wheel_radius>0.081</wheel_radius>
 
       <!-- Conservative limits: prevents wheel slip which ruins odometry -->
       <max_wheel_torque>20</max_wheel_torque>
@@ -64,7 +64,14 @@
   Keep values very low so the caster slides freely and the robot can turn.
   The <surface><friction><ode> block does NOT work through URDF→SDF conversion.
 -->
-<gazebo reference="caster_wheel">
+<gazebo reference="ball_caster_wheel__1__1">
+  <mu1>0.001</mu1>
+  <mu2>0.001</mu2>
+  <kp>1000000.0</kp>
+  <kd>100.0</kd>
+</gazebo>
+
+<gazebo reference="ball_caster_wheel_1">
   <mu1>0.001</mu1>
   <mu2>0.001</mu2>
   <kp>1000000.0</kp>
