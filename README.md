@@ -39,7 +39,7 @@ cd ~/ros2_ws/src
 ### 2️⃣ Clone Your Fleet
 Assuming you are positioned snugly within that `~/ros2_ws/src` folder:
 ```bash
-git clone <YOUR-URL-HERE> Ros_lidar_bot
+git clone <YOUR-URL-HERE> ros_lidar_bot
 ```
 
 ### 3️⃣ Construct & Compile 👷‍♂️ 
@@ -64,7 +64,7 @@ You're a couple terminal codes away from rendering physics!
 ### ⚙️ Main Robot Launch 
 Activate the Gazebo Simulator and Robot State Publisher:
 ```bash
-ros2 launch Ros_lidar_bot launch_sim.launch.py
+ros2 launch ros_lidar_bot launch_sim.launch.py
 ```
 
 ### 🌎 Testing In the Wild (Simulated Worlds)
@@ -82,7 +82,7 @@ Included within `/worlds`:
 10 creative worlds for benchmarking SLAM mapping accuracy. Each is a 20×20m arena — compare the SLAM map against the known layout to judge accuracy!
 
 ```bash
-ros2 launch Ros_lidar_bot launch_sim.launch.py world:=star
+ros2 launch ros_lidar_bot launch_sim.launch.py world:=star
 ```
 
 | World | What's Inside | Tests |
@@ -101,7 +101,7 @@ ros2 launch Ros_lidar_bot launch_sim.launch.py world:=star
 ### 🎮 Teleoperation Keyboard Control
 Control the wheel velocities via WASD (Cmd_Vel overrides)! 🏎️
 ```bash
-ros2 run Ros_lidar_bot teleop_node
+ros2 run ros_lidar_bot teleop_node
 ```
 
 &nbsp;
@@ -125,7 +125,7 @@ Wondering how the puzzle fits together? Here's the layout and breakdown!
 * `rsp.launch.py`: Broadcasts your entire models TF Tree parameters.
 * `launch_sim.launch.py`: Coordinates the Gazebo node with your robot's model spawn vector.
 
-#### 🐍 `Ros_lidar_bot/`
+#### 🐍 `ros_lidar_bot/`
 * `teleop_node.py`: A native ROS python-node broadcasting twists keyboard interrupts.
 
 #### 🌍 `worlds/`

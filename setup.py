@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 import os
 from glob import glob
 
-package_name = 'Ros_lidar_bot'
+package_name = 'ros_lidar_bot'
 
 setup(
     name=package_name,
@@ -21,7 +21,7 @@ setup(
         (os.path.join('share', package_name, 'worlds'),
             glob('worlds/*')),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'scipy'],
     zip_safe=True,
     maintainer='honey',
     maintainer_email='honeykumar1806@gmail.com',
@@ -32,8 +32,9 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'teleop = Ros_lidar_bot.teleop_node:main',
-            'odom_check = Ros_lidar_bot.odom_check:main',
+            'teleop = ros_lidar_bot.teleop_node:main',
+            'odom_check = ros_lidar_bot.odom_check:main',
+            'frontier_explorer = ros_lidar_bot.frontier_explorer:main',
         ],
     },
 )

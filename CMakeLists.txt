@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.5)
-project(Ros_lidar_bot)
+project(ros_lidar_bot)
 
 # Default to C99
 if(NOT CMAKE_C_STANDARD)
@@ -37,6 +37,21 @@ if(BUILD_TESTING)
 endif()
 
 ament_python_install_package(${PROJECT_NAME})
+
+# Install Python executable scripts into lib/<package_name>/ without .py extension
+# so they are found by `ros2 run <pkg> <node_name>`
+install(PROGRAMS ros_lidar_bot/teleop_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME teleop_node
+)
+install(PROGRAMS ros_lidar_bot/odom_check.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME odom_check
+)
+install(PROGRAMS ros_lidar_bot/frontier_explorer.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME frontier_explorer
+)
 
 install(
   DIRECTORY config description launch worlds
