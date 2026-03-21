@@ -1,0 +1,165 @@
+<?xml version="1.0" ?>
+<robot name="slam" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+<xacro:include filename="$(find Ros_lidar_bot)/description/materials.xacro" />
+<xacro:include filename="$(find Ros_lidar_bot)/description/slam.ros2control" />
+<xacro:include filename="$(find Ros_lidar_bot)/description/slam.gazebo" />
+<link name="base_link">
+  <inertial>
+    <origin xyz="-0.12499450936127811 -0.0732393668268621 0.25843254250315395" rpy="0 0 0"/>
+    <mass value="11.269909330356606"/>
+    <inertia ixx="0.1243" iyy="0.218253" izz="0.256396" ixy="-2e-06" iyz="-0.0" ixz="3e-06"/>
+  </inertial>
+  <visual>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="BHARAT_-FIH_-AMR-MAIN_WHEEL_WITH_MOTOR-PA-001__1__1">
+  <inertial>
+    <origin xyz="7.392549115040059e-06 -0.04111510772339333 -1.6452849457837537e-07" rpy="0 0 0"/>
+    <mass value="7.7692039603760845"/>
+    <inertia ixx="0.01318" iyy="0.022658" izz="0.013179" ixy="-3e-06" iyz="0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.125 0.188241 -0.226241" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/BHARAT_-FIH_-AMR-MAIN_WHEEL_WITH_MOTOR-PA-001__1__1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.125 0.188241 -0.226241" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/BHARAT_-FIH_-AMR-MAIN_WHEEL_WITH_MOTOR-PA-001__1__1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="BHARAT_-FIH_-AMR-MAIN_WHEEL_WITH_MOTOR-PA-001_1">
+  <inertial>
+    <origin xyz="-7.3925491141657584e-06 0.04011525042358858 -1.6452849452286422e-07" rpy="0 0 0"/>
+    <mass value="7.7692039603760845"/>
+    <inertia ixx="0.01318" iyy="0.022658" izz="0.013179" ixy="-3e-06" iyz="-0.0" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.125 -0.041759 -0.226241" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/BHARAT_-FIH_-AMR-MAIN_WHEEL_WITH_MOTOR-PA-001_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.125 -0.041759 -0.226241" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/BHARAT_-FIH_-AMR-MAIN_WHEEL_WITH_MOTOR-PA-001_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="ball_caster_wheel__1__1">
+  <inertial>
+    <origin xyz="6.938893903907228e-18 7.135010103576089e-08 -0.012099122560755626" rpy="0 0 0"/>
+    <mass value="0.14791134084474702"/>
+    <inertia ixx="2.2e-05" iyy="2e-05" izz="2.4e-05" ixy="-0.0" iyz="-0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.04 0.073241 -0.174741" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/ball_caster_wheel__1__1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.04 0.073241 -0.174741" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/ball_caster_wheel__1__1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="ball_caster_wheel_1">
+  <inertial>
+    <origin xyz="0.0 7.135010100800532e-08 -0.012099122560755599" rpy="0 0 0"/>
+    <mass value="0.14791134084474702"/>
+    <inertia ixx="2.2e-05" iyy="2e-05" izz="2.4e-05" ixy="0.0" iyz="-0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.29 0.073241 -0.174741" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/ball_caster_wheel_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.29 0.073241 -0.174741" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/ball_caster_wheel_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="lidar_1">
+  <inertial>
+    <origin xyz="0.16 7.135009756631394e-08 0.01499992864990235" rpy="0 0 0"/>
+    <mass value="2.663442251713426"/>
+    <inertia ixx="0.002597" iyy="0.002597" izz="0.004794" ixy="0.0" iyz="0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.125 0.073241 -0.198241" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/lidar_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.125 0.073241 -0.198241" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/lidar_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<joint name="left_wheel_joint" type="continuous">
+  <origin xyz="-0.125 -0.188241 0.226241" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="BHARAT_-FIH_-AMR-MAIN_WHEEL_WITH_MOTOR-PA-001__1__1"/>
+  <axis xyz="0 1 0"/>
+</joint>
+
+<joint name="right_wheel_joint" type="continuous">
+  <origin xyz="-0.125 0.041759 0.226241" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="BHARAT_-FIH_-AMR-MAIN_WHEEL_WITH_MOTOR-PA-001_1"/>
+  <axis xyz="0 1 0"/>
+</joint>
+
+<joint name="Rigid 3" type="fixed">
+  <origin xyz="0.04 -0.073241 0.174741" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="ball_caster_wheel__1__1"/>
+</joint>
+
+<joint name="Rigid 4" type="fixed">
+  <origin xyz="-0.29 -0.073241 0.174741" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="ball_caster_wheel_1"/>
+</joint>
+
+<joint name="Rigid 5" type="fixed">
+  <origin xyz="-0.125 -0.073241 0.198241" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="lidar_1"/>
+</joint>
+
+</robot>
