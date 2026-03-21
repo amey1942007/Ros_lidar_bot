@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>Ros_lidar_bot</name>
+  <name>ros_lidar_bot</name>
   <version>0.0.0</version>
   <description>Differential-drive robot with LiDAR and SLAM mapping (Ignition Gazebo 6 + ROS2 Humble)</description>
   <maintainer email="honeykumar1806@gmail.com">MY NAME</maintainer>
@@ -20,6 +20,9 @@
   <exec_depend>ros_gz_bridge</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
   <exec_depend>xacro</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>tf2_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

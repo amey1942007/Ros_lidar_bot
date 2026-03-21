@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Launch file — Ros_lidar_bot
+Launch file — ros_lidar_bot
 Ignition Gazebo 6 (Fortress) + ROS2 Humble
 
 Stack:
@@ -11,8 +11,8 @@ Stack:
   5. slam_toolbox           → builds occupancy map from /scan
 
 Usage:
-  ros2 launch Ros_lidar_bot launch_sim.launch.py
-  ros2 launch Ros_lidar_bot launch_sim.launch.py world:=maze_world
+  ros2 launch ros_lidar_bot launch_sim.launch.py
+  ros2 launch ros_lidar_bot launch_sim.launch.py world:=maze_world
 
 Available worlds: empty | maze_world | open_obstacles | room_world |
   corridor_world | circles | boxes | zigzag | spiral | star |
@@ -31,7 +31,7 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    package_name = 'Ros_lidar_bot'
+    package_name = 'ros_lidar_bot'
     pkg_share = get_package_share_directory(package_name)
 
     # ── World selector ───────────────────────────────────────────────────────
@@ -143,6 +143,25 @@ def generate_launch_description():
         }.items()
     )
 
+    # ── Navigation 2 Stack ───────────────────────────────────────────────────
+    # Enables click-to-drive in RViz (Option 1) and autonomous exploration (Option 2)
+    navigation = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(pkg_share, 'launch', 'navigation_launch.py')
+        ),
+        launch_arguments={'use_sim_time': 'true'}.items()
+    )
+
+    rviz_config_file = os.path.join(pkg_share, 'config', 'view_bot.rviz')
+    rviz_node = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        output='screen',
+        arguments=['-d', rviz_config_file],
+        parameters=[{'use_sim_time': True}]
+    )
+
     return LaunchDescription([
         world_arg,
         rsp,
@@ -150,4 +169,6 @@ def generate_launch_description():
         spawn_entity,
         bridge,
         slam_toolbox,
+        navigation,
+        rviz_node,
     ])

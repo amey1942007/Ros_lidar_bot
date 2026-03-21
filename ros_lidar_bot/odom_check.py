@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-odom_check.py  –  Live odometry diagnostics for Ros_lidar_bot
+odom_check.py  –  Live odometry diagnostics for ros_lidar_bot
 ──────────────────────────────────────────────────────────────
 Usage:
-  ros2 run Ros_lidar_bot odom_check
+  ros2 run ros_lidar_bot odom_check
 
 What it reports every second:
   • Current odom pose  (x, y, yaw)
