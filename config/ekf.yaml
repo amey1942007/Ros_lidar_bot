@@ -2,7 +2,7 @@ ekf_filter_node:
   ros__parameters:
     # 1. Frequency and Time
     frequency: 30.0
-    sensor_timeout: 0.1
+    sensor_timeout: 0.5
     two_d_mode: true      # Essential for diff-drive (ignores Z/Roll/Pitch)
     use_sim_time: true
     publish_tf: true      # The EKF will provide odom -> base_footprint

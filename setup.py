@@ -16,6 +16,12 @@ setup(
             glob('launch/*.launch.py')),
         (os.path.join('share', package_name, 'description'),
             glob('description/*')),
+        (os.path.join('share', package_name, 'config'),
+            glob('config/*.yaml')),
+        (os.path.join('share', package_name, 'worlds'),
+            glob('worlds/*')),
+        (os.path.join('share', package_name, 'meshes'),
+            glob('meshes/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -29,6 +35,7 @@ setup(
     entry_points={
         'console_scripts': [
             'teleop = Ros_lidar_bot.teleop_node:main',
+            'frontier_explorer = Ros_lidar_bot.frontier_explorer_node:main',
         ],
     },
 )

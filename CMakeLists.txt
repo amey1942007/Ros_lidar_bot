@@ -39,6 +39,13 @@ endif()
 ament_python_install_package(${PROJECT_NAME})
 
 install(
+  PROGRAMS
+    Ros_lidar_bot/teleop_node.py
+    Ros_lidar_bot/frontier_explorer_node.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
   DIRECTORY config description launch worlds meshes
   DESTINATION share/${PROJECT_NAME}
 )

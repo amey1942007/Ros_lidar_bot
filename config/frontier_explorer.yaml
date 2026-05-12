@@ -1,0 +1,42 @@
+frontier_explorer:
+  ros__parameters:
+    map_topic: /map
+    map_frame: map
+    base_frame: base_footprint
+
+    # Goal lifecycle
+    goal_timeout_sec: 90.0
+    goal_interval_sec: 3.0
+    goal_cooldown_sec: 3.0
+    goal_reached_radius: 0.45
+
+    # Progress monitoring — must be > nav2's movement_time_allowance (25 s)
+    progress_timeout_sec: 35.0
+    min_progress_delta: 0.12
+
+    # Frontier filtering
+    min_frontier_size: 3          # lowest practical value — catches all real occlusion shadows
+    min_goal_distance: 0.35
+    max_goal_distance: 5.5
+    max_range_expansion_factor: 2.0
+
+    # Hardware safety: reject any frontier target within this distance of the map boundary.
+    # This stops the worldToMap errors and prevents the robot driving into walls.
+    # Must be >= nav2's inflation_radius (0.55 m set below).
+    wall_safe_distance: 0.6
+
+    # Blacklist
+    goal_blacklist_radius: 0.50
+    blacklist_timeout_sec: 90.0
+
+    # Scoring weights
+    size_weight: 1.8
+    distance_weight: 1.0
+    heading_weight: 0.5
+    openness_weight: 0.7    # increased — strongly penalise goals near obstacles/walls
+
+    # Hysteresis
+    improvement_margin: 0.20
+
+    # Exploration completion
+    no_frontier_done_ticks: 10
