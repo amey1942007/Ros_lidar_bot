@@ -1,0 +1,35 @@
+ekf_filter_node:
+  ros__parameters:
+    # 1. Frequency and Time
+    frequency: 30.0
+    sensor_timeout: 0.1
+    two_d_mode: true      # Essential for diff-drive (ignores Z/Roll/Pitch)
+    use_sim_time: true
+    publish_tf: true      # The EKF will provide odom -> base_footprint
+
+    # 2. Frame Names
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_footprint
+    world_frame: odom
+
+    # 3. Wheel Odometry (from Gazebo /odom_raw)
+    odom0: /odom_raw
+    odom0_config: [true,  true,  false, # X, Y (Position)
+                   false, false, false, # R, P, Y (Orientation)
+                   true,  true,  false, # X', Y' (Velocity)
+                   false, false, true,  # R', P', Y' (Angular Velocity)
+                   false, false, false]
+    odom0_differential: false
+
+    # 4. IMU Data (from Gazebo /imu)
+    imu0: /imu
+    imu0_config: [false, false, false,
+                  false, false, true,  # Yaw (Trust IMU for heading!)
+                  false, false, false,
+                  false, false, true,  # Angular Velocity
+                  true,  false, false] # Linear Acceleration (X only)
+    
+    imu0_differential: false
+    imu0_relative: true    # Sets the initial orientation to zero on start
+    imu0_remove_gravitational_acceleration: true

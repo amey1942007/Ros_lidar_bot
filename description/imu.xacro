@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+<link name="imu_for_urdf_1">
+  <inertial>
+    <origin xyz="-2.395242713676784e-05 -4.697533164545013e-05 0.0011097424638633197" rpy="0 0 0"/>
+    <mass value="0.007271179941885703"/>
+    <inertia ixx="0.0" iyy="0.0" izz="1e-06" ixy="0.0" iyz="0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.001839 -0.002589 -0.104922" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/imu_for_urdf_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </visual>
+  <collision>
+    <origin xyz="0.001839 -0.002589 -0.104922" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/imu_for_urdf_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<joint name="Rigid 5" type="fixed">
+  <origin xyz="-0.001839 0.002589 0.104922" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="imu_for_urdf_1"/>
+</joint>
+
+<gazebo reference="imu_for_urdf_1">
+  <sensor name="imu_sensor" type="imu">
+    <always_on>1</always_on>
+    <update_rate>1</update_rate>
+    <visualize>true</visualize>
+    <topic>imu</topic>
+  </sensor>
+</gazebo>
+
+</robot>

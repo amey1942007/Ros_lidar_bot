@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro"  name="robot">
+
+  <xacro:include filename="$(find Ros_lidar_bot)/description/slam.xacro"/>
+
+  <xacro:include filename="$(find Ros_lidar_bot)/description/robot_control.xacro"/>
+
+  <xacro:include filename="$(find Ros_lidar_bot)/description/lidar.xacro"/>
+  
+  <xacro:include filename="$(find Ros_lidar_bot)/description/camera.xacro"/>
+
+  <xacro:include filename="$(find Ros_lidar_bot)/description/imu.xacro"/>
+
+</robot>
