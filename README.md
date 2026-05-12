@@ -1,6 +1,6 @@
 # Ros_lidar_bot
 
-A ROS 2 differential-drive robot with LiDAR, IMU, and camera sensors running in Ignition Gazebo. Supports real-time SLAM mapping, EKF-fused odometry, and keyboard teleoperation — with an autonomous frontier exploration pipeline in progress.
+A ROS 2 differential-drive robot with LiDAR, IMU, and camera sensors running in Ignition Gazebo. Supports real-time SLAM mapping, EKF-fused odometry, Nav2-based autonomous navigation, and frontier-driven autonomous exploration of unknown environments.
 
 ---
 
@@ -16,18 +16,20 @@ A ROS 2 differential-drive robot with LiDAR, IMU, and camera sensors running in 
 - [ROS 2 Topics](#ros-2-topics)
 - [Configuration](#configuration)
 - [Progress](#progress)
+- [Common Issues](#common-issues)
 
 ---
 
 ## About
 
-The robot is a custom differential-drive platform modelled from real hardware. The simulation stack covers the full sensor-to-navigation pipeline:
+The robot is a custom differential-drive platform modelled from real hardware. The full simulation stack covers the complete sensor-to-autonomous-navigation pipeline:
 
-- **Ignition Gazebo (Fortress)** physics simulation
-- **SLAM Toolbox** for real-time occupancy-grid mapping
-- **robot_localization EKF** that fuses wheel odometry + IMU into a clean `/odom`
-- **Nav2** for global/local path planning and autonomous navigation
-- **Keyboard teleoperation** for manual driving and map building
+- **Ignition Gazebo (Fortress)** physics simulation with a furnished 10×10 m indoor world
+- **SLAM Toolbox** for real-time occupancy-grid mapping with loop closure
+- **robot_localization EKF** that fuses wheel odometry and IMU into a clean `/odom`
+- **Nav2** for global path planning, local trajectory following, and recovery behaviours
+- **Frontier exploration** for fully autonomous map coverage without any pre-defined waypoints
+- **Keyboard teleoperation** for manual driving
 
 ---
 
@@ -43,23 +45,36 @@ Ignition Gazebo
   └─ JointStatePublisher ─→ /joint_states ──→ [gz bridge]
 
 [robot_state_publisher]  ←─ robot_description (URDF/Xacro)
-    └─ publishes TF: base_footprint → base_link → laser_frame
-                                               → camera_link
-                                               → imu_for_urdf_1
-                                               → wheels
+    └─ TF: base_footprint → base_link → laser_frame / camera_link / imu / wheels
 
 [ekf_filter_node]  ←─ /odom_raw + /imu
-    └─ publishes TF: odom → base_footprint
+    └─ TF: odom → base_footprint
     └─ publishes: /odom (filtered)
 
 [slam_toolbox]  ←─ /scan + TF(odom→base_footprint)
-    └─ publishes TF: map → odom
-    └─ publishes: /map (OccupancyGrid)
+    └─ TF: map → odom
+    └─ publishes: /map (OccupancyGrid, updated every 3 s)
 
 [nav2 stack]  ←─ /map + /scan + /odom + TF tree
-    └─ navigate_to_pose action server
-    └─ publishes: /cmd_vel (velocity commands)
+    ├─ planner_server   — NavFn A* global planner
+    ├─ controller_server — Regulated Pure Pursuit local controller
+    ├─ behavior_server  — spin / backup / wait recovery behaviours
+    └─ bt_navigator     — navigate_to_pose action server → /cmd_vel
+
+[frontier_explorer]  ←─ /map + TF(map→base_footprint)
+    └─ sends goals to: navigate_to_pose action server
+    └─ drives the robot toward unexplored frontiers until the map is complete
 ```
+
+**Staged startup** (in `launch_sim.launch.py`):
+
+| Time | What starts |
+|---|---|
+| T = 0 s | Gazebo, RSP, bridge |
+| T = 3 s | Robot spawned into world |
+| T = 6 s | EKF + SLAM Toolbox |
+| T = 16 s | Nav2 stack |
+| T = 30 s | Frontier explorer *(autonomous launch only)* |
 
 ---
 
@@ -86,29 +101,33 @@ Ros_lidar_bot/
 ├── setup.py
 │
 ├── Ros_lidar_bot/
-│   └── teleop_node.py          # Keyboard teleoperation node
+│   ├── frontier_explorer_node.py   # Autonomous frontier exploration node
+│   └── teleop_node.py              # Keyboard teleoperation node
 │
 ├── config/
-│   ├── ekf.yaml                # robot_localization EKF parameters
-│   ├── mapper_params_online_async.yaml  # SLAM Toolbox parameters
-│   ├── mapper_params_localization.yaml  # SLAM localisation mode
+│   ├── ekf.yaml                         # EKF sensor fusion parameters
+│   ├── frontier_explorer.yaml           # Frontier explorer tuning
+│   ├── mapper_params_online_async.yaml  # SLAM Toolbox (mapping mode)
+│   ├── mapper_params_localization.yaml  # SLAM Toolbox (localisation mode)
 │   ├── mapper_params_lifelong.yaml
 │   ├── mapper_params_offline.yaml
 │   ├── mapper_params_online_sync.yaml
-│   └── view_bot.rviz           # RViz2 configuration
+│   ├── nav2_params.yaml                 # Nav2 stack parameters
+│   └── view_bot.rviz                    # RViz2 configuration
 │
 ├── description/
 │   ├── robot.urdf.xacro        # Top-level URDF entry point
-│   ├── slam.xacro              # Base link, wheels, casters
-│   ├── slam.gazebo             # Gazebo material/friction properties
-│   ├── robot_control.xacro     # DiffDrive + JointState Gazebo plugins
+│   ├── slam.xacro              # Base link, wheels, casters (geometry + inertials)
+│   ├── slam.gazebo             # Gazebo material and friction properties
+│   ├── robot_control.xacro    # DiffDrive + JointState Gazebo plugins
 │   ├── lidar.xacro             # GPU LiDAR sensor
 │   ├── camera.xacro            # RGB camera sensor
 │   └── imu.xacro               # IMU sensor
 │
 ├── launch/
-│   ├── launch_sim.launch.py    # Main simulation launch (Gazebo + SLAM + EKF)
-│   └── rsp.launch.py           # Robot State Publisher only
+│   ├── autonomous_exploration.launch.py  # Full auto: sim + nav2 + frontier explorer
+│   ├── launch_sim.launch.py              # Sim + SLAM + EKF + Nav2 (manual / telop)
+│   └── rsp.launch.py                     # Robot State Publisher only
 │
 ├── meshes/
 │   ├── base_link.stl
@@ -118,6 +137,9 @@ Ros_lidar_bot/
 │   ├── ball_caster_wheel__1__1.stl
 │   ├── lidar_urdf_1.stl
 │   └── imu_for_urdf_1.stl
+│
+├── scripts/
+│   └── kill_sim.sh             # Kill all simulation processes before relaunch
 │
 └── worlds/
     ├── testing.world           # 10×10 m furnished indoor environment
@@ -138,8 +160,9 @@ Ros_lidar_bot/
 | Nav2 | Humble | `sudo apt install ros-humble-navigation2 ros-humble-nav2-bringup` |
 | robot_localization | Humble | `sudo apt install ros-humble-robot-localization` |
 | ros_gz | Humble-Fortress | `sudo apt install ros-humble-ros-gz` |
+| numpy | — | `pip3 install numpy` |
 
-> **Note:** Select **Fortress LTS** on the Gazebo install page and use binary installation.
+> Select **Fortress LTS** on the Gazebo install page and use binary installation.
 
 ---
 
@@ -149,7 +172,7 @@ Ros_lidar_bot/
 # 1. Create workspace
 mkdir -p ~/ros2_ws/src && cd ~/ros2_ws/src
 
-# 2. Clone the repository
+# 2. Clone
 git clone https://github.com/amey1942007/Ros_lidar_bot.git
 
 # 3. Install ROS dependencies
@@ -159,12 +182,9 @@ rosdep install --from-paths src --ignore-src -r -y
 # 4. Build
 colcon build --packages-select Ros_lidar_bot --symlink-install
 
-# 5. Source the workspace
+# 5. Source
 source install/setup.bash
-```
-
-Add to `~/.bashrc` so you don't have to source every session:
-```bash
+# Add permanently:
 echo "source ~/ros2_ws/install/setup.bash" >> ~/.bashrc
 ```
 
@@ -172,39 +192,25 @@ echo "source ~/ros2_ws/install/setup.bash" >> ~/.bashrc
 
 ## Usage
 
-### Kill any leftover simulation processes before launching
+### Before every launch — kill leftover processes
 
-If you previously ran the simulation, always clean up first to prevent zombie processes from causing TF conflicts and robot teleporting:
+Lingering processes from a previous run publish stale TF transforms and cause the robot to teleport. Always clean up first:
 
 ```bash
-# Kill all simulation-related processes
-pkill -SIGTERM -f "slam_toolbox"; pkill -SIGTERM -f "ekf_node"
-pkill -SIGTERM -f "ign gazebo"; sleep 2
-pkill -SIGKILL -f "ign gazebo"; pkill -SIGKILL -f "slam_toolbox"
+~/ros2_ws/src/Ros_lidar_bot/scripts/kill_sim.sh
 ```
 
 ---
 
-### Launch the simulation
+### Manual navigation (teleoperation + SLAM)
 
 ```bash
 ros2 launch Ros_lidar_bot launch_sim.launch.py
 ```
 
-This starts:
-- Ignition Gazebo with `testing.world`
-- Gazebo ↔ ROS 2 bridge (all sensor topics + clock)
-- Robot State Publisher (URDF → TF tree)
-- SLAM Toolbox (online async mapping)
-- EKF node (odometry + IMU fusion)
+Starts Gazebo, bridge, RSP, EKF, SLAM Toolbox, and Nav2. Drive manually with the teleop node (new terminal):
 
----
-
-### Keyboard teleoperation
-
-In a **new terminal**:
 ```bash
-source ~/ros2_ws/install/setup.bash
 ros2 run Ros_lidar_bot teleop_node.py
 ```
 
@@ -217,6 +223,20 @@ ros2 run Ros_lidar_bot teleop_node.py
 | `Space` | Full stop |
 | `Ctrl+C` | Quit |
 
+You can also send goals directly from RViz2 using the **2D Goal Pose** button.
+
+---
+
+### Autonomous exploration
+
+```bash
+ros2 launch Ros_lidar_bot autonomous_exploration.launch.py
+```
+
+This single command starts everything — Gazebo, SLAM, EKF, Nav2, and the frontier explorer. The robot autonomously explores the entire environment, navigating to unexplored frontier regions until the map is complete.
+
+The frontier explorer starts at **T = 30 s** after launch (Nav2 needs ~14 s to warm up after starting at T = 16 s).
+
 ---
 
 ### Visualise in RViz2
@@ -225,15 +245,13 @@ ros2 run Ros_lidar_bot teleop_node.py
 rviz2 -d ~/ros2_ws/src/Ros_lidar_bot/config/view_bot.rviz
 ```
 
-Key displays to add if not preset:
-
-| Display | Topic / Frame |
-|---|---|
-| Map | `/map` |
-| LaserScan | `/scan` |
-| RobotModel | — (uses `/robot_description`) |
-| TF | — |
-| Image | `/camera/image_raw` |
+| Display | Topic | Notes |
+|---|---|---|
+| Map | `/map` | SLAM occupancy grid |
+| LaserScan | `/scan` | Live lidar hits |
+| RobotModel | — | URDF via `/robot_description` |
+| TF | — | Full transform tree |
+| Image | `/camera/image_raw` | Camera feed |
 
 Set **Fixed Frame** to `map`.
 
@@ -241,25 +259,24 @@ Set **Fixed Frame** to `map`.
 
 ### View camera feed
 
-**Option A — RViz2**: Add → By Topic → `/camera/image_raw` → Image
+**RViz2** — Add → By Topic → `/camera/image_raw` → Image
 
-**Option B — rqt**:
+**rqt**:
 ```bash
 ros2 run rqt_image_view rqt_image_view
 ```
-Select `/camera/image_raw` from the dropdown.
 
-**Option C — Gazebo GUI**: Plugins (⋮ menu) → Image Display → topic `/camera/image_raw`
+**Gazebo GUI** — Plugins menu (⋮) → Image Display → select `/camera/image_raw`
 
 ---
 
-### Save the map
+### Save the finished map
 
-After driving the robot to build a complete map:
 ```bash
 ros2 run nav2_map_server map_saver_cli -f ~/my_map
 ```
-This saves `my_map.pgm` and `my_map.yaml`.
+
+Saves `my_map.pgm` and `my_map.yaml` for use in localisation mode.
 
 ---
 
@@ -270,8 +287,9 @@ This saves `my_map.pgm` and `my_map.yaml`.
 | Topic | Type | Source |
 |---|---|---|
 | `/cmd_vel` | `geometry_msgs/Twist` | Nav2 / teleop |
-| `/odom_raw` | `nav_msgs/Odometry` | Gazebo bridge (remapped from `/odom`) |
+| `/odom_raw` | `nav_msgs/Odometry` | Gazebo bridge (remapped `/odom`) |
 | `/imu` | `sensor_msgs/Imu` | Gazebo bridge |
+| `/map` | `nav_msgs/OccupancyGrid` | SLAM Toolbox (frontier explorer) |
 
 ### Published
 
@@ -290,15 +308,15 @@ This saves `my_map.pgm` and `my_map.yaml`.
 
 ```
 map
- └─ odom              (SLAM Toolbox)
-     └─ base_footprint (EKF)
-         └─ base_link  (robot_state_publisher)
+ └─ odom                (SLAM Toolbox)
+     └─ base_footprint  (EKF)
+         └─ base_link   (robot_state_publisher)
              ├─ laser_frame
              ├─ camera_link
              │   └─ camera_link_optical
              ├─ imu_for_urdf_1
-             ├─ wheel_urdf_1      (right wheel)
-             └─ wheel_urdf__1__1  (left wheel)
+             ├─ wheel_urdf_1        (right wheel)
+             └─ wheel_urdf__1__1    (left wheel)
 ```
 
 ---
@@ -306,18 +324,41 @@ map
 ## Configuration
 
 ### EKF (`config/ekf.yaml`)
-Fuses wheel odometry (`/odom_raw`) and IMU (`/imu`) at 30 Hz. Runs in 2D mode — ignores Z, roll, pitch. Publishes the `odom → base_footprint` transform.
+Fuses `/odom_raw` (wheel odometry) and `/imu` at 30 Hz in 2D mode. Publishes the `odom → base_footprint` TF and filtered `/odom`.
 
 ### SLAM Toolbox (`config/mapper_params_online_async.yaml`)
-Online asynchronous SLAM. Key parameters:
 
 | Parameter | Value | Notes |
 |---|---|---|
 | `resolution` | 0.05 m | Map cell size |
-| `max_laser_range` | 20.0 m | Max range used for map building |
-| `map_update_interval` | 5.0 s | How often the occupancy grid is published |
-| `minimum_travel_distance` | 0.5 m | Robot must move this far before a new scan is processed |
-| `do_loop_closing` | true | Corrects drift with loop closure |
+| `max_laser_range` | 12.0 m | Matches physical lidar range |
+| `map_update_interval` | 3.0 s | Occupancy grid publish rate |
+| `map_start_pose` | [0, 0, 0] | Map origin anchored to robot spawn position |
+| `minimum_travel_distance` | 0.5 m | Distance between scan-match updates |
+| `do_loop_closing` | true | Pose-graph loop closure for drift correction |
+
+### Nav2 (`config/nav2_params.yaml`)
+
+| Parameter | Value | Notes |
+|---|---|---|
+| Planner | NavFn A* | `allow_unknown: true` for frontier goals |
+| Controller | Regulated Pure Pursuit | `use_rotate_to_heading: true` |
+| Linear velocity | 0.22 m/s | Target cruise speed |
+| Local inflation radius | 0.55 m | Safety clearance around obstacles |
+| Global inflation radius | 0.65 m | Routes planned well away from walls |
+| `cost_scaling_factor` | 2.0 | Slow cost drop-off = robot stays far from walls |
+| Recovery behaviours | spin, backup, wait | Triggered after 25 s without progress |
+
+### Frontier Explorer (`config/frontier_explorer.yaml`)
+
+| Parameter | Value | Notes |
+|---|---|---|
+| `min_frontier_size` | 3 cells | Minimum cluster size to consider |
+| `wall_safe_distance` | 0.6 m | Goals within this distance of the map boundary are rejected |
+| `openness_weight` | 0.7 | Strongly prefers goals in open space over tight corners |
+| `max_goal_distance` | 5.5 m | Maximum frontier search radius |
+| `progress_timeout_sec` | 35 s | Longer than Nav2's 25 s recovery window |
+| `no_frontier_done_ticks` | 10 | Declares exploration complete after 10 consecutive empty ticks |
 
 ---
 
@@ -327,35 +368,40 @@ Online asynchronous SLAM. Key parameters:
 - [x] Differential-drive robot URDF with accurate inertials and collision meshes
 - [x] GPU LiDAR, IMU, RGB camera sensors in simulation
 - [x] Full Ignition Gazebo — ROS 2 bridge (sensors, clock, cmd_vel, joint states)
-- [x] EKF odometry fusion (wheel odom + IMU)
-- [x] SLAM Toolbox online async mapping
+- [x] EKF odometry fusion (wheel odometry + IMU)
+- [x] SLAM Toolbox online async mapping with loop closure
+- [x] Nav2 stack (global planner, local controller, costmaps, recovery behaviours)
+- [x] Frontier-based autonomous exploration node
+- [x] Autonomous exploration launch file
 - [x] Keyboard teleoperation node
-- [x] 10×10 m furnished indoor test world (desks, chairs, bookshelf, boxes)
+- [x] 10×10 m furnished indoor test world
 - [x] RViz2 configuration
+- [x] Hardware-safe navigation (inflation radius, wall-safe boundary guard, openness filter)
 
 ### In Progress
-- [ ] Nav2 autonomous navigation (global + local planners, costmaps)
-- [ ] Frontier-based autonomous exploration node
-- [ ] Autonomous exploration launch file
-- [ ] Hardware deployment and testing
+- [ ] Hardware deployment and testing on the physical robot
 
 ### Planned
-- [ ] Cartographer and G-Mapping SLAM comparison
-- [ ] Semantic SLAM (object detection + map annotation)
-- [ ] Real-hardware integration
+- [ ] Vision model integration — object detection on `/camera/image_raw` using a pre-trained model (YOLO / DETR)
+- [ ] Semantic mapping — annotate the occupancy map with detected object classes and locations
+- [ ] Semantic SLAM — persistent object-level map for downstream tasks (navigation to a chair, avoid humans, etc.)
+- [ ] Real-hardware integration and field testing
 
 ---
 
 ## Common Issues
 
-**Robot appears at wrong position in RViz after relaunch**
-→ Zombie processes from the previous run are still publishing stale TF. Kill all simulation processes and relaunch.
+**Robot teleports between positions after relaunch**
+→ A zombie process from the previous run is still publishing `map → odom`. Run `scripts/kill_sim.sh` before every relaunch.
 
-**`worldToMap failed` errors in planner log**
-→ A navigation goal landed at the map boundary. Increase inflation radius in `nav2_params.yaml` or add a wall-safe distance buffer in the frontier explorer.
+**`worldToMap failed: mx,my: 198,X` errors**
+→ A frontier goal landed at the map boundary (wall position). Increase `wall_safe_distance` in `frontier_explorer.yaml`.
 
 **`No valid frontier` immediately at exploration start**
-→ `min_frontier_size` is too high for the frontier clusters visible from the starting position. Reduce to 3–6 in `frontier_explorer.yaml`.
+→ Either the map hasn't built yet (wait for T = 30 s) or `min_frontier_size` is too high for the current environment. Try reducing to 3.
 
 **`Message Filter dropping message: frame 'odom'`**
-→ Cosmetic RViz warning caused by a sim-clock reset. Does not affect navigation or SLAM.
+→ Cosmetic RViz warning from a sim-clock reset. Does not affect navigation or SLAM.
+
+**Robot collides with walls during exploration**
+→ Increase `inflation_radius` in `nav2_params.yaml` and/or increase `wall_safe_distance` in `frontier_explorer.yaml`.
