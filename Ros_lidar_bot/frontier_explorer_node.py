@@ -43,6 +43,7 @@ class FrontierExplorer(Node):
         self.declare_parameter("max_range_expansion_factor", 2.0)
         self.declare_parameter("no_frontier_done_ticks", 4)
         self.declare_parameter("wall_safe_distance", 0.5)
+        self.declare_parameter("max_goal_distance_cap", 12.0)
 
         p = self.get_parameter
         self.map_topic = p("map_topic").value
@@ -66,6 +67,14 @@ class FrontierExplorer(Node):
         self.max_range_expansion_factor = float(p("max_range_expansion_factor").value)
         self.no_frontier_done_ticks = int(p("no_frontier_done_ticks").value)
         self.wall_safe_distance = float(p("wall_safe_distance").value)
+        self.max_goal_distance_cap = float(p("max_goal_distance_cap").value)
+
+        # Keep the config value as the floor so calibration can only raise it,
+        # and relaxation tracks the current active value.
+        self._cfg_min_frontier_size = self.min_frontier_size
+        self._cfg_min_goal_distance = self.min_goal_distance
+        self._cfg_max_goal_distance = self.max_goal_distance
+        self._calibrated = False
 
         self.latest_map: Optional[OccupancyGrid] = None
         self.goal_handle = None
@@ -87,6 +96,68 @@ class FrontierExplorer(Node):
 
     def _map_cb(self, msg: OccupancyGrid) -> None:
         self.latest_map = msg
+        if not self._calibrated:
+            self._calibrate_from_map(msg)
+
+    def _calibrate_from_map(self, msg: OccupancyGrid) -> None:
+        """One-time calibration from the first received map.
+
+        Scales max_goal_distance to ~50 % of the room's larger dimension so the
+        explorer works correctly in any sized environment without manual tuning.
+        """
+        w_m = msg.info.width  * msg.info.resolution   # map width  in metres
+        h_m = msg.info.height * msg.info.resolution   # map height in metres
+        larger_dim = max(w_m, h_m)
+
+        # Scale max_goal_distance: 50 % of larger dimension, but never below
+        # the config value and never above the cap.
+        calibrated = min(larger_dim * 0.50, self.max_goal_distance_cap)
+        if calibrated > self.max_goal_distance:
+            self.max_goal_distance = calibrated
+
+        self._calibrated = True
+        self.get_logger().info(
+            f"[auto-calibrate] map {w_m:.0f}×{h_m:.0f} m → "
+            f"max_goal_distance = {self.max_goal_distance:.1f} m"
+        )
+
+    def _try_relax(self) -> None:
+        """Progressive relaxation — called every tick that finds no frontier.
+
+        Exploration constraints are loosened in stages so the robot can always
+        finish the map regardless of room size or obstacle density:
+
+          tick 4  : min_frontier_size  reduced by 1  (removes tiny-cluster filter)
+          tick 8  : min_frontier_size  reduced by 1  again
+          tick 12 : max_goal_distance  extended to cap  (reaches far corners)
+          tick 15 : min_goal_distance  halved  (accepts near frontiers)
+
+        Relaxation is sticky for the session — once the room proves it has
+        small/tight frontiers the looser threshold stays active.
+        """
+        t = self._no_frontier_ticks
+        changed: list[str] = []
+
+        if t == 4 and self.min_frontier_size > 3:
+            self.min_frontier_size = max(3, self.min_frontier_size - 1)
+            changed.append(f"min_frontier_size → {self.min_frontier_size}")
+
+        if t == 8 and self.min_frontier_size > 1:
+            self.min_frontier_size = max(1, self.min_frontier_size - 1)
+            changed.append(f"min_frontier_size → {self.min_frontier_size}")
+
+        if t == 12 and self.max_goal_distance < self.max_goal_distance_cap:
+            self.max_goal_distance = self.max_goal_distance_cap
+            changed.append(f"max_goal_distance → {self.max_goal_distance:.1f} m (cap)")
+
+        if t == 15 and self.min_goal_distance > 0.15:
+            self.min_goal_distance = max(0.15, self.min_goal_distance * 0.5)
+            changed.append(f"min_goal_distance → {self.min_goal_distance:.2f} m")
+
+        if changed:
+            self.get_logger().info(
+                f"[auto-relax tick {t}] {', '.join(changed)}"
+            )
 
     def _tick(self) -> None:
         if self.latest_map is None:
@@ -133,6 +204,7 @@ class FrontierExplorer(Node):
 
         if target is None:
             self._no_frontier_ticks += 1
+            self._try_relax()
             if self._no_frontier_ticks >= self.no_frontier_done_ticks:
                 self.get_logger().info(
                     f"No frontiers for {self._no_frontier_ticks} ticks — exploration complete"
@@ -269,10 +341,13 @@ class FrontierExplorer(Node):
             return result
 
         # Expand search range once when nothing is reachable in normal range.
+        expanded = min(
+            self.max_goal_distance * self.max_range_expansion_factor,
+            self.max_goal_distance_cap,
+        )
         return self._score_frontiers(
             frontiers, data, width, height, res, ox, oy,
-            robot_x, robot_y, robot_yaw,
-            self.max_goal_distance * self.max_range_expansion_factor,
+            robot_x, robot_y, robot_yaw, expanded,
         )
 
     def _score_frontiers(

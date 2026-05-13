@@ -19,6 +19,8 @@ frontier_explorer:
     min_goal_distance: 0.35
     max_goal_distance: 5.5
     max_range_expansion_factor: 2.0
+    # Absolute ceiling on max_goal_distance (used by auto-calibration and relaxation)
+    max_goal_distance_cap: 12.0
 
     # Hardware safety: reject any frontier target within this distance of the map boundary.
     # This stops the worldToMap errors and prevents the robot driving into walls.
