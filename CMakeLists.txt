@@ -42,7 +42,14 @@ install(
   PROGRAMS
     Ros_lidar_bot/teleop_node.py
     Ros_lidar_bot/frontier_explorer_node.py
+    Ros_lidar_bot/safety_stop_node.py
   DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
+  DIRECTORY scripts
+  DESTINATION share/${PROJECT_NAME}
+  USE_SOURCE_PERMISSIONS
 )
 
 install(

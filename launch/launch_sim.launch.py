@@ -40,13 +40,16 @@ def generate_launch_description():
     )
 
     # ── Gazebo → ROS 2 bridge ─────────────────────────────────────────────────
+    # /cmd_vel_safe is the output of the safety_stop node.
+    # The bridge subscribes to /cmd_vel_safe so all velocity commands
+    # are filtered for obstacle proximity before reaching the robot.
     bridge = Node(
         package="ros_gz_bridge",
         executable="parameter_bridge",
         name="gz_bridge",
         arguments=[
             "/odom@nav_msgs/msg/Odometry[ignition.msgs.Odometry",
-            "/cmd_vel@geometry_msgs/msg/Twist]ignition.msgs.Twist",
+            "/cmd_vel_safe@geometry_msgs/msg/Twist]ignition.msgs.Twist",
             "/scan@sensor_msgs/msg/LaserScan[ignition.msgs.LaserScan",
             "/joint_states@sensor_msgs/msg/JointState[ignition.msgs.Model",
             "/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock",
@@ -56,6 +59,22 @@ def generate_launch_description():
         ],
         remappings=[("/odom", "/odom_raw")],
         output="screen",
+    )
+
+    # ── Scan-based hardware safety stop ──────────────────────────────────────
+    # Intercepts /cmd_vel from Nav2/teleop, checks the laser scan,
+    # and blocks forward/reverse motion when an obstacle is < min_safe_distance.
+    # Outputs safe commands on /cmd_vel_safe which the bridge forwards to Gazebo.
+    safety_stop = Node(
+        package=package_name,
+        executable="safety_stop_node.py",
+        name="safety_stop",
+        output="screen",
+        parameters=[{
+            "min_safe_distance": 0.25,    # stop if obstacle within 25 cm
+            "front_opening_deg": 120.0,   # forward safety arc (±60° from nose)
+            "rear_opening_deg": 60.0,     # rear safety arc (±30° from tail)
+        }],
     )
 
     # ── Spawn robot into Gazebo ───────────────────────────────────────────────
@@ -123,10 +142,11 @@ def generate_launch_description():
             default_value=os.path.join(pkg_share, "worlds", "testing.world"),
             description="Absolute path to Gazebo world SDF file",
         ),
-        # Stage 1 (T=0): Gazebo + robot description + bridge
+        # Stage 1 (T=0): Gazebo + robot description + bridge + safety node
         rsp,
         gz_sim,
         bridge,
+        safety_stop,
         # Stage 2 (T=3s): spawn robot once Gazebo is ready
         TimerAction(period=3.0, actions=[spawn_entity]),
         # Stage 3 (T=6s): start EKF + SLAM after robot is spawned and sensors publishing
