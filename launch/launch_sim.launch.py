@@ -40,16 +40,17 @@ def generate_launch_description():
     )
 
     # ── Gazebo → ROS 2 bridge ─────────────────────────────────────────────────
-    # /cmd_vel_safe is the output of the safety_stop node.
-    # The bridge subscribes to /cmd_vel_safe so all velocity commands
-    # are filtered for obstacle proximity before reaching the robot.
+    # The argument keeps /cmd_vel so the Gazebo DiffDrive plugin receives on
+    # its expected "cmd_vel" topic.  The Node-level remapping makes the bridge
+    # subscribe to /cmd_vel_safe (safety node output) on the ROS side, so every
+    # velocity command passes through the safety filter before reaching the robot.
     bridge = Node(
         package="ros_gz_bridge",
         executable="parameter_bridge",
         name="gz_bridge",
         arguments=[
             "/odom@nav_msgs/msg/Odometry[ignition.msgs.Odometry",
-            "/cmd_vel_safe@geometry_msgs/msg/Twist]ignition.msgs.Twist",
+            "/cmd_vel@geometry_msgs/msg/Twist]ignition.msgs.Twist",
             "/scan@sensor_msgs/msg/LaserScan[ignition.msgs.LaserScan",
             "/joint_states@sensor_msgs/msg/JointState[ignition.msgs.Model",
             "/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock",
@@ -57,7 +58,10 @@ def generate_launch_description():
             "/camera/image_raw@sensor_msgs/msg/Image[ignition.msgs.Image",
             "/camera/camera_info@sensor_msgs/msg/CameraInfo[ignition.msgs.CameraInfo",
         ],
-        remappings=[("/odom", "/odom_raw")],
+        remappings=[
+            ("/odom", "/odom_raw"),
+            ("/cmd_vel", "/cmd_vel_safe"),  # bridge reads from safety node output
+        ],
         output="screen",
     )
 
