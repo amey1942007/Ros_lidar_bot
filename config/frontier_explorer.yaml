@@ -39,4 +39,4 @@ frontier_explorer:
     improvement_margin: 0.20
 
     # Exploration completion
-    no_frontier_done_ticks: 10
+    no_frontier_done_ticks: 15

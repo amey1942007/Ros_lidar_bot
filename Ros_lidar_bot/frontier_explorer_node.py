@@ -292,7 +292,7 @@ class FrontierExplorer(Node):
         max_size = max(len(f) for f in frontiers)
         best_goal: Optional[Tuple[float, float]] = None
         best_score = -float("inf")
-        n_small = n_no_target = n_blacklist = n_dist = n_edge = n_unsafe = 0
+        n_small = n_no_target = n_blacklist = n_dist = n_edge = 0
 
         # Minimum cells from map boundary — prevents worldToMap failures and
         # wall collisions. Converts the wall_safe_distance param to grid cells.
@@ -333,11 +333,9 @@ class FrontierExplorer(Node):
                 cx, cy, data, width, height, res, ox, oy
             )
 
-            # Hard reject goals with very low openness — too close to obstacles.
-            # 0.25 means < 25 % of surrounding cells are free = probably in a wall corner.
-            if openness_term < 0.25:
-                n_unsafe += 1
-                continue
+            # openness_term is used only in scoring (not as a hard filter) so that
+            # tight-space frontiers (between shelf posts, near dividers) are still
+            # considered when no open-area frontiers remain — they just score lower.
 
             size_term = len(frontier) / float(max_size)
             distance_term = dist / max_dist
@@ -356,8 +354,7 @@ class FrontierExplorer(Node):
         self.get_logger().debug(
             f"score_frontiers(max_dist={max_dist:.1f}): total={len(frontiers)} "
             f"too_small={n_small} no_target={n_no_target} "
-            f"edge={n_edge} unsafe={n_unsafe} "
-            f"blacklisted={n_blacklist} dist_fail={n_dist} "
+            f"edge={n_edge} blacklisted={n_blacklist} dist_fail={n_dist} "
             f"result={'found' if best_goal else 'none'}"
         )
         return best_goal, best_score
