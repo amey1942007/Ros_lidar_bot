@@ -9,7 +9,7 @@
     Central corridor:        free passage along x-axis
 -->
 <sdf version="1.6">
-  <world name="office">
+  <world name="default">
 
     <!-- ── Required Ignition plugins ─────────────────────────────────── -->
     <plugin filename="libignition-gazebo-physics-system.so"

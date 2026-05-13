@@ -10,7 +10,7 @@
     Right zone (x > 2):   barrels, forklift, conveyor, pillars
 -->
 <sdf version="1.6">
-  <world name="warehouse">
+  <world name="default">
 
     <!-- ── Required Ignition plugins ─────────────────────────────────── -->
     <plugin filename="libignition-gazebo-physics-system.so"
