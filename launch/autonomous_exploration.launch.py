@@ -55,6 +55,6 @@ def generate_launch_description():
             description="World filename inside worlds/. Options: testing.world  warehouse.world  office.world",
         ),
         sim_and_nav,
-        # T=16s Nav2 starts (from launch_sim), T=30s explorer starts (14s for Nav2 to warm up).
-        TimerAction(period=30.0, actions=[frontier_explorer]),
+        # T=18s Nav2 starts (from launch_sim), T=32s explorer starts (14s for Nav2 to warm up).
+        TimerAction(period=32.0, actions=[frontier_explorer]),
     ])

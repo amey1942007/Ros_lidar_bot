@@ -158,10 +158,11 @@ def generate_launch_description():
         gz_sim,
         bridge,
         safety_stop,
-        # Stage 2 (T=3s): spawn robot once Gazebo is ready
-        TimerAction(period=3.0, actions=[spawn_entity]),
-        # Stage 3 (T=6s): start EKF + SLAM after robot is spawned and sensors publishing
-        TimerAction(period=6.0, actions=[ekf_node, slam_toolbox]),
-        # Stage 4 (T=16s): Nav2 after SLAM has had time to build initial map
-        TimerAction(period=16.0, actions=[nav2]),
+        # Stage 2 (T=5s): spawn robot — increased from 3s to give heavier worlds
+        #   (warehouse, office) time to fully load before the robot is inserted.
+        TimerAction(period=5.0, actions=[spawn_entity]),
+        # Stage 3 (T=8s): EKF + SLAM after robot is spawned and sensors publishing
+        TimerAction(period=8.0, actions=[ekf_node, slam_toolbox]),
+        # Stage 4 (T=18s): Nav2 after SLAM has had time to build initial map
+        TimerAction(period=18.0, actions=[nav2]),
     ])

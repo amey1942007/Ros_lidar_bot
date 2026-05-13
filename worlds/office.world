@@ -84,16 +84,16 @@
     <model name="wall_east">
       <static>true</static><pose>6.0 0 1.5 0 0 0</pose>
       <link name="link">
-        <collision name="col"><geometry><box><size>0.2 10.0 3.0</size></box></geometry></collision>
-        <visual name="vis"><geometry><box><size>0.2 10.0 3.0</size></box></geometry>
+        <collision name="col"><geometry><box><size>0.2 10.4 3.0</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>0.2 10.4 3.0</size></box></geometry>
           <material><ambient>0.92 0.90 0.88 1</ambient><diffuse>0.95 0.93 0.91 1</diffuse></material></visual>
       </link>
     </model>
     <model name="wall_west">
       <static>true</static><pose>-6.0 0 1.5 0 0 0</pose>
       <link name="link">
-        <collision name="col"><geometry><box><size>0.2 10.0 3.0</size></box></geometry></collision>
-        <visual name="vis"><geometry><box><size>0.2 10.0 3.0</size></box></geometry>
+        <collision name="col"><geometry><box><size>0.2 10.4 3.0</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>0.2 10.4 3.0</size></box></geometry>
           <material><ambient>0.92 0.90 0.88 1</ambient><diffuse>0.95 0.93 0.91 1</diffuse></material></visual>
       </link>
     </model>
@@ -192,6 +192,14 @@
       <link name="l"><collision name="c"><geometry><cylinder><radius>0.28</radius><length>0.04</length></cylinder></geometry></collision>
         <visual name="v"><geometry><cylinder><radius>0.28</radius><length>0.04</length></cylinder></geometry>
           <material><ambient>0.20 0.20 0.20 1</ambient><diffuse>0.30 0.30 0.30 1</diffuse></material></visual></link></model>
+    <model name="chair1_seat"><static>true</static><pose>-4.5 -2.9 0.47 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.46 0.46 0.06</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.46 0.46 0.06</size></box></geometry>
+          <material><ambient>0.10 0.10 0.50 1</ambient><diffuse>0.12 0.12 0.62 1</diffuse></material></visual></link></model>
+    <model name="chair1_back"><static>true</static><pose>-4.5 -3.13 0.76 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.46 0.06 0.52</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.46 0.06 0.52</size></box></geometry>
+          <material><ambient>0.10 0.10 0.50 1</ambient><diffuse>0.12 0.12 0.62 1</diffuse></material></visual></link></model>
     <model name="chair2_col"><static>true</static><pose>-4.5  0.6 0.22 0 0 0</pose>
       <link name="l"><collision name="c"><geometry><cylinder><radius>0.04</radius><length>0.44</length></cylinder></geometry></collision>
         <visual name="v"><geometry><cylinder><radius>0.04</radius><length>0.44</length></cylinder></geometry>
@@ -200,6 +208,14 @@
       <link name="l"><collision name="c"><geometry><cylinder><radius>0.28</radius><length>0.04</length></cylinder></geometry></collision>
         <visual name="v"><geometry><cylinder><radius>0.28</radius><length>0.04</length></cylinder></geometry>
           <material><ambient>0.20 0.20 0.20 1</ambient><diffuse>0.30 0.30 0.30 1</diffuse></material></visual></link></model>
+    <model name="chair2_seat"><static>true</static><pose>-4.5 0.6 0.47 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.46 0.46 0.06</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.46 0.46 0.06</size></box></geometry>
+          <material><ambient>0.10 0.10 0.50 1</ambient><diffuse>0.12 0.12 0.62 1</diffuse></material></visual></link></model>
+    <model name="chair2_back"><static>true</static><pose>-4.5 0.37 0.76 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.46 0.06 0.52</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.46 0.06 0.52</size></box></geometry>
+          <material><ambient>0.10 0.10 0.50 1</ambient><diffuse>0.12 0.12 0.62 1</diffuse></material></visual></link></model>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <!--  FILING CABINETS (0.5×0.6×1.2 m, centre z=0.6) → detected ✓  -->
@@ -249,6 +265,14 @@
       <link name="l"><collision name="c"><geometry><cylinder><radius>0.25</radius><length>0.04</length></cylinder></geometry></collision>
         <visual name="v"><geometry><cylinder><radius>0.25</radius><length>0.04</length></cylinder></geometry>
           <material><ambient>0.15 0.15 0.15 1</ambient><diffuse>0.25 0.25 0.25 1</diffuse></material></visual></link></model>
+    <model name="mtg_chair1_seat"><static>true</static><pose>4.5 4.5 0.47 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.46 0.46 0.06</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.46 0.46 0.06</size></box></geometry>
+          <material><ambient>0.50 0.10 0.10 1</ambient><diffuse>0.62 0.12 0.12 1</diffuse></material></visual></link></model>
+    <model name="mtg_chair1_back"><static>true</static><pose>4.5 4.73 0.76 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.46 0.06 0.52</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.46 0.06 0.52</size></box></geometry>
+          <material><ambient>0.50 0.10 0.10 1</ambient><diffuse>0.62 0.12 0.12 1</diffuse></material></visual></link></model>
     <model name="mtg_chair2_col"><static>true</static><pose>2.5 4.5 0.22 0 0 0</pose>
       <link name="l"><collision name="c"><geometry><cylinder><radius>0.04</radius><length>0.44</length></cylinder></geometry></collision>
         <visual name="v"><geometry><cylinder><radius>0.04</radius><length>0.44</length></cylinder></geometry>
@@ -257,6 +281,14 @@
       <link name="l"><collision name="c"><geometry><cylinder><radius>0.25</radius><length>0.04</length></cylinder></geometry></collision>
         <visual name="v"><geometry><cylinder><radius>0.25</radius><length>0.04</length></cylinder></geometry>
           <material><ambient>0.15 0.15 0.15 1</ambient><diffuse>0.25 0.25 0.25 1</diffuse></material></visual></link></model>
+    <model name="mtg_chair2_seat"><static>true</static><pose>2.5 4.5 0.47 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.46 0.46 0.06</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.46 0.46 0.06</size></box></geometry>
+          <material><ambient>0.50 0.10 0.10 1</ambient><diffuse>0.62 0.12 0.12 1</diffuse></material></visual></link></model>
+    <model name="mtg_chair2_back"><static>true</static><pose>2.5 4.73 0.76 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.46 0.06 0.52</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.46 0.06 0.52</size></box></geometry>
+          <material><ambient>0.50 0.10 0.10 1</ambient><diffuse>0.62 0.12 0.12 1</diffuse></material></visual></link></model>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <!--  INDIVIDUAL DESKS (open area, right side)                      -->
@@ -290,6 +322,14 @@
       <link name="l"><collision name="c"><geometry><cylinder><radius>0.26</radius><length>0.04</length></cylinder></geometry></collision>
         <visual name="v"><geometry><cylinder><radius>0.26</radius><length>0.04</length></cylinder></geometry>
           <material><ambient>0.15 0.15 0.15 1</ambient><diffuse>0.25 0.25 0.25 1</diffuse></material></visual></link></model>
+    <model name="odesk1_chair_seat"><static>true</static><pose>2.5 -1.2 0.47 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.46 0.46 0.06</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.46 0.46 0.06</size></box></geometry>
+          <material><ambient>0.10 0.40 0.10 1</ambient><diffuse>0.12 0.52 0.12 1</diffuse></material></visual></link></model>
+    <model name="odesk1_chair_back"><static>true</static><pose>2.5 -1.43 0.76 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.46 0.06 0.52</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.46 0.06 0.52</size></box></geometry>
+          <material><ambient>0.10 0.40 0.10 1</ambient><diffuse>0.12 0.52 0.12 1</diffuse></material></visual></link></model>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <!--  AMENITIES                                                      -->
