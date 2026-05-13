@@ -1,0 +1,328 @@
+<?xml version="1.0" ?>
+<!--
+  Warehouse world — 15 × 12 m industrial storage facility.
+  All obstacles have collision geometry that intersects z ≈ 0.20 m
+  (the LiDAR scan plane) so the robot can detect every object.
+
+  Layout (top view, x right, y up):
+    Left zone  (x < -1):  two pallet-rack rows with stacked boxes
+    Centre     (x -1..2):  clear main aisle
+    Right zone (x > 2):   barrels, forklift, conveyor, pillars
+-->
+<sdf version="1.6">
+  <world name="warehouse">
+
+    <!-- ── Required Ignition plugins ─────────────────────────────────── -->
+    <plugin filename="libignition-gazebo-physics-system.so"
+            name="ignition::gazebo::systems::Physics"/>
+    <plugin filename="libignition-gazebo-user-commands-system.so"
+            name="ignition::gazebo::systems::UserCommands"/>
+    <plugin filename="libignition-gazebo-scene-broadcaster-system.so"
+            name="ignition::gazebo::systems::SceneBroadcaster"/>
+    <plugin filename="libignition-gazebo-imu-system.so"
+            name="ignition::gazebo::systems::Imu"/>
+    <plugin filename="libignition-gazebo-sensors-system.so"
+            name="ignition::gazebo::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <physics name="default_physics" default="true" type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+      <gravity>0 0 -9.81</gravity>
+    </physics>
+
+    <!-- ── Lighting ───────────────────────────────────────────────────── -->
+    <light name="sun" type="directional">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 20 0 -0.5 0.7</pose>
+      <diffuse>0.95 0.95 0.90 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.5 0.2 -0.9</direction>
+    </light>
+    <light name="warehouse_fill" type="directional">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 8 0 0 0</pose>
+      <diffuse>0.5 0.5 0.55 1</diffuse>
+      <specular>0.05 0.05 0.05 1</specular>
+      <direction>0 0 -1</direction>
+    </light>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  FLOOR  (15 × 12 m concrete)                                   -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <model name="floor">
+      <static>true</static>
+      <pose>0 0 0 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>15 12 0.02</size></box></geometry></collision>
+        <visual name="vis">
+          <geometry><box><size>15 12 0.02</size></box></geometry>
+          <material><ambient>0.50 0.48 0.45 1</ambient><diffuse>0.60 0.58 0.55 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  WALLS  (height 5 m to match industrial warehouse)             -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <model name="wall_north">
+      <static>true</static><pose>0 6.0 2.5 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>15.4 0.2 5.0</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>15.4 0.2 5.0</size></box></geometry>
+          <material><ambient>0.75 0.72 0.68 1</ambient><diffuse>0.80 0.77 0.73 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <model name="wall_south">
+      <static>true</static><pose>0 -6.0 2.5 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>15.4 0.2 5.0</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>15.4 0.2 5.0</size></box></geometry>
+          <material><ambient>0.75 0.72 0.68 1</ambient><diffuse>0.80 0.77 0.73 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <model name="wall_east">
+      <static>true</static><pose>7.5 0 2.5 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>0.2 12.0 5.0</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>0.2 12.0 5.0</size></box></geometry>
+          <material><ambient>0.75 0.72 0.68 1</ambient><diffuse>0.80 0.77 0.73 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <model name="wall_west">
+      <static>true</static><pose>-7.5 0 2.5 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>0.2 12.0 5.0</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>0.2 12.0 5.0</size></box></geometry>
+          <material><ambient>0.75 0.72 0.68 1</ambient><diffuse>0.80 0.77 0.73 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  PALLET RACK ROW A  (x = -5.5, outer left wall side)          -->
+    <!--  5 uprights, 4 inter-post decks at 2 heights                  -->
+    <!--  Uprights 0.10×0.10×3.0 m — LiDAR detects lower 0.2 m        -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- Upright posts -->
+    <model name="rackA_post1"><static>true</static><pose>-5.5 -4.5 1.5 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.10 0.10 3.0</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.10 0.10 3.0</size></box></geometry>
+          <material><ambient>0.6 0.4 0.1 1</ambient><diffuse>0.7 0.5 0.1 1</diffuse></material></visual></link></model>
+    <model name="rackA_post2"><static>true</static><pose>-5.5 -2.0 1.5 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.10 0.10 3.0</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.10 0.10 3.0</size></box></geometry>
+          <material><ambient>0.6 0.4 0.1 1</ambient><diffuse>0.7 0.5 0.1 1</diffuse></material></visual></link></model>
+    <model name="rackA_post3"><static>true</static><pose>-5.5 0.5 1.5 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.10 0.10 3.0</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.10 0.10 3.0</size></box></geometry>
+          <material><ambient>0.6 0.4 0.1 1</ambient><diffuse>0.7 0.5 0.1 1</diffuse></material></visual></link></model>
+    <model name="rackA_post4"><static>true</static><pose>-5.5 3.0 1.5 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.10 0.10 3.0</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.10 0.10 3.0</size></box></geometry>
+          <material><ambient>0.6 0.4 0.1 1</ambient><diffuse>0.7 0.5 0.1 1</diffuse></material></visual></link></model>
+    <model name="rackA_post5"><static>true</static><pose>-5.5 5.5 1.5 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.10 0.10 3.0</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.10 0.10 3.0</size></box></geometry>
+          <material><ambient>0.6 0.4 0.1 1</ambient><diffuse>0.7 0.5 0.1 1</diffuse></material></visual></link></model>
+    <!-- Horizontal decks at 0.8 m and 1.8 m -->
+    <model name="rackA_deck1a"><static>true</static><pose>-5.5 -3.25 0.80 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.05 2.40 0.04</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.05 2.40 0.04</size></box></geometry>
+          <material><ambient>0.5 0.3 0.1 1</ambient><diffuse>0.6 0.4 0.1 1</diffuse></material></visual></link></model>
+    <model name="rackA_deck1b"><static>true</static><pose>-5.5 -3.25 1.80 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.05 2.40 0.04</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.05 2.40 0.04</size></box></geometry>
+          <material><ambient>0.5 0.3 0.1 1</ambient><diffuse>0.6 0.4 0.1 1</diffuse></material></visual></link></model>
+    <model name="rackA_deck2a"><static>true</static><pose>-5.5 1.75 0.80 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.05 2.40 0.04</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.05 2.40 0.04</size></box></geometry>
+          <material><ambient>0.5 0.3 0.1 1</ambient><diffuse>0.6 0.4 0.1 1</diffuse></material></visual></link></model>
+    <model name="rackA_deck2b"><static>true</static><pose>-5.5 1.75 1.80 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.05 2.40 0.04</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.05 2.40 0.04</size></box></geometry>
+          <material><ambient>0.5 0.3 0.1 1</ambient><diffuse>0.6 0.4 0.1 1</diffuse></material></visual></link></model>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  PALLET RACK ROW B  (x = -2.5, inner, creates a 3 m aisle)    -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <model name="rackB_post1"><static>true</static><pose>-2.5 -4.5 1.5 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.10 0.10 3.0</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.10 0.10 3.0</size></box></geometry>
+          <material><ambient>0.6 0.4 0.1 1</ambient><diffuse>0.7 0.5 0.1 1</diffuse></material></visual></link></model>
+    <model name="rackB_post2"><static>true</static><pose>-2.5 -2.0 1.5 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.10 0.10 3.0</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.10 0.10 3.0</size></box></geometry>
+          <material><ambient>0.6 0.4 0.1 1</ambient><diffuse>0.7 0.5 0.1 1</diffuse></material></visual></link></model>
+    <model name="rackB_post3"><static>true</static><pose>-2.5 0.5 1.5 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.10 0.10 3.0</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.10 0.10 3.0</size></box></geometry>
+          <material><ambient>0.6 0.4 0.1 1</ambient><diffuse>0.7 0.5 0.1 1</diffuse></material></visual></link></model>
+    <model name="rackB_post4"><static>true</static><pose>-2.5 3.0 1.5 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.10 0.10 3.0</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.10 0.10 3.0</size></box></geometry>
+          <material><ambient>0.6 0.4 0.1 1</ambient><diffuse>0.7 0.5 0.1 1</diffuse></material></visual></link></model>
+    <model name="rackB_post5"><static>true</static><pose>-2.5 5.5 1.5 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.10 0.10 3.0</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.10 0.10 3.0</size></box></geometry>
+          <material><ambient>0.6 0.4 0.1 1</ambient><diffuse>0.7 0.5 0.1 1</diffuse></material></visual></link></model>
+    <model name="rackB_deck1a"><static>true</static><pose>-2.5 -3.25 0.80 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.05 2.40 0.04</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.05 2.40 0.04</size></box></geometry>
+          <material><ambient>0.5 0.3 0.1 1</ambient><diffuse>0.6 0.4 0.1 1</diffuse></material></visual></link></model>
+    <model name="rackB_deck1b"><static>true</static><pose>-2.5 -3.25 1.80 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.05 2.40 0.04</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.05 2.40 0.04</size></box></geometry>
+          <material><ambient>0.5 0.3 0.1 1</ambient><diffuse>0.6 0.4 0.1 1</diffuse></material></visual></link></model>
+    <model name="rackB_deck2a"><static>true</static><pose>-2.5 1.75 0.80 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.05 2.40 0.04</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.05 2.40 0.04</size></box></geometry>
+          <material><ambient>0.5 0.3 0.1 1</ambient><diffuse>0.6 0.4 0.1 1</diffuse></material></visual></link></model>
+    <model name="rackB_deck2b"><static>true</static><pose>-2.5 1.75 1.80 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.05 2.40 0.04</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.05 2.40 0.04</size></box></geometry>
+          <material><ambient>0.5 0.3 0.1 1</ambient><diffuse>0.6 0.4 0.1 1</diffuse></material></visual></link></model>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  STACKED STORAGE BOXES (on the floor, 0.45×0.45×0.45 m each)  -->
+    <!--  Centre at z=0.225 → spans 0 to 0.45 m → LiDAR detects ✓     -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <model name="box1"><static>true</static><pose>-1.0 -4.5 0.225 0 0 0.3</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.45 0.45 0.45</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.45 0.45 0.45</size></box></geometry>
+          <material><ambient>0.70 0.62 0.42 1</ambient><diffuse>0.78 0.68 0.48 1</diffuse></material></visual></link></model>
+    <model name="box2"><static>true</static><pose>-1.0 -3.8 0.225 0 0 -0.2</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.45 0.45 0.45</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.45 0.45 0.45</size></box></geometry>
+          <material><ambient>0.65 0.58 0.38 1</ambient><diffuse>0.73 0.65 0.45 1</diffuse></material></visual></link></model>
+    <model name="box3"><static>true</static><pose>-1.0 -4.15 0.675 0 0 0.1</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.45 0.45 0.45</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.45 0.45 0.45</size></box></geometry>
+          <material><ambient>0.72 0.60 0.40 1</ambient><diffuse>0.80 0.67 0.47 1</diffuse></material></visual></link></model>
+    <model name="box4"><static>true</static><pose>-1.0 3.5 0.225 0 0 0.5</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.45 0.45 0.45</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.45 0.45 0.45</size></box></geometry>
+          <material><ambient>0.70 0.62 0.42 1</ambient><diffuse>0.78 0.68 0.48 1</diffuse></material></visual></link></model>
+    <model name="box5"><static>true</static><pose>-1.0 4.2 0.225 0 0 -0.3</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.45 0.45 0.45</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.45 0.45 0.45</size></box></geometry>
+          <material><ambient>0.65 0.58 0.38 1</ambient><diffuse>0.73 0.65 0.45 1</diffuse></material></visual></link></model>
+    <model name="box6"><static>true</static><pose>-1.0 3.85 0.675 0 0 0.2</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.45 0.45 0.45</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.45 0.45 0.45</size></box></geometry>
+          <material><ambient>0.72 0.60 0.40 1</ambient><diffuse>0.80 0.67 0.47 1</diffuse></material></visual></link></model>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  BARRELS  (cylinder r=0.28 m, h=1.0 m, centre z=0.5)          -->
+    <!--  Span 0 to 1.0 m → LiDAR at 0.2 m detects ✓                  -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <model name="barrel1"><static>true</static><pose>4.5 4.0 0.5 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><cylinder><radius>0.28</radius><length>1.0</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.28</radius><length>1.0</length></cylinder></geometry>
+          <material><ambient>0.20 0.25 0.55 1</ambient><diffuse>0.25 0.30 0.65 1</diffuse></material></visual></link></model>
+    <model name="barrel2"><static>true</static><pose>5.1 4.0 0.5 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><cylinder><radius>0.28</radius><length>1.0</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.28</radius><length>1.0</length></cylinder></geometry>
+          <material><ambient>0.20 0.25 0.55 1</ambient><diffuse>0.25 0.30 0.65 1</diffuse></material></visual></link></model>
+    <model name="barrel3"><static>true</static><pose>4.5 -4.0 0.5 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><cylinder><radius>0.28</radius><length>1.0</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.28</radius><length>1.0</length></cylinder></geometry>
+          <material><ambient>0.55 0.20 0.20 1</ambient><diffuse>0.65 0.25 0.25 1</diffuse></material></visual></link></model>
+    <model name="barrel4"><static>true</static><pose>5.1 -4.0 0.5 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><cylinder><radius>0.28</radius><length>1.0</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.28</radius><length>1.0</length></cylinder></geometry>
+          <material><ambient>0.55 0.20 0.20 1</ambient><diffuse>0.65 0.25 0.25 1</diffuse></material></visual></link></model>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  STRUCTURAL PILLARS (r=0.12 m, h=5 m)  definitely detected    -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <model name="pillar_north"><static>true</static><pose>0.0 4.5 2.5 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><cylinder><radius>0.12</radius><length>5.0</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.12</radius><length>5.0</length></cylinder></geometry>
+          <material><ambient>0.65 0.60 0.55 1</ambient><diffuse>0.70 0.65 0.60 1</diffuse></material></visual></link></model>
+    <model name="pillar_south"><static>true</static><pose>0.0 -4.5 2.5 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><cylinder><radius>0.12</radius><length>5.0</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.12</radius><length>5.0</length></cylinder></geometry>
+          <material><ambient>0.65 0.60 0.55 1</ambient><diffuse>0.70 0.65 0.60 1</diffuse></material></visual></link></model>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  FORKLIFT (simplified as two boxes: body + mast)               -->
+    <!--  Body 1.0×2.4×1.2 m, centre z=0.6 → 0 to 1.2 m → detected ✓ -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <model name="forklift_body"><static>true</static><pose>5.8 -5.0 0.6 0 0 0.5</pose>
+      <link name="l"><collision name="c"><geometry><box><size>1.0 2.4 1.2</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>1.0 2.4 1.2</size></box></geometry>
+          <material><ambient>0.85 0.65 0.05 1</ambient><diffuse>0.95 0.75 0.08 1</diffuse></material></visual></link></model>
+    <model name="forklift_mast"><static>true</static><pose>5.5 -4.2 1.5 0 0 0.5</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.12 0.12 3.0</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.12 0.12 3.0</size></box></geometry>
+          <material><ambient>0.60 0.45 0.05 1</ambient><diffuse>0.70 0.55 0.08 1</diffuse></material></visual></link></model>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  CONVEYOR BELT (3 legs + belt surface)                         -->
+    <!--  Legs 0.08×0.08×0.8 m → 0 to 0.8 m → LiDAR detects ✓        -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <model name="conv_leg1"><static>true</static><pose>3.0 -1.5 0.4 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.08 0.08 0.80</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.08 0.08 0.80</size></box></geometry>
+          <material><ambient>0.4 0.4 0.4 1</ambient><diffuse>0.5 0.5 0.5 1</diffuse></material></visual></link></model>
+    <model name="conv_leg2"><static>true</static><pose>3.0  0.0 0.4 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.08 0.08 0.80</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.08 0.08 0.80</size></box></geometry>
+          <material><ambient>0.4 0.4 0.4 1</ambient><diffuse>0.5 0.5 0.5 1</diffuse></material></visual></link></model>
+    <model name="conv_leg3"><static>true</static><pose>3.0  1.5 0.4 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.08 0.08 0.80</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.08 0.08 0.80</size></box></geometry>
+          <material><ambient>0.4 0.4 0.4 1</ambient><diffuse>0.5 0.5 0.5 1</diffuse></material></visual></link></model>
+    <model name="conv_belt"><static>true</static><pose>3.0 0.0 0.83 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.08 3.2 0.06</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.08 3.2 0.06</size></box></geometry>
+          <material><ambient>0.2 0.2 0.2 1</ambient><diffuse>0.3 0.3 0.3 1</diffuse></material></visual></link></model>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  SAFETY BOLLARDS (r=0.08 m, h=1.0 m) at aisle entrances       -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <model name="bollard1"><static>true</static><pose>-1.2  5.5 0.5 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><cylinder><radius>0.08</radius><length>1.0</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.08</radius><length>1.0</length></cylinder></geometry>
+          <material><ambient>0.9 0.5 0.0 1</ambient><diffuse>1.0 0.6 0.0 1</diffuse></material></visual></link></model>
+    <model name="bollard2"><static>true</static><pose>-1.2 -5.5 0.5 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><cylinder><radius>0.08</radius><length>1.0</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.08</radius><length>1.0</length></cylinder></geometry>
+          <material><ambient>0.9 0.5 0.0 1</ambient><diffuse>1.0 0.6 0.0 1</diffuse></material></visual></link></model>
+    <model name="bollard3"><static>true</static><pose>-4.0  5.5 0.5 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><cylinder><radius>0.08</radius><length>1.0</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.08</radius><length>1.0</length></cylinder></geometry>
+          <material><ambient>0.9 0.5 0.0 1</ambient><diffuse>1.0 0.6 0.0 1</diffuse></material></visual></link></model>
+    <model name="bollard4"><static>true</static><pose>-4.0 -5.5 0.5 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><cylinder><radius>0.08</radius><length>1.0</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.08</radius><length>1.0</length></cylinder></geometry>
+          <material><ambient>0.9 0.5 0.0 1</ambient><diffuse>1.0 0.6 0.0 1</diffuse></material></visual></link></model>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  FLOOR WAYPOINT MARKERS (navigation reference discs)           -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <model name="wp_A"><static>true</static><pose>-4.0 0.0 0.015 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><cylinder><radius>0.15</radius><length>0.03</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.15</radius><length>0.03</length></cylinder></geometry>
+          <material><ambient>0 0.8 0 1</ambient><diffuse>0 1.0 0 1</diffuse></material></visual></link></model>
+    <model name="wp_B"><static>true</static><pose>2.0 0.0 0.015 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><cylinder><radius>0.15</radius><length>0.03</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.15</radius><length>0.03</length></cylinder></geometry>
+          <material><ambient>0 0 0.9 1</ambient><diffuse>0 0 1.0 1</diffuse></material></visual></link></model>
+    <model name="wp_C"><static>true</static><pose>2.0 4.0 0.015 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><cylinder><radius>0.15</radius><length>0.03</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.15</radius><length>0.03</length></cylinder></geometry>
+          <material><ambient>0.9 0.8 0 1</ambient><diffuse>1.0 0.9 0 1</diffuse></material></visual></link></model>
+    <model name="wp_D"><static>true</static><pose>2.0 -4.0 0.015 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><cylinder><radius>0.15</radius><length>0.03</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.15</radius><length>0.03</length></cylinder></geometry>
+          <material><ambient>0.85 0 0 1</ambient><diffuse>1.0 0 0 1</diffuse></material></visual></link></model>
+
+  </world>
+</sdf>

@@ -10,14 +10,20 @@ from launch.actions import (
     TimerAction,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
     package_name = "Ros_lidar_bot"
     pkg_share = get_package_share_directory(package_name)
+
+    # Accepts just the filename, e.g.:  world:=warehouse.world
     world = LaunchConfiguration("world")
+    world_path = PathJoinSubstitution([
+        FindPackageShare(package_name), "worlds", world
+    ])
 
     # ── Robot State Publisher ─────────────────────────────────────────────────
     rsp = IncludeLaunchDescription(
@@ -36,7 +42,7 @@ def generate_launch_description():
                 "gz_sim.launch.py",
             )
         ),
-        launch_arguments={"gz_args": ["-r ", world]}.items(),
+        launch_arguments={"gz_args": ["-r ", world_path]}.items(),
     )
 
     # ── Gazebo → ROS 2 bridge ─────────────────────────────────────────────────
@@ -143,8 +149,9 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             "world",
-            default_value=os.path.join(pkg_share, "worlds", "testing.world"),
-            description="Absolute path to Gazebo world SDF file",
+            default_value="testing.world",
+            description="World filename inside the worlds/ directory. "
+                        "Options: testing.world  warehouse.world  office.world",
         ),
         # Stage 1 (T=0): Gazebo + robot description + bridge + safety node
         rsp,

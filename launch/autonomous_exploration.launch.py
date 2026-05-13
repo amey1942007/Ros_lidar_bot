@@ -7,7 +7,8 @@ then, once Nav2 is operational, launches the frontier explorer node.
 
 Usage:
   ros2 launch Ros_lidar_bot autonomous_exploration.launch.py
-  ros2 launch Ros_lidar_bot autonomous_exploration.launch.py world:=/path/to/world.sdf
+  ros2 launch Ros_lidar_bot autonomous_exploration.launch.py world:=warehouse.world
+  ros2 launch Ros_lidar_bot autonomous_exploration.launch.py world:=office.world
 """
 
 import os
@@ -50,8 +51,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             "world",
-            default_value=os.path.join(pkg_share, "worlds", "testing.world"),
-            description="Absolute path to Gazebo world SDF file",
+            default_value="testing.world",
+            description="World filename inside worlds/. Options: testing.world  warehouse.world  office.world",
         ),
         sim_and_nav,
         # T=16s Nav2 starts (from launch_sim), T=30s explorer starts (14s for Nav2 to warm up).
