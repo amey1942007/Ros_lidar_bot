@@ -173,8 +173,8 @@ local_costmap:
           obstacle_min_range: 0.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 2.0   # slower cost dropoff = robot stays further from obstacles
-        inflation_radius: 0.55     # robot half-width 0.18m + 0.37m safety margin
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.40     # reduced — safety_stop_node handles 0.25m hardware protection
       always_send_full_costmap: true
 
 global_costmap:
@@ -209,8 +209,8 @@ global_costmap:
           obstacle_min_range: 0.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 2.0   # same slow dropoff as local — consistent avoidance
-        inflation_radius: 0.65     # larger in global map = planner routes away from walls early
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.50     # global planner keeps paths 0.50m from obstacles
       always_send_full_costmap: true
 
 lifecycle_manager_navigation:

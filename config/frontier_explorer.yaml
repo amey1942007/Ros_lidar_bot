@@ -27,9 +27,11 @@ frontier_explorer:
     # Must be >= nav2's inflation_radius (0.55 m set below).
     wall_safe_distance: 0.6
 
-    # Blacklist
-    goal_blacklist_radius: 0.50
-    blacklist_timeout_sec: 90.0
+    # Blacklist — larger radius so one failure excludes the whole inaccessible zone.
+    # On hardware the robot will never navigate INTO obstacles; it just stops trying
+    # that area and maps it from the nearest reachable vantage point instead.
+    goal_blacklist_radius: 0.80
+    blacklist_timeout_sec: 180.0
 
     # Scoring weights
     size_weight: 1.8
