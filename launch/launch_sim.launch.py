@@ -7,6 +7,7 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    SetEnvironmentVariable,
     TimerAction,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -147,6 +148,13 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        # Force Mesa software rendering so the GPU lidar sensor works on every
+        # machine regardless of GPU drivers (Intel iGPU, hybrid Nvidia/Intel,
+        # machines without proper ogre2 support, etc.).
+        # Performance impact is negligible for robot navigation simulation.
+        SetEnvironmentVariable("LIBGL_ALWAYS_SOFTWARE", "1"),
+        SetEnvironmentVariable("MESA_GL_VERSION_OVERRIDE", "3.3"),
+
         DeclareLaunchArgument(
             "world",
             default_value="testing.world",
