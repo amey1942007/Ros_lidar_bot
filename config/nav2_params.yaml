@@ -71,7 +71,7 @@ controller_server:
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
       required_movement_radius: 0.15   # must move 15 cm within allowance window
-      movement_time_allowance: 25.0    # seconds before triggering recovery
+      movement_time_allowance: 12.0    # seconds before triggering recovery (faster = less time frozen when stuck)
 
     goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
@@ -137,8 +137,8 @@ behavior_server:
       rotational_acc_lim: 3.2
     backup:
       plugin: "nav2_behaviors/BackUp"
-      speed: -0.10      # reverse slowly (negative = backward)
-      time_allowance: 4.0
+      speed: -0.15      # reverse speed (negative = backward)
+      time_allowance: 6.0   # 0.15 × 6 = 0.9 m max backup — enough to clear furniture zones
     wait:
       plugin: "nav2_behaviors/Wait"
 
@@ -167,14 +167,15 @@ local_costmap:
           clearing: true
           marking: true
           data_type: "LaserScan"
-          raytrace_max_range: 6.0
+          raytrace_max_range: 5.5
           raytrace_min_range: 0.0
-          obstacle_max_range: 5.5
-          obstacle_min_range: 0.0
+          obstacle_max_range: 4.5    # reduced — only mark obstacles the robot is actually close to
+          obstacle_min_range: 0.10   # ignore scan hits right at robot's feet (carpet/floor noise)
+          observation_persistence: 0.3   # stale obstacle marks expire after 0.3 s — reduces ghost obstacles
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.40     # reduced — safety_stop_node handles 0.25m hardware protection
+        inflation_radius: 0.40
       always_send_full_costmap: true
 
 global_costmap:
@@ -203,14 +204,15 @@ global_costmap:
           clearing: true
           marking: true
           data_type: "LaserScan"
-          raytrace_max_range: 6.0
+          raytrace_max_range: 5.5
           raytrace_min_range: 0.0
-          obstacle_max_range: 5.5
-          obstacle_min_range: 0.0
+          obstacle_max_range: 4.5
+          obstacle_min_range: 0.10
+          observation_persistence: 0.3
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.50     # global planner keeps paths 0.50m from obstacles
+        inflation_radius: 0.50
       always_send_full_costmap: true
 
 lifecycle_manager_navigation:

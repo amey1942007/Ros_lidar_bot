@@ -11,7 +11,7 @@ frontier_explorer:
     goal_reached_radius: 0.45
 
     # Progress monitoring — must be > nav2's movement_time_allowance (25 s)
-    progress_timeout_sec: 35.0
+    progress_timeout_sec: 25.0    # must be > nav2's movement_time_allowance (12 s)
     min_progress_delta: 0.12
 
     # Frontier filtering
@@ -22,10 +22,11 @@ frontier_explorer:
     # Absolute ceiling on max_goal_distance (used by auto-calibration and relaxation)
     max_goal_distance_cap: 12.0
 
-    # Hardware safety: reject any frontier target within this distance of the map boundary.
-    # This stops the worldToMap errors and prevents the robot driving into walls.
-    # Must be >= nav2's inflation_radius (0.55 m set below).
-    wall_safe_distance: 0.6
+    # Reject frontier targets this close to the map boundary edge (prevents worldToMap errors).
+    # 0.15 m = 3 cells — just enough to keep goals off the literal boundary.
+    # Keeping this small is critical: in a 10×10 m room the walls ARE at the map boundary,
+    # so a large value (old: 0.6 m) filters every wall-adjacent frontier and exploration stops.
+    wall_safe_distance: 0.15
 
     # Blacklist — larger radius so one failure excludes the whole inaccessible zone.
     # On hardware the robot will never navigate INTO obstacles; it just stops trying
