@@ -29,10 +29,10 @@ frontier_explorer:
     wall_safe_distance: 0.15
 
     # Blacklist — larger radius so one failure excludes the whole inaccessible zone.
-    # On hardware the robot will never navigate INTO obstacles; it just stops trying
-    # that area and maps it from the nearest reachable vantage point instead.
     goal_blacklist_radius: 0.80
-    blacklist_timeout_sec: 180.0
+    # 300 s (5 min) timeout so a failed area stays excluded even after long manual
+    # navigation detours. auto-calibrate also scales done_ticks with room size.
+    blacklist_timeout_sec: 300.0
 
     # Scoring weights
     size_weight: 1.8
@@ -44,4 +44,6 @@ frontier_explorer:
     improvement_margin: 0.20
 
     # Exploration completion
-    no_frontier_done_ticks: 15
+    # Baseline ticks — auto-calibrate scales this up with room size
+    # (2 ticks/metre of larger dimension: 10 m room → 20, 15 m warehouse → 30)
+    no_frontier_done_ticks: 20
