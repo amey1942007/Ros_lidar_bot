@@ -18,7 +18,8 @@ echo "Ubuntu 22.04 confirmed."
 sudo apt update
 sudo apt install -y \
   curl gnupg2 lsb-release software-properties-common \
-  build-essential git python3-pip python3-setuptools python3-wheel
+  build-essential git \
+  python3 python3-pip python3-setuptools python3-wheel
 
 # ── 2. ROS2 Humble ───────────────────────────────────────────────────────────
 if ! dpkg -s ros-humble-ros-base &>/dev/null; then
