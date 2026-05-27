@@ -1,0 +1,5 @@
+# Python dependencies for Ros_lidar_bot
+# Install with: pip3 install -r requirements.txt
+# (install_deps.sh does this automatically)
+
+numpy>=1.21.0
