@@ -77,7 +77,10 @@ sudo apt install -y ros-humble-slam-toolbox
 # ── 7. EKF (robot_localization) ───────────────────────────────────────────────
 sudo apt install -y ros-humble-robot-localization
 
-# ── 8. Robot description tools ───────────────────────────────────────────────
+# ── 8. Teleop ─────────────────────────────────────────────────────────────────
+sudo apt install -y ros-humble-teleop-twist-keyboard
+
+# ── 9. Robot description tools ───────────────────────────────────────────────
 sudo apt install -y \
   ros-humble-xacro \
   ros-humble-joint-state-publisher \
