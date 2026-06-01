@@ -180,7 +180,7 @@ def generate_launch_description():
             output="screen",
             parameters=[{
                 "model_path": os.path.join(pkg_share, "Vision Model", "best.pt"),
-                "detect_hz":  3.0,
+                "detect_hz":  1.0,
                 "conf":       0.25,
             }],
         )]),

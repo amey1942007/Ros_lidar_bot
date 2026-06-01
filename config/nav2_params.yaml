@@ -81,7 +81,7 @@ controller_server:
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.22
+      desired_linear_vel: 0.35
       min_approach_linear_velocity: 0.05
       max_angular_accel: 2.5
       max_robot_pose_search_dist: 10.0
@@ -97,7 +97,7 @@ controller_server:
       # This is critical for exploration where goals are often in new directions.
       use_rotate_to_heading: true
       rotate_to_heading_min_angle: 0.40   # ~23 deg — rotate if error exceeds this
-      rotate_to_heading_angular_vel: 0.8  # rad/s in-place rotation speed
+      rotate_to_heading_angular_vel: 1.5  # rad/s — faster turns
 
       transform_tolerance: 0.3
 
