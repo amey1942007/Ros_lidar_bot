@@ -1,23 +1,11 @@
 <?xml version="1.0" ?>
 <!--
   Residential room — 14 × 11 m
-  Uses real Gazebo Fuel mesh models (already cached in ~/.ignition/fuel/).
-  Gazebo reads from local cache — no network download at launch.
+  Mesh models stored locally in meshes/room/ — no Fuel downloads, no network.
+  Real OBJ/DAE files with textures for much better YOLO detection than geometry.
 
-  Fuel models (cached):  Sofa, Chair x2, Table, Bed, Desk, Bookshelf, Refrigerator
-  Local geometry:        TV, Fan, Person, Cardboard boxes  (no matching Fuel model)
-
-  Layout (robot spawns at 0,0):
-   y=5.5 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-         │  Bookshelf(5.5,4)  TV(-5,4)   Fan(-0.8,4.5)  │
-         │  Desk(-5.5,1.5)    Sofa(-3,2)                 │
-         │                                               │
-         │          ← Robot at (0,0) →                   │
-         │                                               │
-         │  Bed(-4.5,-3)        Table(4,-2) Chairs       │
-         │        Person(1.5,-3.5)   Fridge(6,-1)        │
-         │                        Boxes(5.5,-4)           │
-   y=-5.5━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Mesh objects:  sofa, bed, chair x2, desk, refrigerator  (real 3D models)
+  Geometry only: TV, fan, person, boxes  (no suitable local model)
 -->
 <sdf version="1.6">
   <world name="default">
@@ -96,77 +84,115 @@
       </link>
     </model>
 
-    <!-- ══ FUEL MESH MODELS (read from local cache) ══════════════════════════
-         Cache: ~/.ignition/fuel/fuel.gazebosim.org/openrobotics/models/
-         ════════════════════════════════════════════════════════════════════ -->
+    <!-- ══ SOFA — real OBJ mesh with texture ─────────────────────────────── -->
+    <model name="sofa"><static>true</static><pose>-3.2 1.8 0 0 0 1.5708</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>1.90 0.88 0.90</size></box></geometry></collision>
+        <visual name="vis">
+          <geometry>
+            <mesh>
+              <uri>file:///home/amey/Desktop/ros2_ws/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/room/sofa/Sofa.obj</uri>
+            </mesh>
+          </geometry>
+        </visual>
+      </link>
+    </model>
 
-    <!-- Sofa — class: sofa -->
-    <include>
-      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Sofa</uri>
-      <name>sofa</name>
-      <pose>-3.2 1.8 0 0 0 0</pose>
-      <static>true</static>
-    </include>
+    <!-- ══ BED — real DAE mesh ───────────────────────────────────────────── -->
+    <model name="bed"><static>true</static><pose>-4.5 -3.0 0 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>1.55 2.35 0.60</size></box></geometry></collision>
+        <visual name="vis">
+          <geometry>
+            <mesh>
+              <uri>file:///home/amey/Desktop/ros2_ws/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/room/bed/bed.dae</uri>
+            </mesh>
+          </geometry>
+        </visual>
+      </link>
+    </model>
 
-    <!-- Desk — class: desk -->
-    <include>
-      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Desk</uri>
-      <name>desk</name>
-      <pose>-5.5 1.5 0 0 0 1.5708</pose>
-      <static>true</static>
-    </include>
+    <!-- ══ DESK — real OBJ mesh ──────────────────────────────────────────── -->
+    <model name="desk"><static>true</static><pose>-5.5 1.5 0 0 0 1.5708</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>1.40 0.70 0.75</size></box></geometry></collision>
+        <visual name="vis">
+          <geometry>
+            <mesh>
+              <uri>file:///home/amey/Desktop/ros2_ws/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/room/desk/desk.obj</uri>
+            </mesh>
+          </geometry>
+        </visual>
+      </link>
+    </model>
 
-    <!-- Dining Table — class: meeting_table -->
-    <include>
-      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Table</uri>
-      <name>dining_table</name>
-      <pose>4.0 -2.0 0 0 0 0</pose>
-      <static>true</static>
-    </include>
+    <!-- ══ CHAIR north of table — scale 0.00817 (OBJ is in mm) ─────────── -->
+    <model name="chair_north"><static>true</static><pose>4.0 -0.8 0 0 0 3.1416</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>0.55 0.55 1.0</size></box></geometry></collision>
+        <visual name="vis">
+          <geometry>
+            <mesh>
+              <uri>file:///home/amey/Desktop/ros2_ws/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/room/chair/Chair.obj</uri>
+              <scale>0.00817 0.00817 0.00817</scale>
+            </mesh>
+          </geometry>
+        </visual>
+      </link>
+    </model>
 
-    <!-- Chair north of table — class: chair / dining_chair -->
-    <include>
-      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Chair</uri>
-      <name>chair_north</name>
-      <pose>4.0 -0.8 0 0 0 3.1416</pose>
-      <static>true</static>
-    </include>
+    <!-- ══ CHAIR south of table ──────────────────────────────────────────── -->
+    <model name="chair_south"><static>true</static><pose>4.0 -3.2 0 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>0.55 0.55 1.0</size></box></geometry></collision>
+        <visual name="vis">
+          <geometry>
+            <mesh>
+              <uri>file:///home/amey/Desktop/ros2_ws/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/room/chair/Chair.obj</uri>
+              <scale>0.00817 0.00817 0.00817</scale>
+            </mesh>
+          </geometry>
+        </visual>
+      </link>
+    </model>
 
-    <!-- Chair south of table — class: chair / dining_chair -->
-    <include>
-      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Chair</uri>
-      <name>chair_south</name>
-      <pose>4.0 -3.2 0 0 0 0</pose>
-      <static>true</static>
-    </include>
+    <!-- ══ REFRIGERATOR — real DAE mesh ──────────────────────────────────── -->
+    <model name="fridge"><static>true</static><pose>6.2 -1.0 0 0 0 3.1416</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>0.73 0.72 1.74</size></box></geometry></collision>
+        <visual name="vis">
+          <geometry>
+            <mesh>
+              <uri>file:///home/amey/Desktop/ros2_ws/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/room/refrigerator/fridge.dae</uri>
+            </mesh>
+          </geometry>
+        </visual>
+      </link>
+    </model>
 
-    <!-- Bed — class: bed -->
-    <include>
-      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Bed</uri>
-      <name>bed</name>
-      <pose>-4.5 -3.0 0 0 0 1.5708</pose>
-      <static>true</static>
-    </include>
+    <!-- ══ DINING TABLE — geometry (no local mesh) ───────────────────────── -->
+    <model name="dtable_top"><static>true</static><pose>4.0 -2.0 0.76 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>1.40 0.80 0.05</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>1.40 0.80 0.05</size></box></geometry>
+          <material><ambient>0.22 0.14 0.07 1</ambient><diffuse>0.30 0.20 0.10 1</diffuse></material></visual></link></model>
+    <model name="dtable_legFL"><static>true</static><pose>4.63 -1.63 0.38 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.06 0.06 0.76</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.06 0.06 0.76</size></box></geometry>
+          <material><ambient>0.18 0.12 0.06 1</ambient><diffuse>0.25 0.16 0.08 1</diffuse></material></visual></link></model>
+    <model name="dtable_legFR"><static>true</static><pose>3.37 -1.63 0.38 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.06 0.06 0.76</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.06 0.06 0.76</size></box></geometry>
+          <material><ambient>0.18 0.12 0.06 1</ambient><diffuse>0.25 0.16 0.08 1</diffuse></material></visual></link></model>
+    <model name="dtable_legBL"><static>true</static><pose>4.63 -2.37 0.38 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.06 0.06 0.76</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.06 0.06 0.76</size></box></geometry>
+          <material><ambient>0.18 0.12 0.06 1</ambient><diffuse>0.25 0.16 0.08 1</diffuse></material></visual></link></model>
+    <model name="dtable_legBR"><static>true</static><pose>3.37 -2.37 0.38 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.06 0.06 0.76</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.06 0.06 0.76</size></box></geometry>
+          <material><ambient>0.18 0.12 0.06 1</ambient><diffuse>0.25 0.16 0.08 1</diffuse></material></visual></link></model>
 
-    <!-- Bookshelf — class: bookshelf -->
-    <include>
-      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Bookshelf</uri>
-      <name>bookshelf</name>
-      <pose>5.5 4.2 0 0 0 3.1416</pose>
-      <static>true</static>
-    </include>
-
-    <!-- Refrigerator — class: refrigerator -->
-    <include>
-      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Refrigerator</uri>
-      <name>fridge</name>
-      <pose>6.2 -1.0 0 0 0 3.1416</pose>
-      <static>true</static>
-    </include>
-
-    <!-- ══ LOCAL GEOMETRY — no Fuel model available ═══════════════════════ -->
-
-    <!-- TV + STAND — class: tv ─────────────────────────────────────────── -->
+    <!-- ══ TV + STAND ─────────────────────────────────────────────────────── -->
     <model name="tv_stand"><static>true</static><pose>-5.0 3.90 0.30 0 0 0</pose>
       <link name="l"><collision name="c"><geometry><box><size>0.65 0.38 0.60</size></box></geometry></collision>
         <visual name="v"><geometry><box><size>0.65 0.38 0.60</size></box></geometry>
@@ -180,7 +206,7 @@
         <visual name="v"><geometry><box><size>1.08 0.02 0.58</size></box></geometry>
           <material><ambient>0.08 0.12 0.28 1</ambient><diffuse>0.10 0.16 0.35 1</diffuse></material></visual></link></model>
 
-    <!-- STANDING FAN — class: lamp ────────────────────────────────────── -->
+    <!-- ══ FAN ────────────────────────────────────────────────────────────── -->
     <model name="fan_base"><static>true</static><pose>-0.8 4.5 0.03 0 0 0</pose>
       <link name="l"><collision name="c"><geometry><cylinder><radius>0.20</radius><length>0.06</length></cylinder></geometry></collision>
         <visual name="v"><geometry><cylinder><radius>0.20</radius><length>0.06</length></cylinder></geometry>
@@ -194,7 +220,7 @@
         <visual name="v"><geometry><cylinder><radius>0.24</radius><length>0.10</length></cylinder></geometry>
           <material><ambient>0.20 0.20 0.20 1</ambient><diffuse>0.28 0.28 0.28 1</diffuse></material></visual></link></model>
 
-    <!-- PERSON (static) — class: person ───────────────────────────────── -->
+    <!-- ══ PERSON ─────────────────────────────────────────────────────────── -->
     <model name="person_body"><static>true</static><pose>1.5 -3.5 0.72 0 0 0</pose>
       <link name="l"><collision name="c"><geometry><cylinder><radius>0.20</radius><length>1.44</length></cylinder></geometry></collision>
         <visual name="v"><geometry><cylinder><radius>0.20</radius><length>1.44</length></cylinder></geometry>
@@ -204,7 +230,7 @@
         <visual name="v"><geometry><sphere><radius>0.13</radius></sphere></geometry>
           <material><ambient>0.75 0.55 0.38 1</ambient><diffuse>0.85 0.65 0.46 1</diffuse></material></visual></link></model>
 
-    <!-- CARDBOARD BOXES — class: cardboard_box ────────────────────────── -->
+    <!-- ══ BOXES ──────────────────────────────────────────────────────────── -->
     <model name="box_lower"><static>true</static><pose>5.5 -4.0 0.27 0 0 0.3</pose>
       <link name="l"><collision name="c"><geometry><box><size>0.55 0.45 0.54</size></box></geometry></collision>
         <visual name="v"><geometry><box><size>0.55 0.45 0.54</size></box></geometry>
@@ -214,7 +240,7 @@
         <visual name="v"><geometry><box><size>0.44 0.36 0.42</size></box></geometry>
           <material><ambient>0.70 0.56 0.32 1</ambient><diffuse>0.78 0.64 0.40 1</diffuse></material></visual></link></model>
 
-    <!-- ══ WAYPOINTS ════════════════════════════════════════════════════════ -->
+    <!-- ══ WAYPOINTS ─────────────────────────────────────────────────────── -->
     <model name="wp_A"><static>true</static><pose>-2.0 -1.0 0.015 0 0 0</pose>
       <link name="l"><collision name="c"><geometry><cylinder><radius>0.15</radius><length>0.03</length></cylinder></geometry></collision>
         <visual name="v"><geometry><cylinder><radius>0.15</radius><length>0.03</length></cylinder></geometry>
