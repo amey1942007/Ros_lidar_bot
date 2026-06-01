@@ -173,4 +173,16 @@ def generate_launch_description():
         TimerAction(period=8.0, actions=[ekf_node, slam_toolbox]),
         # Stage 4 (T=18s): Nav2 after SLAM has had time to build initial map
         TimerAction(period=18.0, actions=[nav2]),
+        # Stage 5 (T=25s): Semantic SLAM after TF tree and camera are stable
+        TimerAction(period=25.0, actions=[Node(
+            package=package_name,
+            executable="semantic_slam_node.py",
+            name="semantic_slam",
+            output="screen",
+            parameters=[{
+                "model_path": os.path.join(pkg_share, "Vision Model", "best.pt"),
+                "detect_hz":  3.0,
+                "conf":       0.45,
+            }],
+        )]),
     ])
