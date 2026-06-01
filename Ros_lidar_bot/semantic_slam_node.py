@@ -161,7 +161,19 @@ class SemanticSLAM(Node):
     # ── Main detection tick ───────────────────────────────────────────────────
 
     def _detect(self) -> None:
-        if self.model is None or self.latest_image is None or self.latest_scan is None:
+        if self.latest_image is None:
+            return
+
+        # Always publish the raw camera feed so the user can verify the camera
+        # works even before the model finishes loading.
+        if self.model is None or self.latest_scan is None:
+            self._publish_debug(self.latest_image.copy())
+            if self.model is None:
+                self.get_logger().warn(
+                    "YOLO model not loaded — check ultralytics is installed: "
+                    "pip3 install ultralytics --user",
+                    throttle_duration_sec=10.0,
+                )
             return
 
         # Get robot pose BEFORE running YOLO (saves time, robot barely moves in 0.3 s)
