@@ -81,21 +81,21 @@ controller_server:
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.35
+      desired_linear_vel: 0.45
       min_approach_linear_velocity: 0.05
       max_angular_accel: 2.5
       max_robot_pose_search_dist: 10.0
 
       # Lookahead
-      lookahead_dist: 0.4
-      min_lookahead_dist: 0.20
-      max_lookahead_dist: 0.70
+      lookahead_dist: 0.6
+      min_lookahead_dist: 0.30
+      max_lookahead_dist: 1.0
       lookahead_time: 1.5
       use_velocity_scaled_lookahead_dist: false
 
       # Rotate-to-heading: spin in place before moving when angle error is large.
       # This is critical for exploration where goals are often in new directions.
-      use_rotate_to_heading: true
+      use_rotate_to_heading: false
       rotate_to_heading_min_angle: 0.40   # ~23 deg — rotate if error exceeds this
       rotate_to_heading_angular_vel: 1.5  # rad/s — faster turns
 

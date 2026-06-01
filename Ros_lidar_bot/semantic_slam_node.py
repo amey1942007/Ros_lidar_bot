@@ -85,9 +85,11 @@ class SemanticSLAM(Node):
         super().__init__("semantic_slam")
 
         # ── Parameters ───────────────────────────────────────────────────────
-        self.declare_parameter("model_path", "")
-        self.declare_parameter("detect_hz",   self.DETECT_HZ)
-        self.declare_parameter("conf",        self.CONF_THRESHOLD)
+        self.declare_parameter("model_path",       "")
+        self.declare_parameter("detect_hz",        self.DETECT_HZ)
+        self.declare_parameter("conf",             self.CONF_THRESHOLD)
+        self.declare_parameter("startup_delay_sec", 60.0)   # wait for SLAM to settle
+        self.declare_parameter("max_depth",         4.0)    # reject far-wall hits
 
         model_path = self.get_parameter("model_path").value
         if not model_path:
@@ -96,8 +98,11 @@ class SemanticSLAM(Node):
             pkg = get_package_share_directory("Ros_lidar_bot")
             model_path = os.path.join(pkg, "Vision Model", "best.pt")
 
-        detect_hz       = float(self.get_parameter("detect_hz").value)
-        self.CONF_THRESHOLD = float(self.get_parameter("conf").value)
+        detect_hz            = float(self.get_parameter("detect_hz").value)
+        self.CONF_THRESHOLD  = float(self.get_parameter("conf").value)
+        self._startup_delay  = float(self.get_parameter("startup_delay_sec").value)
+        self.MAX_DEPTH       = float(self.get_parameter("max_depth").value)
+        self._node_start     = None   # set on first tick, used for startup delay
 
         # ── Load YOLO model ───────────────────────────────────────────────────
         self.get_logger().info(f"Loading YOLO model from: {model_path}")
@@ -162,6 +167,19 @@ class SemanticSLAM(Node):
 
     def _detect(self) -> None:
         if self.latest_image is None:
+            return
+
+        # ── Startup delay: wait until SLAM is stable before recording positions ─
+        now = self.get_clock().now()
+        if self._node_start is None:
+            self._node_start = now
+        elapsed = (now - self._node_start).nanoseconds / 1e9
+        if elapsed < self._startup_delay:
+            frame = self.latest_image.copy()
+            remaining = int(self._startup_delay - elapsed)
+            cv2.putText(frame, f"Map settling — detection starts in {remaining}s",
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
+            self._publish_debug(frame)
             return
 
         # Always publish the raw camera feed so the user can verify the camera

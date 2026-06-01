@@ -179,9 +179,11 @@ def generate_launch_description():
             name="semantic_slam",
             output="screen",
             parameters=[{
-                "model_path": os.path.join(pkg_share, "Vision Model", "best.pt"),
-                "detect_hz":  1.0,
-                "conf":       0.25,
+                "model_path":        os.path.join(pkg_share, "Vision Model", "best.pt"),
+                "detect_hz":         1.0,
+                "conf":              0.25,
+                "startup_delay_sec": 60.0,   # no detections until SLAM settled
+                "max_depth":         4.0,    # reject LiDAR > 4 m (far-wall hits)
             }],
         )]),
     ])
