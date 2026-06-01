@@ -138,6 +138,9 @@ class SemanticSLAM(Node):
 
         # ── Publishers ────────────────────────────────────────────────────────
         self.marker_pub = self.create_publisher(MarkerArray, "/semantic_markers", 10)
+        # Debug image: annotated frame with bounding boxes — view in rqt_image_view
+        # or RViz2 → Add → By Topic → /semantic_debug → Image
+        self.debug_pub  = self.create_publisher(Image, "/semantic_debug", 1)
 
         # ── Detection timer ───────────────────────────────────────────────────
         self.create_timer(1.0 / detect_hz, self._detect)
@@ -179,7 +182,11 @@ class SemanticSLAM(Node):
             self.get_logger().warn(f"YOLO inference failed: {e}", throttle_duration_sec=5.0)
             return
 
+        # ── Draw debug frame (always, even if no detections) ─────────────────
+        debug_frame = self.latest_image.copy()
+
         if not results or results[0].boxes is None:
+            self._publish_debug(debug_frame)
             return
 
         scan = self.latest_scan
@@ -223,6 +230,19 @@ class SemanticSLAM(Node):
             self._update_objects(label, obj_x_map, obj_y_map,
                                  phys_width, phys_depth, conf)
 
+            # Draw bounding box on debug frame
+            colour_rgb = self.class_names.get(cls_id, "")
+            c = _class_colour(label)
+            bgr = (int(c.b * 255), int(c.g * 255), int(c.r * 255))
+            cv2.rectangle(debug_frame, (int(x1), int(y1)), (int(x2), int(y2)), bgr, 2)
+            cv2.putText(
+                debug_frame,
+                f"{label} {conf:.0%}  {depth:.1f}m",
+                (int(x1), max(int(y1) - 8, 12)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, bgr, 2,
+            )
+
+        self._publish_debug(debug_frame)
         self._publish_markers()
         self._save_map()
 
@@ -382,6 +402,21 @@ class SemanticSLAM(Node):
             pass
         except Exception as e:
             self.get_logger().warn(f"Could not load saved map: {e}")
+
+
+    def _publish_debug(self, frame: np.ndarray) -> None:
+        """Publish annotated camera frame to /semantic_debug.
+
+        View with:  ros2 run rqt_image_view rqt_image_view  → select /semantic_debug
+        Or in RViz2: Add → By Topic → /semantic_debug → Image
+        """
+        try:
+            msg = self.bridge.cv2_to_imgmsg(frame, "bgr8")
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = "camera_link_optical"
+            self.debug_pub.publish(msg)
+        except Exception:
+            pass
 
 
 def main(args=None) -> None:

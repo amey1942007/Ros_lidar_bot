@@ -1,0 +1,300 @@
+<?xml version="1.0" ?>
+<!--
+  Residential room — 14 × 11 m
+  Objects for semantic SLAM testing: TV+stand, sofa, coffee table, bed,
+  dining table, standing fan, person (static cylinder), stacked boxes.
+
+  Layout (top view, x right / y up, robot spawns at 0,0):
+
+   y=5.5 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+         │                                                  │
+         │  TV+Stand(-5,4)           Fan(-0.5,4.5)         │
+         │                                                  │
+         │  Sofa(-4.5,1.8)    CoffeeTable(-2.5,2)          │
+         │                                                  │
+         │            ← Robot at (0,0) →                    │
+         │                                                  │
+         │  Bed(-4.5,-3)          DiningTable(4,-2)         │
+         │          Person(1.5,-3.5)     Boxes(5,-3)        │
+         │                                                  │
+   y=-5.5━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   x=-7                                                  x=7
+
+  All objects are ≥ 2 m from every corner.
+  Minimum clear corridor width ≥ 2 m everywhere.
+  Every object has collision geometry at z ≈ 0.20 m (LiDAR scan plane).
+-->
+<sdf version="1.6">
+  <world name="default">
+
+    <plugin filename="libignition-gazebo-physics-system.so"
+            name="ignition::gazebo::systems::Physics"/>
+    <plugin filename="libignition-gazebo-user-commands-system.so"
+            name="ignition::gazebo::systems::UserCommands"/>
+    <plugin filename="libignition-gazebo-scene-broadcaster-system.so"
+            name="ignition::gazebo::systems::SceneBroadcaster"/>
+    <plugin filename="libignition-gazebo-imu-system.so"
+            name="ignition::gazebo::systems::Imu"/>
+    <plugin filename="libignition-gazebo-sensors-system.so"
+            name="ignition::gazebo::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <physics name="default_physics" default="true" type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+      <gravity>0 0 -9.81</gravity>
+    </physics>
+
+    <light name="sun" type="directional">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 15 0 -0.4 0.6</pose>
+      <diffuse>1.0 1.0 0.95 1</diffuse>
+      <specular>0.3 0.3 0.3 1</specular>
+      <direction>-0.4 0.2 -0.9</direction>
+    </light>
+    <light name="fill" type="directional">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 8 0 0 0</pose>
+      <diffuse>0.55 0.55 0.60 1</diffuse>
+      <specular>0.05 0.05 0.05 1</specular>
+      <direction>0 0 -1</direction>
+    </light>
+
+    <!-- ══ FLOOR ═══════════════════════════════════════════════════════════ -->
+    <model name="floor"><static>true</static><pose>0 0 0 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>14 11 0.02</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>14 11 0.02</size></box></geometry>
+          <material><ambient>0.88 0.85 0.80 1</ambient><diffuse>0.92 0.89 0.84 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- ══ WALLS ════════════════════════════════════════════════════════════ -->
+    <model name="wall_north"><static>true</static><pose>0 5.5 1.5 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>14.4 0.2 3.0</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>14.4 0.2 3.0</size></box></geometry>
+          <material><ambient>0.92 0.90 0.88 1</ambient><diffuse>0.96 0.94 0.92 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="wall_south"><static>true</static><pose>0 -5.5 1.5 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>14.4 0.2 3.0</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>14.4 0.2 3.0</size></box></geometry>
+          <material><ambient>0.92 0.90 0.88 1</ambient><diffuse>0.96 0.94 0.92 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="wall_east"><static>true</static><pose>7.0 0 1.5 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>0.2 11.4 3.0</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>0.2 11.4 3.0</size></box></geometry>
+          <material><ambient>0.92 0.90 0.88 1</ambient><diffuse>0.96 0.94 0.92 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="wall_west"><static>true</static><pose>-7.0 0 1.5 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>0.2 11.4 3.0</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>0.2 11.4 3.0</size></box></geometry>
+          <material><ambient>0.92 0.90 0.88 1</ambient><diffuse>0.96 0.94 0.92 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- ══ TV STAND ═════════════════════════════════════════════════════════
+         Stand: 0.70×0.42×0.55m  centre z=0.275 → spans 0 to 0.55m ✓ LiDAR
+         Screen: 1.05×0.07×0.58m centre z=0.84m  ── ══════════════════════ -->
+    <model name="tv_stand"><static>true</static><pose>-5.0 4.0 0.275 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>0.70 0.42 0.55</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>0.70 0.42 0.55</size></box></geometry>
+          <material><ambient>0.20 0.18 0.15 1</ambient><diffuse>0.28 0.24 0.20 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="tv_screen"><static>true</static><pose>-5.0 3.79 0.84 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>1.05 0.07 0.58</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>1.05 0.07 0.58</size></box></geometry>
+          <material><ambient>0.06 0.08 0.12 1</ambient><diffuse>0.08 0.12 0.18 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- ══ STANDING FAN ══════════════════════════════════════════════════════
+         Base r=0.20m h=0.06m — Pole r=0.035m h=1.1m → at 0.2m ✓ LiDAR ════ -->
+    <model name="fan_base"><static>true</static><pose>-0.5 4.5 0.03 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><cylinder><radius>0.20</radius><length>0.06</length></cylinder></geometry></collision>
+        <visual name="vis"><geometry><cylinder><radius>0.20</radius><length>0.06</length></cylinder></geometry>
+          <material><ambient>0.30 0.30 0.30 1</ambient><diffuse>0.40 0.40 0.40 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="fan_pole"><static>true</static><pose>-0.5 4.5 0.62 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><cylinder><radius>0.035</radius><length>1.10</length></cylinder></geometry></collision>
+        <visual name="vis"><geometry><cylinder><radius>0.035</radius><length>1.10</length></cylinder></geometry>
+          <material><ambient>0.35 0.35 0.35 1</ambient><diffuse>0.45 0.45 0.45 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="fan_head"><static>true</static><pose>-0.5 4.5 1.20 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><cylinder><radius>0.22</radius><length>0.08</length></cylinder></geometry></collision>
+        <visual name="vis"><geometry><cylinder><radius>0.22</radius><length>0.08</length></cylinder></geometry>
+          <material><ambient>0.30 0.30 0.30 1</ambient><diffuse>0.40 0.40 0.40 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- ══ SOFA ══════════════════════════════════════════════════════════════
+         Seat: 1.80×0.85×0.46m centre z=0.23 → spans 0 to 0.46m ✓ LiDAR ════ -->
+    <model name="sofa_seat"><static>true</static><pose>-4.5 1.8 0.23 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>1.80 0.85 0.46</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>1.80 0.85 0.46</size></box></geometry>
+          <material><ambient>0.45 0.25 0.15 1</ambient><diffuse>0.55 0.32 0.18 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="sofa_back"><static>true</static><pose>-4.5 1.38 0.70 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>1.80 0.22 0.50</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>1.80 0.22 0.50</size></box></geometry>
+          <material><ambient>0.45 0.25 0.15 1</ambient><diffuse>0.55 0.32 0.18 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="sofa_arm_l"><static>true</static><pose>-5.34 1.8 0.46 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>0.18 0.85 0.20</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>0.18 0.85 0.20</size></box></geometry>
+          <material><ambient>0.45 0.25 0.15 1</ambient><diffuse>0.55 0.32 0.18 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="sofa_arm_r"><static>true</static><pose>-3.66 1.8 0.46 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>0.18 0.85 0.20</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>0.18 0.85 0.20</size></box></geometry>
+          <material><ambient>0.45 0.25 0.15 1</ambient><diffuse>0.55 0.32 0.18 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- ══ COFFEE TABLE ══════════════════════════════════════════════════════
+         4 legs 0.05×0.05×0.40m → 0 to 0.40m ✓ LiDAR ════════════════════ -->
+    <model name="ctable_top"><static>true</static><pose>-2.5 2.0 0.42 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>0.90 0.55 0.04</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>0.90 0.55 0.04</size></box></geometry>
+          <material><ambient>0.50 0.35 0.18 1</ambient><diffuse>0.60 0.42 0.22 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="ctable_legFL"><static>true</static><pose>-2.10 2.24 0.20 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.05 0.05 0.40</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.05 0.05 0.40</size></box></geometry>
+          <material><ambient>0.35 0.22 0.10 1</ambient><diffuse>0.42 0.28 0.14 1</diffuse></material></visual></link></model>
+    <model name="ctable_legFR"><static>true</static><pose>-2.90 2.24 0.20 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.05 0.05 0.40</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.05 0.05 0.40</size></box></geometry>
+          <material><ambient>0.35 0.22 0.10 1</ambient><diffuse>0.42 0.28 0.14 1</diffuse></material></visual></link></model>
+    <model name="ctable_legBL"><static>true</static><pose>-2.10 1.76 0.20 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.05 0.05 0.40</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.05 0.05 0.40</size></box></geometry>
+          <material><ambient>0.35 0.22 0.10 1</ambient><diffuse>0.42 0.28 0.14 1</diffuse></material></visual></link></model>
+    <model name="ctable_legBR"><static>true</static><pose>-2.90 1.76 0.20 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.05 0.05 0.40</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.05 0.05 0.40</size></box></geometry>
+          <material><ambient>0.35 0.22 0.10 1</ambient><diffuse>0.42 0.28 0.14 1</diffuse></material></visual></link></model>
+
+    <!-- ══ BED ════════════════════════════════════════════════════════════════
+         Frame: 1.40×2.10×0.35m spans 0 to 0.35m ✓ LiDAR (wide target)
+         Headboard: 1.40×0.12×0.70m at z=0.52 → 0.17 to 0.87m ✓ ═══════════ -->
+    <model name="bed_frame"><static>true</static><pose>-4.5 -3.0 0.175 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>1.40 2.10 0.35</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>1.40 2.10 0.35</size></box></geometry>
+          <material><ambient>0.45 0.30 0.18 1</ambient><diffuse>0.55 0.38 0.22 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="bed_mattress"><static>true</static><pose>-4.5 -3.0 0.48 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>1.35 2.00 0.22</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>1.35 2.00 0.22</size></box></geometry>
+          <material><ambient>0.90 0.90 0.92 1</ambient><diffuse>0.94 0.94 0.96 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="bed_headboard"><static>true</static><pose>-4.5 -2.00 0.52 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>1.40 0.12 0.70</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>1.40 0.12 0.70</size></box></geometry>
+          <material><ambient>0.45 0.30 0.18 1</ambient><diffuse>0.55 0.38 0.22 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- ══ PERSON (static) ═══════════════════════════════════════════════════
+         Cylinder r=0.25m h=1.70m spans 0 to 1.70m ✓ LiDAR ═════════════════ -->
+    <model name="person"><static>true</static><pose>1.5 -3.5 0.85 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><cylinder><radius>0.25</radius><length>1.70</length></cylinder></geometry></collision>
+        <visual name="vis"><geometry><cylinder><radius>0.25</radius><length>1.70</length></cylinder></geometry>
+          <material><ambient>0.80 0.65 0.50 1</ambient><diffuse>0.88 0.72 0.56 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- ══ DINING TABLE ═══════════════════════════════════════════════════════
+         4 legs 0.05×0.05×0.73m → 0 to 0.73m ✓ LiDAR ═══════════════════════ -->
+    <model name="dtable_top"><static>true</static><pose>4.0 -2.0 0.755 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>1.40 0.80 0.04</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>1.40 0.80 0.04</size></box></geometry>
+          <material><ambient>0.55 0.38 0.20 1</ambient><diffuse>0.65 0.46 0.24 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="dtable_legFL"><static>true</static><pose>4.64 -1.63 0.365 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.05 0.05 0.73</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.05 0.05 0.73</size></box></geometry>
+          <material><ambient>0.40 0.28 0.15 1</ambient><diffuse>0.50 0.34 0.18 1</diffuse></material></visual></link></model>
+    <model name="dtable_legFR"><static>true</static><pose>3.36 -1.63 0.365 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.05 0.05 0.73</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.05 0.05 0.73</size></box></geometry>
+          <material><ambient>0.40 0.28 0.15 1</ambient><diffuse>0.50 0.34 0.18 1</diffuse></material></visual></link></model>
+    <model name="dtable_legBL"><static>true</static><pose>4.64 -2.37 0.365 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.05 0.05 0.73</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.05 0.05 0.73</size></box></geometry>
+          <material><ambient>0.40 0.28 0.15 1</ambient><diffuse>0.50 0.34 0.18 1</diffuse></material></visual></link></model>
+    <model name="dtable_legBR"><static>true</static><pose>3.36 -2.37 0.365 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><box><size>0.05 0.05 0.73</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.05 0.05 0.73</size></box></geometry>
+          <material><ambient>0.40 0.28 0.15 1</ambient><diffuse>0.50 0.34 0.18 1</diffuse></material></visual></link></model>
+
+    <!-- ══ STACKED BOXES ══════════════════════════════════════════════════════
+         Box 1: 0.50×0.42×0.50m spans 0 to 0.50m ✓  Box 2 on top ═══════════ -->
+    <model name="box1"><static>true</static><pose>5.0 -3.0 0.25 0 0 0.2</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>0.50 0.42 0.50</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>0.50 0.42 0.50</size></box></geometry>
+          <material><ambient>0.70 0.62 0.42 1</ambient><diffuse>0.78 0.68 0.48 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="box2"><static>true</static><pose>5.0 -3.0 0.66 0 0 -0.15</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>0.42 0.36 0.42</size></box></geometry></collision>
+        <visual name="vis"><geometry><box><size>0.42 0.36 0.42</size></box></geometry>
+          <material><ambient>0.65 0.58 0.38 1</ambient><diffuse>0.72 0.65 0.44 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- ══ FLOOR WAYPOINTS (navigation reference discs) ═════════════════════ -->
+    <model name="wp_A"><static>true</static><pose>-3.0 -1.0 0.015 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><cylinder><radius>0.15</radius><length>0.03</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.15</radius><length>0.03</length></cylinder></geometry>
+          <material><ambient>0 0.8 0 1</ambient><diffuse>0 1.0 0 1</diffuse></material></visual></link></model>
+    <model name="wp_B"><static>true</static><pose>3.0 1.0 0.015 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><cylinder><radius>0.15</radius><length>0.03</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.15</radius><length>0.03</length></cylinder></geometry>
+          <material><ambient>0 0 0.9 1</ambient><diffuse>0 0 1.0 1</diffuse></material></visual></link></model>
+    <model name="wp_C"><static>true</static><pose>3.0 -4.0 0.015 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><cylinder><radius>0.15</radius><length>0.03</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.15</radius><length>0.03</length></cylinder></geometry>
+          <material><ambient>0.9 0.8 0 1</ambient><diffuse>1.0 0.9 0 1</diffuse></material></visual></link></model>
+    <model name="wp_D"><static>true</static><pose>-3.0 4.0 0.015 0 0 0</pose>
+      <link name="l"><collision name="c"><geometry><cylinder><radius>0.15</radius><length>0.03</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.15</radius><length>0.03</length></cylinder></geometry>
+          <material><ambient>0.85 0 0 1</ambient><diffuse>1.0 0 0 1</diffuse></material></visual></link></model>
+
+  </world>
+</sdf>
