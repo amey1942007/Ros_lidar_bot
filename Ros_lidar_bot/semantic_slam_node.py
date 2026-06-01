@@ -74,7 +74,7 @@ class SemanticSLAM(Node):
 
     # ── Hyperparameters ───────────────────────────────────────────────────────
     DETECT_HZ        = 3.0    # how often to run YOLO (Hz)
-    CONF_THRESHOLD   = 0.45   # minimum YOLO confidence to accept
+    CONF_THRESHOLD   = 0.25   # minimum YOLO confidence (lower for simulation)
     MERGE_RADIUS     = 0.60   # merge detections within this distance (m)
     MIN_SIGHTINGS    = 3      # don't publish until seen this many times
     MIN_DEPTH        = 0.35   # ignore LiDAR readings closer than this (m)
@@ -167,13 +167,20 @@ class SemanticSLAM(Node):
         # Always publish the raw camera feed so the user can verify the camera
         # works even before the model finishes loading.
         if self.model is None or self.latest_scan is None:
-            self._publish_debug(self.latest_image.copy())
+            # Annotate the raw frame with status text so the issue is visible
+            frame = self.latest_image.copy()
             if self.model is None:
+                msg = "YOLO not loaded — pip3 install ultralytics"
+                self.get_logger().warn(msg, throttle_duration_sec=10.0)
+            else:
+                msg = "Waiting for /scan data..."
                 self.get_logger().warn(
-                    "YOLO model not loaded — check ultralytics is installed: "
-                    "pip3 install ultralytics --user",
+                    "No LiDAR scan received yet — check /scan topic",
                     throttle_duration_sec=10.0,
                 )
+            cv2.putText(frame, msg, (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+            self._publish_debug(frame)
             return
 
         # Get robot pose BEFORE running YOLO (saves time, robot barely moves in 0.3 s)

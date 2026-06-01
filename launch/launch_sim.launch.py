@@ -148,12 +148,11 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        # Force Mesa software rendering so the GPU lidar sensor works on every
-        # machine regardless of GPU drivers (Intel iGPU, hybrid Nvidia/Intel,
-        # machines without proper ogre2 support, etc.).
-        # Performance impact is negligible for robot navigation simulation.
-        SetEnvironmentVariable("LIBGL_ALWAYS_SOFTWARE", "1"),
-        SetEnvironmentVariable("MESA_GL_VERSION_OVERRIDE", "3.3"),
+        # NOTE: LIBGL_ALWAYS_SOFTWARE removed — uses ~2 GB extra RAM (OOM risk).
+        # Machines that need software rendering (no GPU / hybrid iGPU) can set:
+        #   export LIBGL_ALWAYS_SOFTWARE=1
+        #   export MESA_GL_VERSION_OVERRIDE=3.3
+        # before launching, or use: bash scripts/launch_compat.sh
 
         DeclareLaunchArgument(
             "world",
@@ -182,7 +181,7 @@ def generate_launch_description():
             parameters=[{
                 "model_path": os.path.join(pkg_share, "Vision Model", "best.pt"),
                 "detect_hz":  3.0,
-                "conf":       0.45,
+                "conf":       0.25,
             }],
         )]),
     ])
