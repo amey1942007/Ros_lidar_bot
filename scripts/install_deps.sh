@@ -80,6 +80,12 @@ sudo apt install -y ros-humble-robot-localization
 # ── 8. Teleop ─────────────────────────────────────────────────────────────────
 sudo apt install -y ros-humble-teleop-twist-keyboard
 
+# ── Semantic SLAM (cv_bridge + visualization) ─────────────────────────────────
+sudo apt install -y \
+  ros-humble-cv-bridge \
+  ros-humble-vision-msgs \
+  python3-opencv
+
 # ── 9. Robot description tools ───────────────────────────────────────────────
 sudo apt install -y \
   ros-humble-xacro \

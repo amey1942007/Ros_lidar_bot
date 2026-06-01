@@ -3,3 +3,5 @@
 # (install_deps.sh does this automatically)
 
 numpy>=1.21.0
+ultralytics>=8.0.0
+opencv-python>=4.5.0

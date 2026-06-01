@@ -43,7 +43,14 @@ install(
     Ros_lidar_bot/teleop_node.py
     Ros_lidar_bot/frontier_explorer_node.py
     Ros_lidar_bot/safety_stop_node.py
+    Ros_lidar_bot/semantic_slam_node.py
   DESTINATION lib/${PROJECT_NAME}
+)
+
+# Install the YOLO model so it's accessible via get_package_share_directory
+install(
+  DIRECTORY "Vision Model"
+  DESTINATION share/${PROJECT_NAME}
 )
 
 install(
