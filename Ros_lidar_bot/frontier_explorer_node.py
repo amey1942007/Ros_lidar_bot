@@ -84,6 +84,14 @@ class FrontierExplorer(Node):
         self.active_goal_xy: Optional[Tuple[float, float]] = None
         self.active_goal_score = -float("inf")
         self.failed_goals: Dict[Tuple[float, float], rclpy.time.Time] = {}
+        # Track how many times each area has been blacklisted.
+        # On repeat failures the blacklist radius doubles — prevents the robot
+        # from endlessly returning to a genuinely unreachable zone.
+        self._blacklist_hits: Dict[Tuple[float, float], int] = {}
+        # Position of the last cancelled goal — used to enforce a minimum
+        # distance for the next queued frontier so the robot can't immediately
+        # pick something that's just outside the blacklist radius.
+        self._last_cancel_xy: Optional[Tuple[float, float]] = None
         self.last_goal_end_time = self.get_clock().now()
         self.last_distance_remaining: Optional[float] = None
         self.last_progress_time = self.get_clock().now()
@@ -231,7 +239,7 @@ class FrontierExplorer(Node):
                             f"switching to queued frontier {nxt_xy}"
                         )
                         if self.active_goal_xy is not None:
-                            self.failed_goals[self.active_goal_xy] = self.get_clock().now()
+                            self._blacklist_goal(self.active_goal_xy)
                         self.goal_handle.cancel_goal_async()
                         self.goal_in_progress = False
                         self._safety_blocked_since = None
@@ -244,7 +252,7 @@ class FrontierExplorer(Node):
             if elapsed > Duration(seconds=self.goal_timeout_sec):
                 self.get_logger().warn("Goal timeout, cancelling")
                 if self.active_goal_xy is not None:
-                    self.failed_goals[self.active_goal_xy] = self.get_clock().now()
+                    self._blacklist_goal(self.active_goal_xy)
                 self.goal_handle.cancel_goal_async()
                 self.goal_in_progress = False
             elif (self.get_clock().now() - self.last_progress_time) > Duration(
@@ -252,7 +260,7 @@ class FrontierExplorer(Node):
             ):
                 self.get_logger().warn("No progress — blacklisting, trying next queued frontier")
                 if self.active_goal_xy is not None:
-                    self.failed_goals[self.active_goal_xy] = self.get_clock().now()
+                    self._blacklist_goal(self.active_goal_xy)
                 self.goal_handle.cancel_goal_async()
                 self.goal_in_progress = False
                 # Immediately try next queued frontier instead of waiting for next tick
@@ -367,6 +375,11 @@ class FrontierExplorer(Node):
                 self._frontier_queue.clear()
                 return None, -float("inf")
 
+        # Minimum distance from the last cancellation point (fix 3).
+        # Prevents immediately picking a frontier that's just outside the
+        # blacklist radius of where the robot just got stuck.
+        _MIN_FROM_CANCEL = self.goal_blacklist_radius * 2.0
+
         while self._frontier_queue:
             xy, _ = self._frontier_queue.pop(0)
             # Re-validate and re-score from current robot position
@@ -377,6 +390,14 @@ class FrontierExplorer(Node):
             dist = math.hypot(xy[0] - robot_x, xy[1] - robot_y)
             if dist < self.min_goal_distance or dist > self.max_goal_distance_cap:
                 continue
+            # Minimum distance from last stuck point
+            if self._last_cancel_xy is not None:
+                dist_from_cancel = math.hypot(
+                    xy[0] - self._last_cancel_xy[0],
+                    xy[1] - self._last_cancel_xy[1],
+                )
+                if dist_from_cancel < _MIN_FROM_CANCEL:
+                    continue
             # Re-score so the decision is fresh
             score = -dist / self.max_goal_distance
             return xy, score
@@ -446,10 +467,11 @@ class FrontierExplorer(Node):
             self.get_logger().info("Frontier goal reached")
             self.active_goal_xy = None
             self.active_goal_score = -float("inf")
+            self._last_cancel_xy = None   # success — lift the min-distance restriction
         else:
             self.get_logger().warn(f"Goal ended with status {status}")
             if self.active_goal_xy is not None:
-                self.failed_goals[self.active_goal_xy] = self.get_clock().now()
+                self._blacklist_goal(self.active_goal_xy)
                 self.active_goal_xy = None
             self.active_goal_score = -float("inf")
         self.goal_in_progress = False
@@ -737,19 +759,71 @@ class FrontierExplorer(Node):
     def _normalize_angle(angle: float) -> float:
         return (angle + math.pi) % (2.0 * math.pi) - math.pi
 
+    def _blacklist_goal(self, xy: Tuple[float, float]) -> None:
+        """Write xy to the blacklist and track how many times this area has failed.
+
+        On the first failure the standard radius applies.
+        On every subsequent failure within merge_r the effective blacklist radius
+        doubles — the robot learns that this zone is genuinely unreachable and
+        gives it an increasingly wide berth.
+        Also records _last_cancel_xy so _pop_queued_frontier can enforce the
+        minimum-distance rule on the next queued candidate.
+        """
+        merge_r2 = (self.goal_blacklist_radius * 1.5) ** 2
+
+        # Find closest existing blacklist entry (might be the same area)
+        closest_key = None
+        closest_d2  = float("inf")
+        for bk in self.failed_goals:
+            d2 = (xy[0] - bk[0]) ** 2 + (xy[1] - bk[1]) ** 2
+            if d2 < closest_d2:
+                closest_d2, closest_key = d2, bk
+
+        if closest_key is not None and closest_d2 <= merge_r2:
+            # Same area — increment hit counter on the existing key
+            hits = self._blacklist_hits.get(closest_key, 1) + 1
+            self._blacklist_hits[closest_key] = hits
+            self.failed_goals[closest_key] = self.get_clock().now()
+            if hits > 1:
+                self.get_logger().warn(
+                    f"Area {closest_key} blacklisted {hits}× — "
+                    f"effective radius now {self.goal_blacklist_radius * 2.0:.2f} m"
+                )
+        else:
+            # New area
+            self._blacklist_hits[xy] = 1
+            self.failed_goals[xy] = self.get_clock().now()
+
+        self._last_cancel_xy = xy
+
     def _is_blacklisted(self, gx: float, gy: float) -> bool:
-        r2 = self.goal_blacklist_radius ** 2
-        return any(
-            (gx - bx) ** 2 + (gy - by) ** 2 <= r2 for bx, by in self.failed_goals
-        )
+        """Return True if (gx, gy) falls inside any blacklisted zone.
+
+        Zones that have been hit more than once use double the normal radius
+        so the robot gives a wider berth to repeatedly unreachable areas.
+        """
+        base_r  = self.goal_blacklist_radius
+        base_r2 = base_r ** 2
+        dbl_r2  = (base_r * 2.0) ** 2
+
+        for (bx, by), stamp in self.failed_goals.items():
+            hits = self._blacklist_hits.get((bx, by), 1)
+            r2   = dbl_r2 if hits > 1 else base_r2
+            if (gx - bx) ** 2 + (gy - by) ** 2 <= r2:
+                return True
+        return False
 
     def _prune_failed_goals(self) -> None:
         now = self.get_clock().now()
-        self.failed_goals = {
+        keep = {
             goal: stamp
             for goal, stamp in self.failed_goals.items()
             if (now - stamp) <= Duration(seconds=self.blacklist_timeout_sec)
         }
+        # Clean up hit counters for pruned entries
+        for gone in set(self.failed_goals) - set(keep):
+            self._blacklist_hits.pop(gone, None)
+        self.failed_goals = keep
 
 
 def main(args=None) -> None:
