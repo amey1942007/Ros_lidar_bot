@@ -510,9 +510,26 @@ class FrontierExplorer(Node):
             self.active_goal_score = -float("inf")
             self._last_cancel_xy = None   # success — lift the min-distance restriction
         else:
-            self.get_logger().warn(f"Goal ended with status {status}")
-            if self.active_goal_xy is not None:
-                self._blacklist_goal(self.active_goal_xy)
+            pos = self.active_goal_xy
+            if pos is not None:
+                if status == GoalStatus.STATUS_ABORTED:
+                    # Nav2 itself gave up — planner couldn't find a path or the
+                    # controller completely failed.  This is the strongest signal
+                    # that the frontier is physically unreachable.
+                    # Mark as a dead zone: 10-min blacklist + maximum radius.
+                    old_t = self.blacklist_timeout_sec
+                    self.blacklist_timeout_sec = self._PHANTOM_TIMEOUT   # 600 s
+                    self._blacklist_goal(pos)
+                    self.blacklist_timeout_sec = old_t
+                    self._blacklist_hits[pos] = 10   # force double radius immediately
+                    self.get_logger().warn(
+                        f"DEAD ZONE marked at {pos} — Nav2 aborted (unreachable). "
+                        f"Blacklisted 10 min, radius {self.goal_blacklist_radius * 2:.2f} m"
+                    )
+                else:
+                    # CANCELLED (our timeout / safety switch) — standard blacklist
+                    self.get_logger().warn(f"Goal ended with status {status}")
+                    self._blacklist_goal(pos)
                 self.active_goal_xy = None
             self.active_goal_score = -float("inf")
         self.goal_in_progress = False
