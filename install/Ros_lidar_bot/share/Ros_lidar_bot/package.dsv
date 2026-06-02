@@ -1,0 +1,8 @@
+source;share/Ros_lidar_bot/hook/cmake_prefix_path.ps1
+source;share/Ros_lidar_bot/hook/cmake_prefix_path.dsv
+source;share/Ros_lidar_bot/hook/cmake_prefix_path.sh
+source;share/Ros_lidar_bot/local_setup.bash
+source;share/Ros_lidar_bot/local_setup.dsv
+source;share/Ros_lidar_bot/local_setup.ps1
+source;share/Ros_lidar_bot/local_setup.sh
+source;share/Ros_lidar_bot/local_setup.zsh

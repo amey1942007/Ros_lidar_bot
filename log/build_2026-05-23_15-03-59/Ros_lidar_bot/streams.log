@@ -1,0 +1,90 @@
+[0.009s] Invoking command in '/home/gautam/Ros_lidar_bot/build/Ros_lidar_bot': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --build /home/gautam/Ros_lidar_bot/build/Ros_lidar_bot -- -j16 -l16
+[0.057s] Built target ament_cmake_python_copy_Ros_lidar_bot
+[0.060s] Built target ament_cmake_python_copy_Ros_lidar_bot_setup
+[0.211s] running egg_info
+[0.211s] writing Ros_lidar_bot.egg-info/PKG-INFO
+[0.211s] writing dependency_links to Ros_lidar_bot.egg-info/dependency_links.txt
+[0.212s] writing top-level names to Ros_lidar_bot.egg-info/top_level.txt
+[0.213s] reading manifest file 'Ros_lidar_bot.egg-info/SOURCES.txt'
+[0.213s] writing manifest file 'Ros_lidar_bot.egg-info/SOURCES.txt'
+[0.231s] Built target ament_cmake_python_build_Ros_lidar_bot_egg
+[0.241s] Invoked command in '/home/gautam/Ros_lidar_bot/build/Ros_lidar_bot' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --build /home/gautam/Ros_lidar_bot/build/Ros_lidar_bot -- -j16 -l16
+[0.250s] Invoking command in '/home/gautam/Ros_lidar_bot/build/Ros_lidar_bot': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --install /home/gautam/Ros_lidar_bot/build/Ros_lidar_bot
+[0.260s] -- Install configuration: ""
+[0.260s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/environment/pythonpath.sh
+[0.260s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/environment/pythonpath.dsv
+[0.260s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot-0.0.0-py3.10.egg-info
+[0.260s] -- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot-0.0.0-py3.10.egg-info/SOURCES.txt
+[0.261s] -- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot-0.0.0-py3.10.egg-info/PKG-INFO
+[0.261s] -- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot-0.0.0-py3.10.egg-info/top_level.txt
+[0.261s] -- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot-0.0.0-py3.10.egg-info/dependency_links.txt
+[0.261s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot
+[0.261s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/__init__.py
+[0.261s] -- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/safety_stop_node.py
+[0.261s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/teleop_node.py
+[0.261s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/frontier_explorer_node.py
+[0.293s] Listing '/home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot'...
+[0.293s] Compiling '/home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/safety_stop_node.py'...
+[0.296s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot/teleop_node.py
+[0.296s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot/frontier_explorer_node.py
+[0.296s] -- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot/safety_stop_node.py
+[0.296s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/scripts
+[0.296s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/scripts/kill_sim.sh
+[0.296s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config
+[0.296s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/view_bot.rviz
+[0.296s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/mapper_params_lifelong.yaml
+[0.296s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/empty.yaml
+[0.296s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/mapper_params_online_async.yaml
+[0.296s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/ekf.yaml
+[0.296s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/nav2_params.yaml
+[0.296s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/mapper_params_online_sync.yaml
+[0.296s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/mapper_params_offline.yaml
+[0.296s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/mapper_params_localization.yaml
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/frontier_explorer.yaml
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/temp.xacro
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/imu.xacro
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/camera.xacro
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/robot_control.xacro
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/inertial_macros.xacro
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/robot_core.xacro
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/robot.urdf.xacro
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/slam.gazebo
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/materials.xacro
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/slam.ros2control
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/slam.xacro
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/lidar.xacro
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/launch
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/launch/launch_sim.launch.py
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/launch/autonomous_exploration.launch.py
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/launch/rsp.launch.py
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/worlds
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/worlds/warehouse.world
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/worlds/testing.world
+[0.297s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/worlds/office.world
+[0.298s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/worlds/empty.world
+[0.298s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/worlds/yoyo.sdf
+[0.298s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes
+[0.298s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/wheel_urdf_1.stl
+[0.298s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/ball_caster_wheel__1__1.stl
+[0.298s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/imu_for_urdf_1.stl
+[0.298s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/base_link.stl
+[0.298s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/ball_caster_wheel_1.stl
+[0.298s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/wheel_urdf__1__1.stl
+[0.298s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/lidar_urdf_1.stl
+[0.298s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/ament_index/resource_index/package_run_dependencies/Ros_lidar_bot
+[0.298s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/ament_index/resource_index/parent_prefix_path/Ros_lidar_bot
+[0.298s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/environment/ament_prefix_path.sh
+[0.298s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/environment/ament_prefix_path.dsv
+[0.298s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/environment/path.sh
+[0.298s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/environment/path.dsv
+[0.299s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/local_setup.bash
+[0.299s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/local_setup.sh
+[0.299s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/local_setup.zsh
+[0.299s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/local_setup.dsv
+[0.299s] -- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/package.dsv
+[0.299s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/ament_index/resource_index/packages/Ros_lidar_bot
+[0.299s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/cmake/Ros_lidar_botConfig.cmake
+[0.299s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/cmake/Ros_lidar_botConfig-version.cmake
+[0.299s] -- Up-to-date: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/package.xml
+[0.299s] Invoked command in '/home/gautam/Ros_lidar_bot/build/Ros_lidar_bot' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --install /home/gautam/Ros_lidar_bot/build/Ros_lidar_bot

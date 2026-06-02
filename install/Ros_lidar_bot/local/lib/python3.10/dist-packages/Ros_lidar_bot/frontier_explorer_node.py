@@ -109,60 +109,57 @@ class FrontierExplorer(Node):
             self._calibrate_from_map(msg)
 
     def _calibrate_from_map(self, msg: OccupancyGrid) -> None:
-        """One-time calibration on first map — scales parameters to actual room size."""
-        w_m = msg.info.width  * msg.info.resolution
-        h_m = msg.info.height * msg.info.resolution
+        """One-time calibration from the first received map.
+
+        Scales max_goal_distance to ~50 % of the room's larger dimension so the
+        explorer works correctly in any sized environment without manual tuning.
+        """
+        w_m = msg.info.width  * msg.info.resolution   # map width  in metres
+        h_m = msg.info.height * msg.info.resolution   # map height in metres
         larger_dim = max(w_m, h_m)
 
-        # max_goal_distance: 50% of larger dimension, capped
+        # Scale max_goal_distance: 50 % of larger dimension, but never below
+        # the config value and never above the cap.
         calibrated = min(larger_dim * 0.50, self.max_goal_distance_cap)
         if calibrated > self.max_goal_distance:
             self.max_goal_distance = calibrated
 
-        # no_frontier_done_ticks: larger rooms need more patience.
-        # Formula: 2 ticks per metre of the larger dimension, minimum from config.
-        # 10 m room → 20 ticks, 15 m warehouse → 30 ticks, 25 m large hall → 50 ticks.
-        scaled_ticks = int(larger_dim * 2.0)
-        if scaled_ticks > self.no_frontier_done_ticks:
-            self.no_frontier_done_ticks = scaled_ticks
-
         self._calibrated = True
         self.get_logger().info(
             f"[auto-calibrate] map {w_m:.0f}×{h_m:.0f} m → "
-            f"max_goal_distance={self.max_goal_distance:.1f} m  "
-            f"done_ticks={self.no_frontier_done_ticks}"
+            f"max_goal_distance = {self.max_goal_distance:.1f} m"
         )
 
     def _try_relax(self) -> None:
         """Progressive relaxation — called every tick that finds no frontier.
 
-        Every 3 ticks without a frontier, one constraint is loosened.
-        This is faster than waiting for sparse milestones and scales naturally
-        with the number of ticks (which is already proportional to room size
-        via auto-calibration of no_frontier_done_ticks).
+        Exploration constraints are loosened in stages so the robot can always
+        finish the map regardless of room size or obstacle density:
 
-          tick  3 : min_frontier_size − 1  (smaller clusters now count)
-          tick  6 : min_frontier_size − 1  again + max range extended to cap
-          tick  9 : min_frontier_size − 1  again + min_goal_distance halved
-          tick 12+: every 3 ticks min_frontier_size reduced until floor (1)
+          tick 4  : min_frontier_size  reduced by 1  (removes tiny-cluster filter)
+          tick 8  : min_frontier_size  reduced by 1  again
+          tick 12 : max_goal_distance  extended to cap  (reaches far corners)
+          tick 15 : min_goal_distance  halved  (accepts near frontiers)
 
-        Relaxation is sticky — once loosened, parameters stay loose.
+        Relaxation is sticky for the session — once the room proves it has
+        small/tight frontiers the looser threshold stays active.
         """
         t = self._no_frontier_ticks
         changed: list[str] = []
 
-        # Every 3 ticks: reduce min_frontier_size by 1 (floor: 1)
-        if t > 0 and t % 3 == 0 and self.min_frontier_size > 1:
+        if t == 4 and self.min_frontier_size > 3:
+            self.min_frontier_size = max(3, self.min_frontier_size - 1)
+            changed.append(f"min_frontier_size → {self.min_frontier_size}")
+
+        if t == 8 and self.min_frontier_size > 1:
             self.min_frontier_size = max(1, self.min_frontier_size - 1)
             changed.append(f"min_frontier_size → {self.min_frontier_size}")
 
-        # At tick 6: extend max search range to full cap
-        if t == 6 and self.max_goal_distance < self.max_goal_distance_cap:
+        if t == 12 and self.max_goal_distance < self.max_goal_distance_cap:
             self.max_goal_distance = self.max_goal_distance_cap
             changed.append(f"max_goal_distance → {self.max_goal_distance:.1f} m (cap)")
 
-        # At tick 9: halve the minimum goal distance (accept near frontiers)
-        if t == 9 and self.min_goal_distance > 0.15:
+        if t == 15 and self.min_goal_distance > 0.15:
             self.min_goal_distance = max(0.15, self.min_goal_distance * 0.5)
             changed.append(f"min_goal_distance → {self.min_goal_distance:.2f} m")
 
@@ -181,19 +178,12 @@ class FrontierExplorer(Node):
             elapsed = self.get_clock().now() - self.goal_start_time
             if elapsed > Duration(seconds=self.goal_timeout_sec):
                 self.get_logger().warn("Goal timeout, cancelling")
-                if self.active_goal_xy is not None:
-                    self.failed_goals[self.active_goal_xy] = self.get_clock().now()
                 self.goal_handle.cancel_goal_async()
                 self.goal_in_progress = False
             elif (self.get_clock().now() - self.last_progress_time) > Duration(
                 seconds=self.progress_timeout_sec
             ):
-                self.get_logger().warn("No progress, cancelling — blacklisting stuck position")
-                # Blacklist immediately here (not just in _goal_result_cb) so the
-                # position is excluded on the very next tick, even if the user gave
-                # a manual goal that preempted this one or _goal_result_cb is delayed.
-                if self.active_goal_xy is not None:
-                    self.failed_goals[self.active_goal_xy] = self.get_clock().now()
+                self.get_logger().warn("No progress, cancelling")
                 self.goal_handle.cancel_goal_async()
                 self.goal_in_progress = False
             return
