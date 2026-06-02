@@ -685,10 +685,34 @@ class FrontierExplorer(Node):
                 all_valid.append(((cx, cy), score))
 
         if collect_all and all_valid:
-            # Sort all candidates best-first and store in queue (skip index 0
-            # which is the goal we're about to return — it goes to the caller)
             all_valid.sort(key=lambda x: x[1], reverse=True)
-            self._frontier_queue = all_valid[1:1 + self._queue_size]
+            # Geographically diverse queue: don't fill slots with candidates
+            # that are all clustered near the same area.  After picking the
+            # best (index 0, sent to caller), greedily add candidates whose
+            # centroid is at least min_spread metres from every already-queued
+            # entry.  This ensures the queue covers different parts of the room
+            # so switching frontiers actually moves the robot somewhere new.
+            min_spread = self.goal_blacklist_radius * 2.5
+            diverse: List[Tuple[Tuple[float, float], float]] = []
+            for xy, sc in all_valid[1:]:
+                if len(diverse) >= self._queue_size:
+                    break
+                too_close = any(
+                    math.hypot(xy[0] - q[0][0], xy[1] - q[0][1]) < min_spread
+                    for q in diverse
+                )
+                if not too_close:
+                    diverse.append((xy, sc))
+            # Fall back to top-N if diversity pruning left too few entries
+            if len(diverse) < self._queue_size:
+                seen = {xy for xy, _ in diverse}
+                for xy, sc in all_valid[1:]:
+                    if len(diverse) >= self._queue_size:
+                        break
+                    if xy not in seen:
+                        diverse.append((xy, sc))
+                        seen.add(xy)
+            self._frontier_queue = diverse
             self._queue_stamp = self.get_clock().now()
 
         self.get_logger().debug(
@@ -700,6 +724,39 @@ class FrontierExplorer(Node):
         )
         return best_goal, best_score
 
+    @staticmethod
+    def _flood_fill_reachable(free_or_unknown: np.ndarray) -> np.ndarray:
+        """Return a boolean mask of cells reachable from the map boundary.
+
+        Uses 4-connectivity BFS seeded from all boundary cells that are
+        free or unknown.  Any unknown cell NOT reachable is completely
+        enclosed by occupied cells and can never be explored — the lidar
+        cannot see through solid obstacles into those voids.
+        """
+        h, w = free_or_unknown.shape
+        reachable = np.zeros((h, w), dtype=bool)
+        q: deque = deque()
+
+        def _seed(y: int, x: int) -> None:
+            if free_or_unknown[y, x] and not reachable[y, x]:
+                reachable[y, x] = True
+                q.append((y, x))
+
+        # Seed from all four border rows/columns
+        for x in range(w):
+            _seed(0, x); _seed(h - 1, x)
+        for y in range(h):
+            _seed(y, 0); _seed(y, w - 1)
+
+        while q:
+            cy, cx = q.popleft()
+            for ny, nx in ((cy-1, cx), (cy+1, cx), (cy, cx-1), (cy, cx+1)):
+                if 0 <= ny < h and 0 <= nx < w:
+                    if free_or_unknown[ny, nx] and not reachable[ny, nx]:
+                        reachable[ny, nx] = True
+                        q.append((ny, nx))
+        return reachable
+
     def _extract_frontiers(
         self, data, width: int, height: int
     ) -> List[List[GridCell]]:
@@ -707,6 +764,26 @@ class FrontierExplorer(Node):
         grid = np.asarray(data, dtype=np.int8).reshape((height, width))
         unknown = grid == -1
         free = grid == 0
+
+        # ── Enclosed-region elimination ───────────────────────────────────────
+        # Unknown cells completely surrounded by occupied cells (e.g. the void
+        # inside a sofa or behind solid shelves) will never be reachable by the
+        # lidar.  Flood-fill from the map boundary: any unknown cell that cannot
+        # be reached through free/unknown space from the edge is enclosed.
+        # Treat those cells as occupied so no frontier ever forms there.
+        traversable = free | unknown
+        reachable   = self._flood_fill_reachable(traversable)
+        enclosed    = unknown & ~reachable
+        if enclosed.any():
+            n_enclosed = int(enclosed.sum())
+            grid = grid.copy()
+            grid[enclosed] = 100   # virtually occupied — won't form frontiers
+            unknown = grid == -1
+            free    = grid == 0
+            self.get_logger().debug(
+                f"Enclosed-region fill: {n_enclosed} unreachable unknown cells "
+                "marked as occupied — no frontiers will form there"
+            )
 
         # 8-connectivity: unknown cells adjacent (incl. diagonal) to any free cell
         fu = np.roll(free, 1, axis=0)
