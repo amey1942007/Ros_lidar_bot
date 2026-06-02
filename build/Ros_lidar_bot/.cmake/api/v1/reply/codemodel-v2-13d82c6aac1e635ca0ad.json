@@ -1,0 +1,97 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"hasInstallRule" : true,
+					"jsonFile" : "directory-.-75bbfbf609384f619859.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.12"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4
+					]
+				}
+			],
+			"name" : "",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "Ros_lidar_bot",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "Ros_lidar_bot_uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-Ros_lidar_bot_uninstall-b495207caf350362636f.json",
+					"name" : "Ros_lidar_bot_uninstall",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "ament_cmake_python_build_Ros_lidar_bot_egg::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ament_cmake_python_build_Ros_lidar_bot_egg-4ee80e99418ca040cd7c.json",
+					"name" : "ament_cmake_python_build_Ros_lidar_bot_egg",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "ament_cmake_python_copy_Ros_lidar_bot::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ament_cmake_python_copy_Ros_lidar_bot-529d1542ebb99e2bde9d.json",
+					"name" : "ament_cmake_python_copy_Ros_lidar_bot",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "ament_cmake_python_copy_Ros_lidar_bot_setup::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ament_cmake_python_copy_Ros_lidar_bot_setup-faa6e79bc6d8485632af.json",
+					"name" : "ament_cmake_python_copy_Ros_lidar_bot_setup",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-uninstall-b82dec5401527e30d488.json",
+					"name" : "uninstall",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "/home/gautam/Ros_lidar_bot/build/Ros_lidar_bot",
+		"source" : "/home/gautam/Ros_lidar_bot"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 3
+	}
+}

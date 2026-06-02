@@ -1,0 +1,129 @@
+-- The C compiler identification is GNU 11.4.0
+-- The CXX compiler identification is GNU 11.4.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Found ament_cmake: 1.3.14 (/opt/ros/humble/share/ament_cmake/cmake)
+-- Found Python3: /usr/bin/python3 (found version "3.10.12") found components: Interpreter 
+-- Found rclpy: 3.3.21 (/opt/ros/humble/share/rclpy/cmake)
+-- Found geometry_msgs: 4.9.1 (/opt/ros/humble/share/geometry_msgs/cmake)
+-- Found rosidl_generator_c: 3.1.8 (/opt/ros/humble/share/rosidl_generator_c/cmake)
+-- Found rosidl_adapter: 3.1.8 (/opt/ros/humble/share/rosidl_adapter/cmake)
+-- Found rosidl_generator_cpp: 3.1.8 (/opt/ros/humble/share/rosidl_generator_cpp/cmake)
+-- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c
+-- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp
+-- Found sensor_msgs: 4.9.1 (/opt/ros/humble/share/sensor_msgs/cmake)
+-- Found ament_lint_auto: 0.12.15 (/opt/ros/humble/share/ament_lint_auto/cmake)
+-- Added test 'copyright' to check source files copyright and LICENSE
+-- Added test 'cppcheck' to perform static code analysis on C / C++ code
+-- Configured cppcheck include dirs: 
+-- Configured cppcheck exclude dirs and/or files: 
+-- Added test 'cpplint' to check C / C++ code against the Google style
+-- Configured cpplint exclude dirs and/or files: 
+-- Added test 'flake8' to check Python code syntax and style conventions
+-- Added test 'lint_cmake' to check CMake code style
+-- Added test 'pep257' to check Python code against some of the docstring style conventions in PEP 257
+-- Added test 'uncrustify' to check C / C++ code style
+-- Configured uncrustify additional arguments: 
+-- Added test 'xmllint' to check XML markup files
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /home/gautam/Ros_lidar_bot/build/Ros_lidar_bot
+Built target ament_cmake_python_copy_Ros_lidar_bot
+Built target ament_cmake_python_copy_Ros_lidar_bot_setup
+running egg_info
+creating Ros_lidar_bot.egg-info
+writing Ros_lidar_bot.egg-info/PKG-INFO
+writing dependency_links to Ros_lidar_bot.egg-info/dependency_links.txt
+writing top-level names to Ros_lidar_bot.egg-info/top_level.txt
+writing manifest file 'Ros_lidar_bot.egg-info/SOURCES.txt'
+reading manifest file 'Ros_lidar_bot.egg-info/SOURCES.txt'
+writing manifest file 'Ros_lidar_bot.egg-info/SOURCES.txt'
+Built target ament_cmake_python_build_Ros_lidar_bot_egg
+-- Install configuration: ""
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/environment/pythonpath.sh
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/environment/pythonpath.dsv
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot-0.0.0-py3.10.egg-info
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot-0.0.0-py3.10.egg-info/SOURCES.txt
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot-0.0.0-py3.10.egg-info/PKG-INFO
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot-0.0.0-py3.10.egg-info/top_level.txt
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot-0.0.0-py3.10.egg-info/dependency_links.txt
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/__init__.py
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/safety_stop_node.py
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/teleop_node.py
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/frontier_explorer_node.py
+Listing '/home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot'...
+Compiling '/home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/__init__.py'...
+Compiling '/home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/frontier_explorer_node.py'...
+Compiling '/home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/safety_stop_node.py'...
+Compiling '/home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/teleop_node.py'...
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot/teleop_node.py
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot/frontier_explorer_node.py
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot/safety_stop_node.py
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/scripts
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/scripts/kill_sim.sh
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/view_bot.rviz
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/mapper_params_lifelong.yaml
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/empty.yaml
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/mapper_params_online_async.yaml
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/ekf.yaml
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/nav2_params.yaml
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/mapper_params_online_sync.yaml
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/mapper_params_offline.yaml
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/mapper_params_localization.yaml
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/frontier_explorer.yaml
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/temp.xacro
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/imu.xacro
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/camera.xacro
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/robot_control.xacro
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/inertial_macros.xacro
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/robot_core.xacro
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/robot.urdf.xacro
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/slam.gazebo
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/materials.xacro
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/slam.ros2control
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/slam.xacro
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/lidar.xacro
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/launch
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/launch/launch_sim.launch.py
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/launch/autonomous_exploration.launch.py
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/launch/rsp.launch.py
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/worlds
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/worlds/warehouse.world
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/worlds/testing.world
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/worlds/office.world
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/worlds/empty.world
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/worlds/yoyo.sdf
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/wheel_urdf_1.stl
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/ball_caster_wheel__1__1.stl
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/imu_for_urdf_1.stl
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/base_link.stl
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/ball_caster_wheel_1.stl
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/wheel_urdf__1__1.stl
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/lidar_urdf_1.stl
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/ament_index/resource_index/package_run_dependencies/Ros_lidar_bot
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/ament_index/resource_index/parent_prefix_path/Ros_lidar_bot
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/environment/ament_prefix_path.sh
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/environment/ament_prefix_path.dsv
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/environment/path.sh
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/environment/path.dsv
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/local_setup.bash
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/local_setup.sh
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/local_setup.zsh
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/local_setup.dsv
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/package.dsv
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/ament_index/resource_index/packages/Ros_lidar_bot
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/cmake/Ros_lidar_botConfig.cmake
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/cmake/Ros_lidar_botConfig-version.cmake
+-- Installing: /home/gautam/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/package.xml

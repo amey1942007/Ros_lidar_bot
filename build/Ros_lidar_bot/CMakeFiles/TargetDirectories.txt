@@ -1,0 +1,12 @@
+/home/gautam/Ros_lidar_bot/build/Ros_lidar_bot/CMakeFiles/uninstall.dir
+/home/gautam/Ros_lidar_bot/build/Ros_lidar_bot/CMakeFiles/Ros_lidar_bot_uninstall.dir
+/home/gautam/Ros_lidar_bot/build/Ros_lidar_bot/CMakeFiles/ament_cmake_python_copy_Ros_lidar_bot.dir
+/home/gautam/Ros_lidar_bot/build/Ros_lidar_bot/CMakeFiles/ament_cmake_python_copy_Ros_lidar_bot_setup.dir
+/home/gautam/Ros_lidar_bot/build/Ros_lidar_bot/CMakeFiles/ament_cmake_python_build_Ros_lidar_bot_egg.dir
+/home/gautam/Ros_lidar_bot/build/Ros_lidar_bot/CMakeFiles/test.dir
+/home/gautam/Ros_lidar_bot/build/Ros_lidar_bot/CMakeFiles/edit_cache.dir
+/home/gautam/Ros_lidar_bot/build/Ros_lidar_bot/CMakeFiles/rebuild_cache.dir
+/home/gautam/Ros_lidar_bot/build/Ros_lidar_bot/CMakeFiles/list_install_components.dir
+/home/gautam/Ros_lidar_bot/build/Ros_lidar_bot/CMakeFiles/install.dir
+/home/gautam/Ros_lidar_bot/build/Ros_lidar_bot/CMakeFiles/install/local.dir
+/home/gautam/Ros_lidar_bot/build/Ros_lidar_bot/CMakeFiles/install/strip.dir

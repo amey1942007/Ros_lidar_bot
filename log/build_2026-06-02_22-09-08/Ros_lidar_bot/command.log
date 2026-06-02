@@ -1,0 +1,4 @@
+Invoking command in '/home/gautam/Ros_lidar_bot/build/Ros_lidar_bot': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --build /home/gautam/Ros_lidar_bot/build/Ros_lidar_bot -- -j16 -l16
+Invoked command in '/home/gautam/Ros_lidar_bot/build/Ros_lidar_bot' returned '0': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --build /home/gautam/Ros_lidar_bot/build/Ros_lidar_bot -- -j16 -l16
+Invoking command in '/home/gautam/Ros_lidar_bot/build/Ros_lidar_bot': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --install /home/gautam/Ros_lidar_bot/build/Ros_lidar_bot
+Invoked command in '/home/gautam/Ros_lidar_bot/build/Ros_lidar_bot' returned '0': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --install /home/gautam/Ros_lidar_bot/build/Ros_lidar_bot
