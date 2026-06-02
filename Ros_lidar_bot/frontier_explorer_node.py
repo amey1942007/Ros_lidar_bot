@@ -668,52 +668,98 @@ class FrontierExplorer(Node):
             # openness_term also contributes to the score (not just a filter) so
             # open-area frontiers are preferred over tight-but-valid ones.
 
-            size_term = len(frontier) / float(max_size)
+            size_term     = len(frontier) / float(max_size)
             distance_term = dist / max_dist
-            heading_term = heading_error / math.pi
+            heading_term  = heading_error / math.pi
+            frontier_size = len(frontier)
 
             score = (
-                self.size_weight * size_term
+                self.size_weight    * size_term
                 - self.distance_weight * distance_term
-                - self.heading_weight * heading_term
+                - self.heading_weight  * heading_term
                 + self.openness_weight * openness_term
             )
             if score > best_score:
                 best_score = score
-                best_goal = (cx, cy)
+                best_goal  = (cx, cy)
             if collect_all:
-                all_valid.append(((cx, cy), score))
+                # Store size alongside so queue can filter by it
+                all_valid.append(((cx, cy), score, frontier_size, dist))
+
+        # ── Far-frontier bonus ────────────────────────────────────────────────
+        # When ALL valid frontiers are beyond the "near zone" (35 % of
+        # max_dist) the robot has no close options — distance should matter
+        # less.  Large frontiers are worth the trip so they get the biggest
+        # bonus, making them rise above small far-away clusters in score.
+        if all_valid:
+            near_zone   = max_dist * 0.35
+            min_dist_av = min(d for _, _, _, d in all_valid)
+            if min_dist_av > near_zone:
+                # All frontiers are far — recompute scores with reduced penalty
+                new_best_score = -float("inf")
+                new_best_goal  = None
+                rescored = []
+                for xy, old_score, fsize, d in all_valid:
+                    # Bonus: up to 0.4 reduction on distance term, scaled by
+                    # size_ratio so large frontiers benefit more.
+                    size_r    = fsize / float(max_size) if max_size > 0 else 0.5
+                    far_bonus = min(0.40, size_r * 0.45)
+                    dt        = max(0.0, d / max_dist - far_bonus)
+                    ht        = abs(self._normalize_angle(
+                        math.atan2(xy[1] - robot_y, xy[0] - robot_x) - robot_yaw
+                    )) / math.pi
+                    st        = fsize / float(max_size) if max_size > 0 else 0.5
+                    ot        = self._openness_score(
+                        xy[0], xy[1], data, width, height, res, ox, oy
+                    )
+                    sc = (self.size_weight    * st
+                          - self.distance_weight * dt
+                          - self.heading_weight  * ht
+                          + self.openness_weight * ot)
+                    rescored.append((xy, sc, fsize, d))
+                    if sc > new_best_score:
+                        new_best_score = sc
+                        new_best_goal  = xy
+                all_valid   = rescored
+                best_goal   = new_best_goal
+                best_score  = new_best_score
 
         if collect_all and all_valid:
             all_valid.sort(key=lambda x: x[1], reverse=True)
-            # Geographically diverse queue: don't fill slots with candidates
-            # that are all clustered near the same area.  After picking the
-            # best (index 0, sent to caller), greedily add candidates whose
-            # centroid is at least min_spread metres from every already-queued
-            # entry.  This ensures the queue covers different parts of the room
-            # so switching frontiers actually moves the robot somewhere new.
+
+            # ── Geographically diverse queue of LARGE frontiers only ──────────
+            # Small frontiers (<= queue_large_threshold cells) get mapped
+            # naturally as the robot moves nearby — no need to dedicate a queue
+            # slot to them.  Only substantial unexplored zones go in the queue.
+            queue_large_threshold = max(self.min_frontier_size * 3, 15)
             min_spread = self.goal_blacklist_radius * 2.5
             diverse: List[Tuple[Tuple[float, float], float]] = []
-            for xy, sc in all_valid[1:]:
+
+            for xy, sc, fsize, _ in all_valid[1:]:
                 if len(diverse) >= self._queue_size:
                     break
+                if fsize < queue_large_threshold:
+                    continue   # too small — robot will map it in passing
                 too_close = any(
                     math.hypot(xy[0] - q[0][0], xy[1] - q[0][1]) < min_spread
                     for q in diverse
                 )
                 if not too_close:
                     diverse.append((xy, sc))
-            # Fall back to top-N if diversity pruning left too few entries
-            if len(diverse) < self._queue_size:
-                seen = {xy for xy, _ in diverse}
-                for xy, sc in all_valid[1:]:
+
+            # Fallback: if no large frontiers left, accept any size
+            # (late-stage exploration with only tiny pockets remaining)
+            if not diverse:
+                seen: Set[Tuple[float, float]] = set()
+                for xy, sc, _, _ in all_valid[1:]:
                     if len(diverse) >= self._queue_size:
                         break
                     if xy not in seen:
                         diverse.append((xy, sc))
                         seen.add(xy)
+
             self._frontier_queue = diverse
-            self._queue_stamp = self.get_clock().now()
+            self._queue_stamp    = self.get_clock().now()
 
         self.get_logger().debug(
             f"score_frontiers(max_dist={max_dist:.1f}): total={len(frontiers)} "
