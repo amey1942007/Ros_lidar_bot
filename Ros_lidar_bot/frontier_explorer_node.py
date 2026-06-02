@@ -88,6 +88,15 @@ class FrontierExplorer(Node):
         # On repeat failures the blacklist radius doubles — prevents the robot
         # from endlessly returning to a genuinely unreachable zone.
         self._blacklist_hits: Dict[Tuple[float, float], int] = {}
+        # Phantom success counter — tracks how many times the robot "reached"
+        # a goal (STATUS_SUCCEEDED) but the frontier cells near that position
+        # still didn't clear.  This happens for permanently occluded areas
+        # (e.g. behind solid furniture) where the lidar can never see through.
+        # After _PHANTOM_THRESHOLD arrivals with no map change the area is
+        # force-blacklisted with a 10-minute timeout.
+        self._phantom_successes: Dict[Tuple[float, float], int] = {}
+        self._PHANTOM_THRESHOLD = 3       # arrivals without clearing → blacklist
+        self._PHANTOM_TIMEOUT   = 600.0   # 10 min — much longer than normal 300 s
         # Position of the last cancelled goal — used to enforce a minimum
         # distance for the next queued frontier so the robot can't immediately
         # pick something that's just outside the blacklist radius.
@@ -464,6 +473,38 @@ class FrontierExplorer(Node):
     def _goal_result_cb(self, future) -> None:
         status = future.result().status
         if status == GoalStatus.STATUS_SUCCEEDED:
+            pos = self.active_goal_xy
+            # Phantom-success check: did the frontier actually clear?
+            # If not, the area is permanently occluded (e.g. behind furniture).
+            # Track arrivals and force-blacklist after _PHANTOM_THRESHOLD repeats.
+            if pos is not None and self.latest_map is not None:
+                if not self._frontier_vanished(pos, self.latest_map):
+                    # Frontier still there despite "reaching" it
+                    merge_r2 = (self.goal_blacklist_radius * 1.5) ** 2
+                    key = min(self._phantom_successes.keys() or [pos],
+                              key=lambda k: (k[0]-pos[0])**2 + (k[1]-pos[1])**2)
+                    if ((key[0]-pos[0])**2+(key[1]-pos[1])**2) > merge_r2:
+                        key = pos
+                    count = self._phantom_successes.get(key, 0) + 1
+                    self._phantom_successes[key] = count
+                    self.get_logger().info(
+                        f"Frontier reached but not cleared ({count}/{self._PHANTOM_THRESHOLD})"
+                        " — permanent occlusion candidate"
+                    )
+                    if count >= self._PHANTOM_THRESHOLD:
+                        old_t = self.blacklist_timeout_sec
+                        self.blacklist_timeout_sec = self._PHANTOM_TIMEOUT
+                        self._blacklist_goal(pos)
+                        self.blacklist_timeout_sec = old_t
+                        self._blacklist_hits[pos] = 10   # force max radius
+                        self._phantom_successes.pop(key, None)
+                        self.get_logger().warn(
+                            f"Permanently occluded area at {pos} — "
+                            f"blacklisted 10 min, radius {self.goal_blacklist_radius*2:.2f} m"
+                        )
+                else:
+                    # Frontier cleared — genuine success, reset phantom count
+                    self._phantom_successes.pop(pos, None)
             self.get_logger().info("Frontier goal reached")
             self.active_goal_xy = None
             self.active_goal_score = -float("inf")
@@ -597,9 +638,18 @@ class FrontierExplorer(Node):
                 cx, cy, data, width, height, res, ox, oy
             )
 
-            # openness_term is used only in scoring (not as a hard filter) so that
-            # tight-space frontiers (between shelf posts, near dividers) are still
-            # considered when no open-area frontiers remain — they just score lower.
+            # Hard floor on TARGET clearance: if < 15 % of the cells around the
+            # target point are free, the robot would be wedged against an obstacle
+            # to reach it (e.g. directly beside a bookshelf panel).  These are
+            # physically unreachable — skip rather than send the robot there.
+            # Note: this is tighter than the old 0.25 floor that was removed;
+            # 0.15 only rejects extreme cases like solid-furniture occlusions.
+            if openness_term < 0.15:
+                n_edge += 1   # reuse counter — logged as 'edge' in debug output
+                continue
+
+            # openness_term also contributes to the score (not just a filter) so
+            # open-area frontiers are preferred over tight-but-valid ones.
 
             size_term = len(frontier) / float(max_size)
             distance_term = dist / max_dist
