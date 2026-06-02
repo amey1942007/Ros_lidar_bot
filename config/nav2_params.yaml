@@ -8,7 +8,7 @@ bt_navigator:
     global_frame: map
     robot_base_frame: base_footprint
     odom_topic: /odom
-    bt_loop_duration: 10
+    bt_loop_duration: 20
     default_server_timeout: 20
     plugin_lib_names:
       - nav2_compute_path_to_pose_action_bt_node
@@ -95,7 +95,7 @@ controller_server:
 
       # Rotate-to-heading: spin in place before moving when angle error is large.
       # This is critical for exploration where goals are often in new directions.
-      use_rotate_to_heading: false
+      use_rotate_to_heading: true
       rotate_to_heading_min_angle: 0.40   # ~23 deg — rotate if error exceeds this
       rotate_to_heading_angular_vel: 1.5  # rad/s — faster turns
 
@@ -107,7 +107,7 @@ controller_server:
       regulated_linear_scaling_min_speed: 0.05
 
       use_collision_detection: true
-      max_allowed_time_to_collision_up_to_carrot: 0.5  # stop earlier before predicted collision
+      max_allowed_time_to_collision_up_to_carrot: 1.0
       allow_reversing: false
 
 planner_server:
@@ -175,7 +175,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.40
+        inflation_radius: 0.35
       always_send_full_costmap: true
 
 global_costmap:
@@ -212,7 +212,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.50
+        inflation_radius: 0.45
       always_send_full_costmap: true
 
 lifecycle_manager_navigation:
