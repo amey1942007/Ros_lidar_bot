@@ -13,6 +13,7 @@ from nav_msgs.msg import OccupancyGrid
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
+from std_msgs.msg import Bool
 from tf2_ros import Buffer, TransformException, TransformListener
 
 GridCell = Tuple[int, int]
@@ -88,16 +89,42 @@ class FrontierExplorer(Node):
         self.last_progress_time = self.get_clock().now()
         self._no_frontier_ticks = 0
 
+        # ── Frontier queue — pre-computed candidates for immediate switching ──
+        # Stores (position, score) pairs sorted best-first. Re-validated
+        # (position still unknown, not blacklisted) before each use so stale
+        # entries are silently skipped. Queue is refreshed every planning tick.
+        self._frontier_queue: List[Tuple[Tuple[float, float], float]] = []
+        self._queue_stamp: Optional[rclpy.time.Time] = None
+        self._queue_max_age: float = 20.0    # seconds before queue is considered stale
+        self._queue_size: int = 5            # how many candidates to keep
+
+        # ── Safety stop signal ────────────────────────────────────────────────
+        # True while safety_stop_node is blocking forward motion.
+        # We switch to the next queued frontier after SAFETY_SWITCH_SEC of blocking.
+        self._safety_blocked = False
+        self._safety_blocked_since: Optional[rclpy.time.Time] = None
+        self._SAFETY_SWITCH_SEC = 3.0        # seconds blocked before switching frontier
+
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self.create_subscription(OccupancyGrid, self.map_topic, self._map_cb, 10)
+        self.create_subscription(Bool, "/safety_blocked", self._safety_cb, 10)
         self.create_timer(float(p("goal_interval_sec").value), self._tick)
 
     def _map_cb(self, msg: OccupancyGrid) -> None:
         self.latest_map = msg
         if not self._calibrated:
             self._calibrate_from_map(msg)
+
+    def _safety_cb(self, msg: Bool) -> None:
+        if msg.data:
+            if self._safety_blocked_since is None:
+                self._safety_blocked_since = self.get_clock().now()
+            self._safety_blocked = True
+        else:
+            self._safety_blocked = False
+            self._safety_blocked_since = None
 
     def _calibrate_from_map(self, msg: OccupancyGrid) -> None:
         """One-time calibration on first map — scales parameters to actual room size."""
@@ -184,6 +211,36 @@ class FrontierExplorer(Node):
                     self.last_goal_end_time = self.get_clock().now()
                     return
 
+            # ── Safety-triggered immediate switch ─────────────────────────────
+            # If the safety stop has been blocking forward motion for
+            # _SAFETY_SWITCH_SEC, don't wait for the full progress timeout.
+            # Blacklist current position and jump to the next queued frontier.
+            if (self._safety_blocked
+                    and self._safety_blocked_since is not None
+                    and (self.get_clock().now() - self._safety_blocked_since)
+                        > Duration(seconds=self._SAFETY_SWITCH_SEC)):
+                tf = self._lookup_robot_pose()
+                if tf is not None:
+                    rx = tf.transform.translation.x
+                    ry = tf.transform.translation.y
+                    ryaw = self._yaw_from_quaternion(tf.transform.rotation)
+                    nxt_xy, nxt_score = self._pop_queued_frontier(rx, ry)
+                    if nxt_xy is not None:
+                        self.get_logger().info(
+                            f"Safety blocked {self._SAFETY_SWITCH_SEC:.0f}s — "
+                            f"switching to queued frontier {nxt_xy}"
+                        )
+                        if self.active_goal_xy is not None:
+                            self.failed_goals[self.active_goal_xy] = self.get_clock().now()
+                        self.goal_handle.cancel_goal_async()
+                        self.goal_in_progress = False
+                        self._safety_blocked_since = None
+                        self._send_goal(
+                            self._build_goal_pose(nxt_xy[0], nxt_xy[1], rx, ry),
+                            nxt_score,
+                        )
+                        return
+
             if elapsed > Duration(seconds=self.goal_timeout_sec):
                 self.get_logger().warn("Goal timeout, cancelling")
                 if self.active_goal_xy is not None:
@@ -193,11 +250,24 @@ class FrontierExplorer(Node):
             elif (self.get_clock().now() - self.last_progress_time) > Duration(
                 seconds=self.progress_timeout_sec
             ):
-                self.get_logger().warn("No progress, cancelling — blacklisting stuck position")
+                self.get_logger().warn("No progress — blacklisting, trying next queued frontier")
                 if self.active_goal_xy is not None:
                     self.failed_goals[self.active_goal_xy] = self.get_clock().now()
                 self.goal_handle.cancel_goal_async()
                 self.goal_in_progress = False
+                # Immediately try next queued frontier instead of waiting for next tick
+                tf = self._lookup_robot_pose()
+                if tf is not None:
+                    rx = tf.transform.translation.x
+                    ry = tf.transform.translation.y
+                    ryaw = self._yaw_from_quaternion(tf.transform.rotation)
+                    nxt_xy, nxt_score = self._pop_queued_frontier(rx, ry)
+                    if nxt_xy is not None:
+                        self._send_goal(
+                            self._build_goal_pose(nxt_xy[0], nxt_xy[1], rx, ry),
+                            nxt_score,
+                        )
+                        return
             return
 
         if (self.get_clock().now() - self.last_goal_end_time) < Duration(
@@ -276,6 +346,42 @@ class FrontierExplorer(Node):
                     if data[ny * w + nx] == -1:   # unknown cell still exists
                         return False
         return True   # no unknown cells left — frontier is gone
+
+    def _pop_queued_frontier(
+        self, robot_x: float, robot_y: float
+    ) -> Tuple[Optional[Tuple[float, float]], float]:
+        """Return the next valid frontier from the queue, re-validating each entry.
+
+        Validation before use (not at queue-build time) keeps decisions fresh:
+        - Skip if area is already mapped (frontier_vanished)
+        - Skip if blacklisted
+        - Skip if now too close to robot
+        - Queue is discarded entirely if older than _queue_max_age
+        """
+        if not self._frontier_queue or self.latest_map is None:
+            return None, -float("inf")
+
+        if self._queue_stamp is not None:
+            age = (self.get_clock().now() - self._queue_stamp).nanoseconds / 1e9
+            if age > self._queue_max_age:
+                self._frontier_queue.clear()
+                return None, -float("inf")
+
+        while self._frontier_queue:
+            xy, _ = self._frontier_queue.pop(0)
+            # Re-validate and re-score from current robot position
+            if self._is_blacklisted(xy[0], xy[1]):
+                continue
+            if self._frontier_vanished(xy, self.latest_map):
+                continue
+            dist = math.hypot(xy[0] - robot_x, xy[1] - robot_y)
+            if dist < self.min_goal_distance or dist > self.max_goal_distance_cap:
+                continue
+            # Re-score so the decision is fresh
+            score = -dist / self.max_goal_distance
+            return xy, score
+
+        return None, -float("inf")
 
     def _lookup_robot_pose(self) -> Optional[TransformStamped]:
         try:
@@ -383,9 +489,12 @@ class FrontierExplorer(Node):
             f"Found {len(frontiers)} frontier clusters "
             f"(sizes: {sorted((len(f) for f in frontiers), reverse=True)[:5]})"
         )
+        # collect_all=True on the first call so the queue gets the top-N
+        # candidates for immediate switching when blocked.
         result = self._score_frontiers(
             frontiers, data, width, height, res, ox, oy,
             robot_x, robot_y, robot_yaw, self.max_goal_distance,
+            collect_all=True,
         )
         if result[0] is not None:
             return result
@@ -398,6 +507,7 @@ class FrontierExplorer(Node):
         return self._score_frontiers(
             frontiers, data, width, height, res, ox, oy,
             robot_x, robot_y, robot_yaw, expanded,
+            collect_all=True,
         )
 
     def _score_frontiers(
@@ -413,11 +523,18 @@ class FrontierExplorer(Node):
         robot_y: float,
         robot_yaw: float,
         max_dist: float,
+        collect_all: bool = False,
     ) -> Tuple[Optional[Tuple[float, float]], float]:
+        """Score frontiers and return the best one.
+
+        If collect_all=True, also stores all valid (position, score) pairs
+        sorted best-first into self._frontier_queue for immediate switching.
+        """
         max_size = max(len(f) for f in frontiers)
         best_goal: Optional[Tuple[float, float]] = None
         best_score = -float("inf")
         n_small = n_no_target = n_blacklist = n_dist = n_edge = 0
+        all_valid: List[Tuple[Tuple[float, float], float]] = [] if collect_all else []
 
         # Minimum cells from map boundary — prevents worldToMap failures and
         # wall collisions. Converts the wall_safe_distance param to grid cells.
@@ -475,11 +592,21 @@ class FrontierExplorer(Node):
             if score > best_score:
                 best_score = score
                 best_goal = (cx, cy)
+            if collect_all:
+                all_valid.append(((cx, cy), score))
+
+        if collect_all and all_valid:
+            # Sort all candidates best-first and store in queue (skip index 0
+            # which is the goal we're about to return — it goes to the caller)
+            all_valid.sort(key=lambda x: x[1], reverse=True)
+            self._frontier_queue = all_valid[1:1 + self._queue_size]
+            self._queue_stamp = self.get_clock().now()
 
         self.get_logger().debug(
             f"score_frontiers(max_dist={max_dist:.1f}): total={len(frontiers)} "
             f"too_small={n_small} no_target={n_no_target} "
             f"edge={n_edge} blacklisted={n_blacklist} dist_fail={n_dist} "
+            f"queued={len(self._frontier_queue)} "
             f"result={'found' if best_goal else 'none'}"
         )
         return best_goal, best_score
