@@ -170,6 +170,20 @@ class FrontierExplorer(Node):
             if self.goal_start_time is None:
                 return
             elapsed = self.get_clock().now() - self.goal_start_time
+
+            # ── Early-cancel: if the area we're heading to is already mapped ──
+            # If there are no unknown cells near the active goal the frontier is
+            # gone — no point completing the trip, pick a new frontier now.
+            if self.active_goal_xy is not None and self.latest_map is not None:
+                if self._frontier_vanished(self.active_goal_xy, self.latest_map):
+                    self.get_logger().info(
+                        "Active frontier already mapped — cancelling early, picking new goal"
+                    )
+                    self.goal_handle.cancel_goal_async()
+                    self.goal_in_progress = False
+                    self.last_goal_end_time = self.get_clock().now()
+                    return
+
             if elapsed > Duration(seconds=self.goal_timeout_sec):
                 self.get_logger().warn("Goal timeout, cancelling")
                 if self.active_goal_xy is not None:
@@ -180,9 +194,6 @@ class FrontierExplorer(Node):
                 seconds=self.progress_timeout_sec
             ):
                 self.get_logger().warn("No progress, cancelling — blacklisting stuck position")
-                # Blacklist immediately here (not just in _goal_result_cb) so the
-                # position is excluded on the very next tick, even if the user gave
-                # a manual goal that preempted this one or _goal_result_cb is delayed.
                 if self.active_goal_xy is not None:
                     self.failed_goals[self.active_goal_xy] = self.get_clock().now()
                 self.goal_handle.cancel_goal_async()
@@ -236,6 +247,35 @@ class FrontierExplorer(Node):
         self._send_goal(
             self._build_goal_pose(target[0], target[1], robot_x, robot_y), score
         )
+
+    def _frontier_vanished(
+        self, goal_xy: Tuple[float, float], map_msg: OccupancyGrid
+    ) -> bool:
+        """Return True if the area around goal_xy no longer has unknown cells.
+
+        When the robot is navigating to a frontier and the lidar maps that
+        area before the robot arrives, the frontier disappears from the map.
+        Continuing to that location wastes time — cancel early and pick a
+        new frontier instead.
+        """
+        res = map_msg.info.resolution
+        ox  = map_msg.info.origin.position.x
+        oy  = map_msg.info.origin.position.y
+        w   = map_msg.info.width
+        h   = map_msg.info.height
+        data = map_msg.data
+
+        cgx = int((goal_xy[0] - ox) / res)
+        cgy = int((goal_xy[1] - oy) / res)
+        radius = int(0.8 / res)          # check 0.8 m radius around goal
+
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                nx, ny = cgx + dx, cgy + dy
+                if 0 <= nx < w and 0 <= ny < h:
+                    if data[ny * w + nx] == -1:   # unknown cell still exists
+                        return False
+        return True   # no unknown cells left — frontier is gone
 
     def _lookup_robot_pose(self) -> Optional[TransformStamped]:
         try:
