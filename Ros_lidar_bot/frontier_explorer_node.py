@@ -530,19 +530,29 @@ class FrontierExplorer(Node):
             pos = self.active_goal_xy
             if pos is not None:
                 if status == GoalStatus.STATUS_ABORTED:
-                    # Nav2 itself gave up — planner couldn't find a path or the
-                    # controller completely failed.  This is the strongest signal
-                    # that the frontier is physically unreachable.
-                    # Mark as a dead zone: 10-min blacklist + maximum radius.
-                    old_t = self.blacklist_timeout_sec
-                    self.blacklist_timeout_sec = self._PHANTOM_TIMEOUT   # 600 s
+                    # Nav2 aborted — could be a genuine unreachable zone OR a
+                    # temporary costmap-resize failure (SLAM expanding the map).
+                    # Don't dead-zone immediately on the FIRST abort; use the
+                    # adaptive hit counter instead:
+                    #   1st abort → standard blacklist (300 s, 0.8 m)
+                    #   2nd abort at same area → dead zone (600 s, 1.6 m)
+                    # This prevents costmap-resize false positives from
+                    # permanently marking navigable areas.
                     self._blacklist_goal(pos)
-                    self.blacklist_timeout_sec = old_t
-                    self._blacklist_hits[pos] = 10   # force double radius immediately
-                    self.get_logger().warn(
-                        f"DEAD ZONE marked at {pos} — Nav2 aborted (unreachable). "
-                        f"Blacklisted 10 min, radius {self.goal_blacklist_radius * 2:.2f} m"
-                    )
+                    hits = self._blacklist_hits.get(pos, 1)
+                    if hits >= 2:
+                        # Genuinely unreachable — escalate to dead zone
+                        self._blacklist_hits[pos] = 10
+                        self._blacklist_timeouts[pos] = self._PHANTOM_TIMEOUT
+                        self.get_logger().warn(
+                            f"DEAD ZONE at {pos} — aborted {hits}× "
+                            f"(radius {self.goal_blacklist_radius*2:.2f} m, 10 min)"
+                        )
+                    else:
+                        self.get_logger().warn(
+                            f"Nav2 aborted at {pos} (1st time — standard blacklist 300s; "
+                            "may be costmap-resize false positive)"
+                        )
                 else:
                     # CANCELLED (our timeout / safety switch) — standard blacklist
                     self.get_logger().warn(f"Goal ended with status {status}")
