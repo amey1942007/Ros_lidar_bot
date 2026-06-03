@@ -13,7 +13,9 @@ from nav_msgs.msg import OccupancyGrid
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, ColorRGBA
+from geometry_msgs.msg import Point
+from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import Buffer, TransformException, TransformListener
 
 GridCell = Tuple[int, int]
@@ -87,7 +89,8 @@ class FrontierExplorer(Node):
         # Track how many times each area has been blacklisted.
         # On repeat failures the blacklist radius doubles — prevents the robot
         # from endlessly returning to a genuinely unreachable zone.
-        self._blacklist_hits: Dict[Tuple[float, float], int] = {}
+        self._blacklist_hits:     Dict[Tuple[float, float], int]           = {}
+        self._blacklist_timeouts: Dict[Tuple[float, float], float]         = {}
         # Phantom success counter — tracks how many times the robot "reached"
         # a goal (STATUS_SUCCEEDED) but the frontier cells near that position
         # still didn't clear.  This happens for permanently occluded areas
@@ -124,7 +127,8 @@ class FrontierExplorer(Node):
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
-        self.nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
+        self.nav_client  = ActionClient(self, NavigateToPose, "navigate_to_pose")
+        self._debug_pub  = self.create_publisher(MarkerArray, "/frontier_debug", 10)
         self.create_subscription(OccupancyGrid, self.map_topic, self._map_cb, 10)
         self.create_subscription(Bool, "/safety_blocked", self._safety_cb, 10)
         self.create_timer(float(p("goal_interval_sec").value), self._tick)
@@ -313,6 +317,7 @@ class FrontierExplorer(Node):
         if target is None:
             self._no_frontier_ticks += 1
             self._try_relax()
+            self._publish_debug_markers()   # keep blacklist zones visible while idle
             if self._no_frontier_ticks >= self.no_frontier_done_ticks:
                 self.get_logger().info(
                     f"No frontiers for {self._no_frontier_ticks} ticks — exploration complete"
@@ -334,6 +339,7 @@ class FrontierExplorer(Node):
         self._send_goal(
             self._build_goal_pose(target[0], target[1], robot_x, robot_y), score
         )
+        self._publish_debug_markers()
 
     def _frontier_vanished(
         self, goal_xy: Tuple[float, float], map_msg: OccupancyGrid
@@ -970,18 +976,22 @@ class FrontierExplorer(Node):
                 closest_d2, closest_key = d2, bk
 
         if closest_key is not None and closest_d2 <= merge_r2:
-            # Same area — increment hit counter on the existing key
             hits = self._blacklist_hits.get(closest_key, 1) + 1
             self._blacklist_hits[closest_key] = hits
             self.failed_goals[closest_key] = self.get_clock().now()
             if hits > 1:
+                # Scale timeout with hits so robot stays away longer each time:
+                # hit 2 → 600 s, hit 3 → 1200 s, hit 4+ → 2400 s (capped)
+                scaled = min(self.blacklist_timeout_sec * (2 ** (hits - 1)), 2400.0)
+                self._blacklist_timeouts[closest_key] = scaled
                 self.get_logger().warn(
                     f"Area {closest_key} blacklisted {hits}× — "
-                    f"effective radius now {self.goal_blacklist_radius * 2.0:.2f} m"
+                    f"radius {self.goal_blacklist_radius * 2.0:.2f} m, "
+                    f"timeout {scaled:.0f} s"
                 )
         else:
-            # New area
             self._blacklist_hits[xy] = 1
+            self._blacklist_timeouts[xy] = self.blacklist_timeout_sec
             self.failed_goals[xy] = self.get_clock().now()
 
         self._last_cancel_xy = xy
@@ -1004,16 +1014,120 @@ class FrontierExplorer(Node):
         return False
 
     def _prune_failed_goals(self) -> None:
-        now = self.get_clock().now()
+        now  = self.get_clock().now()
         keep = {
             goal: stamp
             for goal, stamp in self.failed_goals.items()
-            if (now - stamp) <= Duration(seconds=self.blacklist_timeout_sec)
+            if (now - stamp) <= Duration(
+                seconds=self._blacklist_timeouts.get(goal, self.blacklist_timeout_sec)
+            )
         }
-        # Clean up hit counters for pruned entries
         for gone in set(self.failed_goals) - set(keep):
             self._blacklist_hits.pop(gone, None)
+            self._blacklist_timeouts.pop(gone, None)
         self.failed_goals = keep
+
+
+    def _publish_debug_markers(self) -> None:
+        """Publish /frontier_debug MarkerArray for RViz2 debugging.
+
+        Shows:
+          - Blacklisted zones  (red/dark-red filled circles, radius = effective blacklist radius)
+          - Top-5 queued frontiers  (numbered green spheres + text labels)
+        Add a MarkerArray display in RViz2 → topic /frontier_debug.
+        """
+        arr  = MarkerArray()
+        now  = self.get_clock().now().to_msg()
+        mid  = 0
+        base = self.goal_blacklist_radius
+
+        # ── Blacklisted zones ─────────────────────────────────────────────────
+        for (bx, by), stamp in self.failed_goals.items():
+            hits    = self._blacklist_hits.get((bx, by), 1)
+            radius  = base * 2.0 if hits > 1 else base
+            timeout = self._blacklist_timeouts.get((bx, by), self.blacklist_timeout_sec)
+            elapsed = (self.get_clock().now() - stamp).nanoseconds / 1e9
+            remaining = max(0.0, timeout - elapsed)
+
+            # Circle (cylinder) — red for standard, dark-red for dead zone (hits>1)
+            m           = Marker()
+            m.header.frame_id = self.map_frame
+            m.header.stamp    = now
+            m.ns              = "blacklist"
+            m.id              = mid; mid += 1
+            m.type            = Marker.CYLINDER
+            m.action          = Marker.ADD
+            m.pose.position.x = bx
+            m.pose.position.y = by
+            m.pose.position.z = 0.05
+            m.pose.orientation.w = 1.0
+            m.scale.x = radius * 2.0
+            m.scale.y = radius * 2.0
+            m.scale.z = 0.05
+            m.color   = ColorRGBA(r=0.8 if hits == 1 else 0.5,
+                                  g=0.0, b=0.0,
+                                  a=0.35)
+            m.lifetime.sec = 6
+            arr.markers.append(m)
+
+            # Text label showing hit count and time remaining
+            t           = Marker()
+            t.header    = m.header
+            t.ns        = "blacklist_label"
+            t.id        = mid; mid += 1
+            t.type      = Marker.TEXT_VIEW_FACING
+            t.action    = Marker.ADD
+            t.pose.position.x = bx
+            t.pose.position.y = by
+            t.pose.position.z = 0.35
+            t.pose.orientation.w = 1.0
+            t.scale.z   = 0.18
+            t.text      = f"BL×{hits}  {remaining:.0f}s"
+            t.color     = ColorRGBA(r=1.0, g=0.4 if hits == 1 else 0.1,
+                                    b=0.1, a=1.0)
+            t.lifetime.sec = 6
+            arr.markers.append(t)
+
+        # ── Top-5 queued frontiers ────────────────────────────────────────────
+        for rank, (xy, score) in enumerate(self._frontier_queue[:5]):
+            fx, fy = xy
+
+            s           = Marker()
+            s.header.frame_id = self.map_frame
+            s.header.stamp    = now
+            s.ns              = "frontier_queue"
+            s.id              = mid; mid += 1
+            s.type            = Marker.SPHERE
+            s.action          = Marker.ADD
+            s.pose.position.x = fx
+            s.pose.position.y = fy
+            s.pose.position.z = 0.25
+            s.pose.orientation.w = 1.0
+            s.scale.x = s.scale.y = s.scale.z = 0.25
+            # Colour gradient: #1 bright green → #5 yellow-green
+            g = 0.9 - rank * 0.1
+            s.color   = ColorRGBA(r=0.1, g=g, b=0.2, a=0.85)
+            s.lifetime.sec = 6
+            arr.markers.append(s)
+
+            lbl           = Marker()
+            lbl.header    = s.header
+            lbl.ns        = "frontier_queue_label"
+            lbl.id        = mid; mid += 1
+            lbl.type      = Marker.TEXT_VIEW_FACING
+            lbl.action    = Marker.ADD
+            lbl.pose.position.x = fx
+            lbl.pose.position.y = fy
+            lbl.pose.position.z = 0.50
+            lbl.pose.orientation.w = 1.0
+            lbl.scale.z   = 0.18
+            lbl.text      = f"Q{rank+1}  {score:.2f}"
+            lbl.color     = ColorRGBA(r=0.9, g=1.0, b=0.9, a=1.0)
+            lbl.lifetime.sec = 6
+            arr.markers.append(lbl)
+
+        if arr.markers:
+            self._debug_pub.publish(arr)
 
 
 def main(args=None) -> None:
