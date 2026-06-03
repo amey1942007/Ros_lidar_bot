@@ -91,6 +91,10 @@ class FrontierExplorer(Node):
         # from endlessly returning to a genuinely unreachable zone.
         self._blacklist_hits:     Dict[Tuple[float, float], int]           = {}
         self._blacklist_timeouts: Dict[Tuple[float, float], float]         = {}
+        # Permanently blocked map cells — enclosed unknown regions with ALL
+        # sides surrounded by occupied cells.  These never expire; the robot
+        # will never be able to explore them regardless of how long it waits.
+        self._permanent_dead_zones: Set[Tuple[float, float]]               = set()
         # Phantom success counter — tracks how many times the robot "reached"
         # a goal (STATUS_SUCCEEDED) but the frontier cells near that position
         # still didn't clear.  This happens for permanently occluded areas
@@ -310,9 +314,16 @@ class FrontierExplorer(Node):
         ) <= self.goal_reached_radius:
             self.active_goal_xy = None
 
-        target, score = self._select_frontier_goal(
-            self.latest_map, robot_x, robot_y, robot_yaw
-        )
+        # ── Try queue first (already-scored candidates, re-validated fresh) ──
+        # The queue stores the top-N large frontiers from the last planning tick.
+        # Using Q1 directly avoids a full map rescan and responds faster.
+        # Only skip to full rescan if the queue is empty/stale/all-invalid.
+        target, score = self._pop_queued_frontier(robot_x, robot_y)
+        if target is None:
+            # Queue empty or all stale — run full frontier rescan
+            target, score = self._select_frontier_goal(
+                self.latest_map, robot_x, robot_y, robot_yaw
+            )
 
         if target is None:
             self._no_frontier_ticks += 1
@@ -566,7 +577,7 @@ class FrontierExplorer(Node):
         oy = map_msg.info.origin.position.y
         data = map_msg.data
 
-        frontiers = self._extract_frontiers(data, width, height)
+        frontiers = self._extract_frontiers(data, width, height, map_msg)
         if not frontiers:
             self.get_logger().debug("No frontier cells found in map")
             return None, -float("inf")
@@ -809,8 +820,31 @@ class FrontierExplorer(Node):
                         q.append((ny, nx))
         return reachable
 
+    @staticmethod
+    def _label_enclosed(enclosed: np.ndarray) -> Tuple[np.ndarray, int]:
+        """Connected-component labelling of enclosed unknown cells (4-connectivity).
+        Returns (label_array, num_regions).  Region IDs start at 1."""
+        h, w       = enclosed.shape
+        labels     = np.zeros((h, w), dtype=np.int32)
+        region_id  = 0
+        q: deque   = deque()
+        for sy in range(h):
+            for sx in range(w):
+                if enclosed[sy, sx] and labels[sy, sx] == 0:
+                    region_id += 1
+                    labels[sy, sx] = region_id
+                    q.append((sy, sx))
+                    while q:
+                        cy, cx = q.popleft()
+                        for ny, nx in ((cy-1,cx),(cy+1,cx),(cy,cx-1),(cy,cx+1)):
+                            if 0<=ny<h and 0<=nx<w and enclosed[ny,nx] and labels[ny,nx]==0:
+                                labels[ny, nx] = region_id
+                                q.append((ny, nx))
+        return labels, region_id
+
     def _extract_frontiers(
-        self, data, width: int, height: int
+        self, data, width: int, height: int,
+        map_msg: Optional[OccupancyGrid] = None
     ) -> List[List[GridCell]]:
         """Vectorized frontier extraction via numpy; BFS clustering in Python."""
         grid = np.asarray(data, dtype=np.int8).reshape((height, width))
@@ -832,9 +866,27 @@ class FrontierExplorer(Node):
             grid[enclosed] = 100   # virtually occupied — won't form frontiers
             unknown = grid == -1
             free    = grid == 0
+
+            # Register enclosed region centroids as PERMANENT dead zones.
+            # These have no timeout — the map geometry means they can never
+            # be explored no matter how long the robot waits.
+            res = map_msg.info.resolution       if map_msg is not None else 0.05
+            ox  = map_msg.info.origin.position.x if map_msg is not None else 0.0
+            oy  = map_msg.info.origin.position.y if map_msg is not None else 0.0
+            # Use connected-component centroids so each enclosed pocket gets one marker
+            labeled, n_regions = self._label_enclosed(enclosed)
+            for region_id in range(1, n_regions + 1):
+                ys_r, xs_r = np.where(labeled == region_id)
+                if len(xs_r) < 3:
+                    continue   # single-cell noise, skip
+                cx_w = float(ox + (xs_r.mean() + 0.5) * res)
+                cy_w = float(oy + (ys_r.mean() + 0.5) * res)
+                key  = (round(cx_w, 2), round(cy_w, 2))
+                self._permanent_dead_zones.add(key)
+
             self.get_logger().debug(
-                f"Enclosed-region fill: {n_enclosed} unreachable unknown cells "
-                "marked as occupied — no frontiers will form there"
+                f"Enclosed-region fill: {n_enclosed} cells in "
+                f"{n_regions} pocket(s) → permanent dead zones"
             )
 
         # 8-connectivity: unknown cells adjacent (incl. diagonal) to any free cell
@@ -1011,6 +1063,11 @@ class FrontierExplorer(Node):
             r2   = dbl_r2 if hits > 1 else base_r2
             if (gx - bx) ** 2 + (gy - by) ** 2 <= r2:
                 return True
+        # Check permanent dead zones (enclosed map regions — never expire)
+        perm_r2 = dbl_r2
+        for (bx, by) in self._permanent_dead_zones:
+            if (gx - bx) ** 2 + (gy - by) ** 2 <= perm_r2:
+                return True
         return False
 
     def _prune_failed_goals(self) -> None:
@@ -1032,14 +1089,22 @@ class FrontierExplorer(Node):
         """Publish /frontier_debug MarkerArray for RViz2 debugging.
 
         Shows:
-          - Blacklisted zones  (red/dark-red filled circles, radius = effective blacklist radius)
-          - Top-5 queued frontiers  (numbered green spheres + text labels)
+          - Blacklisted zones   — red/dark-red cylinders, label with countdown
+          - Permanent dead zones — black cylinders, label 'PERM'
+          - Top-5 queued frontiers — numbered green spheres + score labels
         Add a MarkerArray display in RViz2 → topic /frontier_debug.
         """
         arr  = MarkerArray()
         now  = self.get_clock().now().to_msg()
         mid  = 0
         base = self.goal_blacklist_radius
+
+        # Delete all previous markers first so stale ones never linger
+        clr        = Marker()
+        clr.action = Marker.DELETEALL
+        clr.header.frame_id = self.map_frame
+        clr.header.stamp    = now
+        arr.markers.append(clr)
 
         # ── Blacklisted zones ─────────────────────────────────────────────────
         for (bx, by), stamp in self.failed_goals.items():
@@ -1067,7 +1132,7 @@ class FrontierExplorer(Node):
             m.color   = ColorRGBA(r=0.8 if hits == 1 else 0.5,
                                   g=0.0, b=0.0,
                                   a=0.35)
-            m.lifetime.sec = 6
+            m.lifetime.sec = 0
             arr.markers.append(m)
 
             # Text label showing hit count and time remaining
@@ -1085,8 +1150,43 @@ class FrontierExplorer(Node):
             t.text      = f"BL×{hits}  {remaining:.0f}s"
             t.color     = ColorRGBA(r=1.0, g=0.4 if hits == 1 else 0.1,
                                     b=0.1, a=1.0)
-            t.lifetime.sec = 6
+            t.lifetime.sec = 0
             arr.markers.append(t)
+
+        # ── Permanent dead zones (black, no timeout label) ───────────────────
+        perm_r = self.goal_blacklist_radius * 2.0
+        for (px, py) in self._permanent_dead_zones:
+            pm           = Marker()
+            pm.header.frame_id = self.map_frame
+            pm.header.stamp    = now
+            pm.ns              = "perm_dead"
+            pm.id              = mid; mid += 1
+            pm.type            = Marker.CYLINDER
+            pm.action          = Marker.ADD
+            pm.pose.position.x = px
+            pm.pose.position.y = py
+            pm.pose.position.z = 0.05
+            pm.pose.orientation.w = 1.0
+            pm.scale.x = pm.scale.y = perm_r * 2.0
+            pm.scale.z = 0.05
+            pm.color   = ColorRGBA(r=0.1, g=0.1, b=0.1, a=0.45)
+            pm.lifetime.sec = 0
+            arr.markers.append(pm)
+            pt           = Marker()
+            pt.header    = pm.header
+            pt.ns        = "perm_dead_label"
+            pt.id        = mid; mid += 1
+            pt.type      = Marker.TEXT_VIEW_FACING
+            pt.action    = Marker.ADD
+            pt.pose.position.x = px
+            pt.pose.position.y = py
+            pt.pose.position.z = 0.35
+            pt.pose.orientation.w = 1.0
+            pt.scale.z   = 0.16
+            pt.text      = "PERM"
+            pt.color     = ColorRGBA(r=0.8, g=0.8, b=0.8, a=1.0)
+            pt.lifetime.sec = 0
+            arr.markers.append(pt)
 
         # ── Top-5 queued frontiers ────────────────────────────────────────────
         for rank, (xy, score) in enumerate(self._frontier_queue[:5]):
@@ -1107,7 +1207,7 @@ class FrontierExplorer(Node):
             # Colour gradient: #1 bright green → #5 yellow-green
             g = 0.9 - rank * 0.1
             s.color   = ColorRGBA(r=0.1, g=g, b=0.2, a=0.85)
-            s.lifetime.sec = 6
+            s.lifetime.sec = 0
             arr.markers.append(s)
 
             lbl           = Marker()
@@ -1123,7 +1223,7 @@ class FrontierExplorer(Node):
             lbl.scale.z   = 0.18
             lbl.text      = f"Q{rank+1}  {score:.2f}"
             lbl.color     = ColorRGBA(r=0.9, g=1.0, b=0.9, a=1.0)
-            lbl.lifetime.sec = 6
+            lbl.lifetime.sec = 0
             arr.markers.append(lbl)
 
         if arr.markers:
