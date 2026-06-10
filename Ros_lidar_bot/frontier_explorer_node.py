@@ -78,6 +78,8 @@ class FrontierExplorer(Node):
         self._cfg_min_goal_distance = self.min_goal_distance
         self._cfg_max_goal_distance = self.max_goal_distance
         self._calibrated = False
+        # Large-frontier threshold for standby queue — set properly in _calibrate_from_map
+        self._queue_large_threshold: int = max(self.min_frontier_size * 3, 15)
 
         self.latest_map: Optional[OccupancyGrid] = None
         self.goal_handle = None
@@ -102,7 +104,7 @@ class FrontierExplorer(Node):
         # After _PHANTOM_THRESHOLD arrivals with no map change the area is
         # force-blacklisted with a 10-minute timeout.
         self._phantom_successes: Dict[Tuple[float, float], int] = {}
-        self._PHANTOM_THRESHOLD = 3       # arrivals without clearing → blacklist
+        self._PHANTOM_THRESHOLD = 2       # arrivals without clearing → blacklist
         self._PHANTOM_TIMEOUT   = 600.0   # 10 min — much longer than normal 300 s
         # Position of the last cancelled goal — used to enforce a minimum
         # distance for the next queued frontier so the robot can't immediately
@@ -169,11 +171,21 @@ class FrontierExplorer(Node):
         if scaled_ticks > self.no_frontier_done_ticks:
             self.no_frontier_done_ticks = scaled_ticks
 
+        # Large-frontier threshold for the standby queue — scales with map area so
+        # "large" means something relative to the room being explored.
+        # Formula: 1.5 cells per 1000 map cells, floored at max(min_frontier_size*3, 15).
+        map_cells = msg.info.width * msg.info.height
+        self._queue_large_threshold = max(
+            self.min_frontier_size * 3, 15,
+            int(map_cells * 0.0015),
+        )
+
         self._calibrated = True
         self.get_logger().info(
             f"[auto-calibrate] map {w_m:.0f}×{h_m:.0f} m → "
             f"max_goal_distance={self.max_goal_distance:.1f} m  "
-            f"done_ticks={self.no_frontier_done_ticks}"
+            f"done_ticks={self.no_frontier_done_ticks}  "
+            f"queue_large_threshold={self._queue_large_threshold} cells"
         )
 
     def _try_relax(self) -> None:
@@ -228,11 +240,26 @@ class FrontierExplorer(Node):
             # gone — no point completing the trip, pick a new frontier now.
             if self.active_goal_xy is not None and self.latest_map is not None:
                 if self._frontier_vanished(self.active_goal_xy, self.latest_map):
-                    self.get_logger().info(
-                        "Active frontier already mapped — cancelling early, picking new goal"
-                    )
                     self.goal_handle.cancel_goal_async()
                     self.goal_in_progress = False
+                    tf = self._lookup_robot_pose()
+                    if tf is not None:
+                        rx = tf.transform.translation.x
+                        ry = tf.transform.translation.y
+                        nxt_xy, nxt_score = self._pop_queued_frontier(rx, ry)
+                        if nxt_xy is not None:
+                            self.get_logger().info(
+                                "Active frontier mapped — switching to queued frontier"
+                            )
+                            self._send_goal(
+                                self._build_goal_pose(nxt_xy[0], nxt_xy[1], rx, ry),
+                                nxt_score,
+                            )
+                            return
+                    # Queue empty — wait for next tick rescan (apply cooldown)
+                    self.get_logger().info(
+                        "Active frontier mapped, queue empty — rescanning next tick"
+                    )
                     self.last_goal_end_time = self.get_clock().now()
                     return
 
@@ -267,11 +294,22 @@ class FrontierExplorer(Node):
                         return
 
             if elapsed > Duration(seconds=self.goal_timeout_sec):
-                self.get_logger().warn("Goal timeout, cancelling")
+                self.get_logger().warn("Goal timeout — blacklisting, trying queued frontier")
                 if self.active_goal_xy is not None:
                     self._blacklist_goal(self.active_goal_xy)
                 self.goal_handle.cancel_goal_async()
                 self.goal_in_progress = False
+                tf = self._lookup_robot_pose()
+                if tf is not None:
+                    rx = tf.transform.translation.x
+                    ry = tf.transform.translation.y
+                    nxt_xy, nxt_score = self._pop_queued_frontier(rx, ry)
+                    if nxt_xy is not None:
+                        self._send_goal(
+                            self._build_goal_pose(nxt_xy[0], nxt_xy[1], rx, ry),
+                            nxt_score,
+                        )
+                        return
             elif (self.get_clock().now() - self.last_progress_time) > Duration(
                 seconds=self.progress_timeout_sec
             ):
@@ -755,10 +793,9 @@ class FrontierExplorer(Node):
             all_valid.sort(key=lambda x: x[1], reverse=True)
 
             # ── Geographically diverse queue of LARGE frontiers only ──────────
-            # Small frontiers (<= queue_large_threshold cells) get mapped
-            # naturally as the robot moves nearby — no need to dedicate a queue
-            # slot to them.  Only substantial unexplored zones go in the queue.
-            queue_large_threshold = max(self.min_frontier_size * 3, 15)
+            # Small frontiers get mapped naturally as the robot moves nearby.
+            # Threshold is map-relative (set in _calibrate_from_map).
+            queue_large_threshold = self._queue_large_threshold
             min_spread = self.goal_blacklist_radius * 2.5
             diverse: List[Tuple[Tuple[float, float], float]] = []
 

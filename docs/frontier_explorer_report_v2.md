@@ -146,7 +146,7 @@ A new candidate must score at least `active_score + 0.20` to trigger a goal swit
 | STATUS_CANCELLED (our timeout or safety switch) | 0.80 m | 300 s |
 | STATUS_ABORTED — 1st time at this position | 0.80 m | 300 s |
 | STATUS_ABORTED — 2nd+ time same area (within 1.2 m) | 1.60 m | 600 s (dead zone) |
-| Phantom success — reached 3× but frontier never cleared | 1.60 m | 600 s (dead zone) |
+| Phantom success — reached 2× but frontier never cleared | 1.60 m | 600 s (dead zone) |
 | Enclosed region (flood-fill) | 1.60 m | **Never expires** |
 
 **Why 1st abort is not immediate dead zone:** SLAM costmap expansion (map boundary growing) can cause a temporary Nav2 abort on navigable space. One standard blacklist gives it a chance to recover; only repeat failure confirms the area is genuinely unreachable.
@@ -192,7 +192,7 @@ Nav2 reports STATUS_SUCCEEDED when the robot is within 0.45 m of the target. But
 ON STATUS_SUCCEEDED:
     if frontier still present within 0.80 m of target:
         phantom_count += 1
-        if phantom_count >= 3:
+        if phantom_count >= 2:
             blacklist for 600 s, radius 1.60 m (dead zone)
     else:
         phantom_count = 0   # genuine success
@@ -299,16 +299,16 @@ Publishes `/safety_blocked` (Bool) at 20 Hz. Explorer tracks continuous blocking
 
 | Event | Blacklisted? | Next goal |
 |---|---|---|
-| STATUS_SUCCEEDED + frontier cleared | No | Queue or rescan next tick |
-| STATUS_SUCCEEDED + frontier NOT cleared (1st/2nd) | No | Queue or rescan next tick |
-| STATUS_SUCCEEDED + frontier NOT cleared (3rd) | YES — 600 s, 1.60 m | Pop queue |
+| STATUS_SUCCEEDED + frontier cleared | No | Queue → rescan if empty |
+| STATUS_SUCCEEDED + frontier NOT cleared (1st) | No | Queue → rescan if empty |
+| STATUS_SUCCEEDED + frontier NOT cleared (2nd) | YES — 600 s, 1.60 m | Pop queue |
 | STATUS_ABORTED — 1st time | YES — 300 s, 0.80 m | Pop queue |
 | STATUS_ABORTED — 2nd+ same area | YES — 600 s, 1.60 m | Pop queue |
 | STATUS_CANCELLED (our timeout / safety) | YES — 300 s, 0.80 m | Pop queue |
 | Safety blocked 3 s | YES — 300 s, 0.80 m | Pop queue immediately |
 | Progress timeout (25 s) | YES — 300 s, 0.80 m | Pop queue same tick |
-| Goal timeout (90 s) | YES — 300 s, 0.80 m | Rescan next tick |
-| Frontier mapped mid-trip | No | Rescan next tick |
+| Goal timeout (90 s) | YES — 300 s, 0.80 m | Pop queue same tick → rescan if empty |
+| Frontier mapped mid-trip | No | Pop queue same tick → rescan if empty |
 
 ---
 
@@ -325,17 +325,24 @@ Published every tick, even when idle. Add a MarkerArray display in RViz2.
 
 ---
 
-## 12. Branch Overview (autonomous nav only)
+## 12. Branch Overview (autonomous nav features)
 
-| Branch | Explorer lines | Key difference |
-|---|---|---|
-| `main` | 599 | Basic explorer — no queue, no flood-fill, no safety stop, no phantom success |
-| `home_updated` | 649 | Adds **home recovery**: robot returns to its start position after 6 no-frontier ticks. Contributed by Gautam1704 (PR #3). Not merged to device-amey. |
-| `jazzy` | 599 | Ported to ROS2 Jazzy + Gazebo Harmonic. Adds auto-calibration + progressive relaxation. Otherwise same as main. |
-| `device-amey` | **1255** | Everything in this document. Active development branch. |
-
-**Features not in main/jazzy/home_updated:** flood-fill dead zones, safety stop, frontier queue, phantom success, exponential blacklist, adaptive abort (1st vs 2nd+), far-frontier bonus, debug markers.
-
-**home_updated only:** home-return on stuck (not in device-amey — potential future addition).
-
-**jazzy only:** Gazebo Harmonic support (device-amey runs Classic).
+| Feature | main | home_updated | jazzy | device-amey |
+|---|---|---|---|---|
+| Frontier explorer (basic) | Yes | Yes | Yes | Yes |
+| Auto-calibration from map size | No | Yes | Yes | Yes |
+| Progressive relaxation | No | Yes | Yes | Yes |
+| Home recovery (return to start when stuck) | No | **Yes** | No | No |
+| Safety stop node | No | No | No | Yes |
+| Frontier standby queue | No | No | No | Yes |
+| Queue used on every tick (not just failover) | No | No | No | Yes |
+| Flood-fill permanent dead zones | No | No | No | Yes |
+| Phantom success detection | No | No | No | Yes |
+| Phantom threshold | — | — | — | 2 arrivals |
+| Exponential blacklist timeout | No | No | No | Yes |
+| Adaptive abort (1st vs 2nd+) | No | No | No | Yes |
+| Far-frontier bonus | No | No | No | Yes |
+| Map-relative large frontier threshold | No | No | No | Yes |
+| Debug markers (/frontier_debug) | No | No | No | Yes |
+| Gazebo Harmonic support | No | No | **Yes** | No |
+| Explorer lines | 599 | 649 | 599 | 1255 |
