@@ -213,7 +213,7 @@ Every time a goal is sent, the top-5 runners-up are stored as a pre-validated st
 | Large frontiers only | Cluster must have ≥ max(min_frontier_size × 3, 15) cells |
 | Geographic diversity | Each entry must be ≥ 2.0 m from every other queue entry |
 | Fallback | If < 5 large entries exist, any valid frontier fills remaining slots |
-| Stale after | 20 s — queue discarded, next tick does a full rescan |
+| Stale after | 20 s — if goal active: queue silently rebuilt in background same tick; if no goal: full rescan next tick |
 
 ### Queue Validation (lazy, at time of use)
 
@@ -308,7 +308,7 @@ Publishes `/safety_blocked` (Bool) at 20 Hz. Explorer tracks continuous blocking
 | Safety blocked 3 s | YES — 300 s, 0.80 m | Pop queue immediately |
 | Progress timeout (25 s) | YES — 300 s, 0.80 m | Pop queue same tick |
 | Goal timeout (90 s) | YES — 300 s, 0.80 m | Pop queue same tick → rescan if empty |
-| Frontier mapped mid-trip | No | Pop queue same tick → rescan if empty |
+| Frontier mapped mid-trip | **No** (clean cancel — area is fine) | Pop queue same tick → rescan if empty |
 
 ---
 

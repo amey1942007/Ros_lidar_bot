@@ -110,6 +110,10 @@ class FrontierExplorer(Node):
         # distance for the next queued frontier so the robot can't immediately
         # pick something that's just outside the blacklist radius.
         self._last_cancel_xy: Optional[Tuple[float, float]] = None
+        # Set True before cancel_goal_async() when the cancel is clean (frontier
+        # already mapped by the lidar mid-trip).  Prevents _goal_result_cb from
+        # blacklisting an area that is perfectly navigable.
+        self._clean_cancel: bool = False
         self.last_goal_end_time = self.get_clock().now()
         self.last_distance_remaining: Optional[float] = None
         self.last_progress_time = self.get_clock().now()
@@ -240,6 +244,7 @@ class FrontierExplorer(Node):
             # gone — no point completing the trip, pick a new frontier now.
             if self.active_goal_xy is not None and self.latest_map is not None:
                 if self._frontier_vanished(self.active_goal_xy, self.latest_map):
+                    self._clean_cancel = True   # area is fine — don't blacklist
                     self.goal_handle.cancel_goal_async()
                     self.goal_in_progress = False
                     tf = self._lookup_robot_pose()
@@ -331,6 +336,23 @@ class FrontierExplorer(Node):
                             nxt_score,
                         )
                         return
+
+            # ── Background queue refresh while navigating ─────────────────────
+            # If the standby queue is stale (>20 s), rebuild it now so it's
+            # ready for an instant switch if needed.  The active goal is not
+            # changed — only the queue side-effect of _select_frontier_goal
+            # is used.
+            if self._queue_stamp is None or (
+                self.get_clock().now() - self._queue_stamp
+            ).nanoseconds / 1e9 > self._queue_max_age:
+                tf = self._lookup_robot_pose()
+                if tf is not None:
+                    self._select_frontier_goal(
+                        self.latest_map,
+                        tf.transform.translation.x,
+                        tf.transform.translation.y,
+                        self._yaw_from_quaternion(tf.transform.rotation),
+                    )
             return
 
         if (self.get_clock().now() - self.last_goal_end_time) < Duration(
@@ -591,6 +613,10 @@ class FrontierExplorer(Node):
                             f"Nav2 aborted at {pos} (1st time — standard blacklist 300s; "
                             "may be costmap-resize false positive)"
                         )
+                elif self._clean_cancel:
+                    # Frontier was already mapped by lidar before arrival — clean
+                    # cancel, area is fine.  No blacklist, no _last_cancel_xy.
+                    self.get_logger().info("Clean cancel — frontier mapped mid-trip, no blacklist")
                 else:
                     # CANCELLED (our timeout / safety switch) — standard blacklist
                     self.get_logger().warn(f"Goal ended with status {status}")
@@ -600,6 +626,7 @@ class FrontierExplorer(Node):
         self.goal_in_progress = False
         self.last_goal_end_time = self.get_clock().now()
         self.last_distance_remaining = None
+        self._clean_cancel = False   # reset for next goal
 
     def _feedback_cb(self, feedback_msg) -> None:
         remaining = float(getattr(feedback_msg.feedback, "distance_remaining", 0.0))
