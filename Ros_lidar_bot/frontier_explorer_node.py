@@ -96,7 +96,12 @@ class FrontierExplorer(Node):
         # Permanently blocked map cells — enclosed unknown regions with ALL
         # sides surrounded by occupied cells.  These never expire; the robot
         # will never be able to explore them regardless of how long it waits.
+        # _permanent_dead_zones  : centroid per region — used only for RViz markers
+        # _perm_zone_cells       : exact cell footprint (int grid indices) used for
+        #                          blacklist checks — precise shape, not a circle
         self._permanent_dead_zones: Set[Tuple[float, float]]               = set()
+        self._perm_zone_cells:      Set[Tuple[int,   int  ]]               = set()
+        self._map_res: float = 0.05   # set precisely in _calibrate_from_map
         # Phantom success counter — tracks how many times the robot "reached"
         # a goal (STATUS_SUCCEEDED) but the frontier cells near that position
         # still didn't clear.  This happens for permanently occluded areas
@@ -166,6 +171,7 @@ class FrontierExplorer(Node):
 
     def _calibrate_from_map(self, msg: OccupancyGrid) -> None:
         """One-time calibration on first map — scales parameters to actual room size."""
+        self._map_res = msg.info.resolution
         w_m = msg.info.width  * msg.info.resolution
         h_m = msg.info.height * msg.info.resolution
         larger_dim = max(w_m, h_m)
@@ -973,20 +979,34 @@ class FrontierExplorer(Node):
             # Use connected-component centroids so each enclosed pocket gets one marker
             labeled, n_regions = self._label_enclosed(enclosed)
             merge_r2 = (self.goal_blacklist_radius * 2.0) ** 2
+            # 1-cell buffer so frontier targets right on the enclosed boundary
+            # are also caught by the exact geometry check.
+            buf = 1
             for region_id in range(1, n_regions + 1):
                 ys_r, xs_r = np.where(labeled == region_id)
                 if len(xs_r) < 3:
                     continue   # single-cell noise, skip
                 cx_w = float(ox + (xs_r.mean() + 0.5) * res)
                 cy_w = float(oy + (ys_r.mean() + 0.5) * res)
-                # Merge with any existing entry within the exclusion radius so
-                # centroid drift across ticks never creates duplicate PERM markers
-                # for the same physical pocket.
+                # Skip if this region is already covered by an existing entry
                 if any((cx_w - px)**2 + (cy_w - py)**2 <= merge_r2
                        for (px, py) in self._permanent_dead_zones):
                     continue
-                key = (round(cx_w, 2), round(cy_w, 2))
-                self._permanent_dead_zones.add(key)
+                # Centroid for RViz marker
+                self._permanent_dead_zones.add((round(cx_w, 2), round(cy_w, 2)))
+                # Exact cell footprint (+ buffer) stored as world-coordinate integers
+                # (units = 1 map cell = res metres).  World coords are stable even
+                # as SLAM expands the grid and shifts its origin, so these indices
+                # remain valid for the whole session.  O(1) set lookup in _is_blacklisted.
+                for gx_c, gy_c in zip(xs_r.tolist(), ys_r.tolist()):
+                    wx_c = ox + (gx_c + 0.5) * res
+                    wy_c = oy + (gy_c + 0.5) * res
+                    for dx in range(-buf, buf + 1):
+                        for dy in range(-buf, buf + 1):
+                            self._perm_zone_cells.add((
+                                round((wx_c + dx * res) / res),
+                                round((wy_c + dy * res) / res),
+                            ))
 
             self.get_logger().debug(
                 f"Enclosed-region fill: {n_enclosed} cells in "
@@ -1167,10 +1187,13 @@ class FrontierExplorer(Node):
             r2   = dbl_r2 if hits > 1 else base_r2
             if (gx - bx) ** 2 + (gy - by) ** 2 <= r2:
                 return True
-        # Check permanent dead zones (enclosed map regions — never expire)
-        perm_r2 = dbl_r2
-        for (bx, by) in self._permanent_dead_zones:
-            if (gx - bx) ** 2 + (gy - by) ** 2 <= perm_r2:
+        # Check permanent dead zones using exact cell geometry (not a circle).
+        # Convert query point to the same world-coordinate integer units used
+        # when the cells were stored — O(1) set lookup per query.
+        if self._perm_zone_cells:
+            qi = round(gx / self._map_res)
+            qj = round(gy / self._map_res)
+            if (qi, qj) in self._perm_zone_cells:
                 return True
         return False
 
