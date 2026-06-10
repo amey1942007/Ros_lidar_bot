@@ -114,6 +114,13 @@ class FrontierExplorer(Node):
         # already mapped by the lidar mid-trip).  Prevents _goal_result_cb from
         # blacklisting an area that is perfectly navigable.
         self._clean_cancel: bool = False
+        # Monotonically increasing goal generation.  Captured at send time and
+        # checked in all action callbacks — any callback whose generation no longer
+        # matches _goal_gen is stale (a newer goal was already sent) and must not
+        # modify shared state.  This prevents goal_in_progress, active_goal_xy,
+        # active_goal_score, last_goal_end_time, and last_progress_time from being
+        # overwritten by old callbacks firing after an immediate switch.
+        self._goal_gen: int = 0
         self.last_goal_end_time = self.get_clock().now()
         self.last_distance_remaining: Optional[float] = None
         self.last_progress_time = self.get_clock().now()
@@ -521,10 +528,14 @@ class FrontierExplorer(Node):
         if not self.nav_client.wait_for_server(timeout_sec=1.0):
             self.get_logger().warn("Waiting for navigate_to_pose action server")
             return
+        self._goal_gen += 1
+        gen = self._goal_gen          # captured — all callbacks for THIS goal use this value
         goal = NavigateToPose.Goal()
         goal.pose = target_pose
-        future = self.nav_client.send_goal_async(goal, feedback_callback=self._feedback_cb)
-        future.add_done_callback(self._goal_response_cb)
+        future = self.nav_client.send_goal_async(
+            goal, feedback_callback=lambda fb: self._feedback_cb(fb, gen)
+        )
+        future.add_done_callback(lambda f: self._goal_response_cb(f, gen))
         self.goal_in_progress = True
         self.goal_start_time = self.get_clock().now()
         self.active_goal_xy = (target_pose.pose.position.x, target_pose.pose.position.y)
@@ -536,7 +547,9 @@ class FrontierExplorer(Node):
             f"{target_pose.pose.position.y:.2f}) score={score:.3f}"
         )
 
-    def _goal_response_cb(self, future) -> None:
+    def _goal_response_cb(self, future, gen: int) -> None:
+        if gen != self._goal_gen:
+            return   # stale — a newer goal was already sent, ignore this accept/reject
         self.goal_handle = future.result()
         if not self.goal_handle.accepted:
             self.get_logger().warn("Goal rejected by nav2")
@@ -545,9 +558,13 @@ class FrontierExplorer(Node):
             self.active_goal_score = -float("inf")
             self.last_goal_end_time = self.get_clock().now()
             return
-        self.goal_handle.get_result_async().add_done_callback(self._goal_result_cb)
+        self.goal_handle.get_result_async().add_done_callback(
+            lambda f: self._goal_result_cb(f, gen)
+        )
 
-    def _goal_result_cb(self, future) -> None:
+    def _goal_result_cb(self, future, gen: int) -> None:
+        if gen != self._goal_gen:
+            return   # stale — a newer goal is already in flight, don't touch shared state
         status = future.result().status
         if status == GoalStatus.STATUS_SUCCEEDED:
             pos = self.active_goal_xy
@@ -632,7 +649,9 @@ class FrontierExplorer(Node):
         self.last_distance_remaining = None
         self._clean_cancel = False   # reset for next goal
 
-    def _feedback_cb(self, feedback_msg) -> None:
+    def _feedback_cb(self, feedback_msg, gen: int) -> None:
+        if gen != self._goal_gen:
+            return   # stale feedback for an old goal — don't update progress timer
         remaining = float(getattr(feedback_msg.feedback, "distance_remaining", 0.0))
         if self.last_distance_remaining is None:
             self.last_distance_remaining = remaining
