@@ -304,7 +304,7 @@ Publishes `/safety_blocked` (Bool) at 20 Hz. Explorer tracks continuous blocking
 | STATUS_SUCCEEDED + frontier NOT cleared (2nd) | YES — 600 s, 1.60 m | Pop queue |
 | STATUS_ABORTED — 1st time | YES — 300 s, 0.80 m | Pop queue |
 | STATUS_ABORTED — 2nd+ same area | YES — 600 s, 1.60 m | Pop queue |
-| STATUS_CANCELLED (our timeout / safety) | YES — 300 s, 0.80 m | Pop queue |
+| STATUS_CANCELLED (our timeout / safety) | Already done before cancel | Pop queue |
 | Safety blocked 3 s | YES — 300 s, 0.80 m | Pop queue immediately |
 | Progress timeout (25 s) | YES — 300 s, 0.80 m | Pop queue same tick |
 | Goal timeout (90 s) | YES — 300 s, 0.80 m | Pop queue same tick → rescan if empty |

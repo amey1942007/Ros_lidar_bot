@@ -613,14 +613,18 @@ class FrontierExplorer(Node):
                             f"Nav2 aborted at {pos} (1st time — standard blacklist 300s; "
                             "may be costmap-resize false positive)"
                         )
+                # STATUS_CANCELLED always means WE called cancel_goal_async().
+                # We already call _blacklist_goal() explicitly BEFORE cancelling
+                # in every timeout/safety case, so NEVER blacklist here.
+                # By the time this callback fires, active_goal_xy may already
+                # point to the next goal — blacklisting pos here would incorrectly
+                # penalise a valid frontier we just chose.
                 elif self._clean_cancel:
-                    # Frontier was already mapped by lidar before arrival — clean
-                    # cancel, area is fine.  No blacklist, no _last_cancel_xy.
-                    self.get_logger().info("Clean cancel — frontier mapped mid-trip, no blacklist")
+                    self.get_logger().info("Clean cancel — frontier mapped mid-trip")
                 else:
-                    # CANCELLED (our timeout / safety switch) — standard blacklist
-                    self.get_logger().warn(f"Goal ended with status {status}")
-                    self._blacklist_goal(pos)
+                    self.get_logger().info(
+                        f"Goal cancelled (status {status}) — already blacklisted before cancel"
+                    )
                 self.active_goal_xy = None
             self.active_goal_score = -float("inf")
         self.goal_in_progress = False
