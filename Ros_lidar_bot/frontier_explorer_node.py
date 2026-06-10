@@ -972,13 +972,20 @@ class FrontierExplorer(Node):
             oy  = map_msg.info.origin.position.y if map_msg is not None else 0.0
             # Use connected-component centroids so each enclosed pocket gets one marker
             labeled, n_regions = self._label_enclosed(enclosed)
+            merge_r2 = (self.goal_blacklist_radius * 2.0) ** 2
             for region_id in range(1, n_regions + 1):
                 ys_r, xs_r = np.where(labeled == region_id)
                 if len(xs_r) < 3:
                     continue   # single-cell noise, skip
                 cx_w = float(ox + (xs_r.mean() + 0.5) * res)
                 cy_w = float(oy + (ys_r.mean() + 0.5) * res)
-                key  = (round(cx_w, 2), round(cy_w, 2))
+                # Merge with any existing entry within the exclusion radius so
+                # centroid drift across ticks never creates duplicate PERM markers
+                # for the same physical pocket.
+                if any((cx_w - px)**2 + (cy_w - py)**2 <= merge_r2
+                       for (px, py) in self._permanent_dead_zones):
+                    continue
+                key = (round(cx_w, 2), round(cy_w, 2))
                 self._permanent_dead_zones.add(key)
 
             self.get_logger().debug(
