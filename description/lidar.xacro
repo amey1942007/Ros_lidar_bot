@@ -43,7 +43,7 @@
             <pose>0 0 0 0 0 0</pose>
             <topic>scan</topic>
             <ignition_frame_id>laser_frame</ignition_frame_id>
-            <update_rate>20</update_rate>
+            <update_rate>15</update_rate>
             <visualize>true</visualize>
             <always_on>true</always_on>
             <ray>

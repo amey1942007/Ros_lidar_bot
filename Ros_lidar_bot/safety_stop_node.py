@@ -14,12 +14,14 @@ Same logic applies to the rear arc for reverse motion.
 """
 
 import math
+import time
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import Bool
 
 
 class SafetyStop(Node):
@@ -41,6 +43,7 @@ class SafetyStop(Node):
         self._blocked_fwd = False
         self._blocked_bwd = False
         self._last_cmd = Twist()
+        self._blocked_since: float = 0.0   # wall-clock time when blocking started (0 = not blocked)
 
         # Sensor-data QoS: best-effort, keep only last scan
         scan_qos = QoSProfile(
@@ -50,7 +53,10 @@ class SafetyStop(Node):
         )
         self.create_subscription(LaserScan, "/scan", self._scan_cb, scan_qos)
         self.create_subscription(Twist, "/cmd_vel", self._cmd_cb, 10)
-        self._pub = self.create_publisher(Twist, "/cmd_vel_safe", 10)
+        self._pub          = self.create_publisher(Twist, "/cmd_vel_safe", 10)
+        # Publish True while forward motion is blocked — frontier explorer uses this
+        # to switch to the next queued frontier instead of waiting the full progress timeout.
+        self._blocked_pub  = self.create_publisher(Bool, "/safety_blocked", 1)
 
     # ── callbacks ─────────────────────────────────────────────────────────────
 
@@ -75,12 +81,17 @@ class SafetyStop(Node):
         self._blocked_bwd = min_rear < self._min_dist
 
         if self._blocked_fwd and not prev_fwd:
+            self._blocked_since = time.monotonic()
             self.get_logger().warn(
                 f"SAFETY STOP: obstacle {min_front:.2f} m ahead — forward motion blocked",
                 throttle_duration_sec=1.0,
             )
         elif not self._blocked_fwd and prev_fwd:
+            self._blocked_since = 0.0
             self.get_logger().info("Safety stop cleared — path is open")
+
+        # Publish blocked state so the frontier explorer can react immediately
+        self._blocked_pub.publish(Bool(data=bool(self._blocked_fwd)))
 
         # Immediately republish with current safety state applied
         self._publish_safe(self._last_cmd)
