@@ -25,8 +25,8 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='honey',
-    maintainer_email='honeykumar1806@gmail.com',
+    maintainer='Amey Chaudhari',
+    maintainer_email='ameychaudhar19@gmail.com',
     description='Robot description package',
     license='Apache License 2.0',
     extras_require={
