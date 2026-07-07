@@ -62,8 +62,6 @@ def generate_launch_description():
             "/joint_states@sensor_msgs/msg/JointState[ignition.msgs.Model",
             "/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock",
             "/imu@sensor_msgs/msg/Imu[ignition.msgs.IMU",
-            "/camera/image_raw@sensor_msgs/msg/Image[ignition.msgs.Image",
-            "/camera/camera_info@sensor_msgs/msg/CameraInfo[ignition.msgs.CameraInfo",
         ],
         remappings=[
             ("/odom", "/odom_raw"),
