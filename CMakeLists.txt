@@ -48,10 +48,6 @@ install(
 )
 
 # Install the YOLO model so it's accessible via get_package_share_directory
-install(
-  DIRECTORY "Vision Model"
-  DESTINATION share/${PROJECT_NAME}
-)
 
 install(
   DIRECTORY scripts
