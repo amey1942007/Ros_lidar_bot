@@ -47,12 +47,6 @@ install(
   DESTINATION lib/${PROJECT_NAME}
 )
 
-# Install the YOLO model so it's accessible via get_package_share_directory
-install(
-  DIRECTORY "Vision Model"
-  DESTINATION share/${PROJECT_NAME}
-)
-
 install(
   DIRECTORY scripts
   DESTINATION share/${PROJECT_NAME}

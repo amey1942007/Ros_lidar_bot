@@ -1,18 +1,33 @@
 #!/usr/bin/env python3
 """
-Semantic SLAM node — detects objects from the camera feed using YOLO,
-localises them in the map frame using the LiDAR depth, and publishes
-named 3D markers that overlay the SLAM map in RViz2.
+Semantic SLAM node — receives YOLO World detections from /yolo topic,
+localises each detected object in the map frame using LiDAR depth + TF,
+and publishes named 3-D markers to /semantic_markers.
 
-Full pipeline (see docs/semantic_positioning_math.md for the math):
-  /camera/image_raw  →  YOLO (best.pt, runs at ~2-5 Hz)
-  /scan              →  LiDAR depth at the object's horizontal angle
-  TF map→base_link   →  robot's current position and heading
-  ──────────────────────────────────────────────────────────────────
-  object position in map = rotate(depth × direction, robot_yaw) + robot_pos
-  ──────────────────────────────────────────────────────────────────
-  /semantic_markers  →  RViz2 MarkerArray (coloured boxes + labels)
-  semantic_map.json  →  persistent JSON file saved to /tmp
+Pipeline:
+  /yolo       (std_msgs/String — JSON array of detections from OpenCV+YOLO World node)
+  /scan       (sensor_msgs/LaserScan — LiDAR depth for range estimation)
+  TF map→base_link — robot position and heading
+  ─────────────────────────────────────────────────────────────
+  object (x, y) in map frame = rotate(depth × direction, robot_yaw) + robot_pos
+  ─────────────────────────────────────────────────────────────
+  /semantic_markers  → RViz2 MarkerArray (coloured boxes + labels)
+  /semantic_debug    → annotated image republished for rqt_image_view
+  semantic_map.json  → persistent JSON file saved to /tmp
+
+Expected /yolo message format (std_msgs/String, UTF-8 JSON):
+  [
+    {"class": "chair", "x": 320, "y": 240, "w": 100, "h": 150, "conf": 0.82},
+    {"class": "person", "x": 120, "y": 200, "w": 60,  "h": 180, "conf": 0.91},
+    ...
+  ]
+  x, y  — bounding-box centre in pixels (from a 640×480 frame)
+  w, h  — bounding-box width / height in pixels
+  class — object class name (string)
+  conf  — detection confidence 0..1 (optional, defaults to 1.0 if absent)
+
+Camera constants must match the publisher script / physical camera:
+  IMG_W, IMG_H, FOV_H  (edit below if your RPi Cam 3 field-of-view differs)
 """
 
 import json
@@ -25,32 +40,31 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 import rclpy
-from cv_bridge import CvBridge
 from geometry_msgs.msg import Point
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-from sensor_msgs.msg import Image, LaserScan
-from std_msgs.msg import ColorRGBA
+from sensor_msgs.msg import LaserScan
+from std_msgs.msg import ColorRGBA, String
 from tf2_ros import Buffer, TransformException, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
 
-# ── Camera constants (from camera.xacro) ─────────────────────────────────────
-IMG_W = 640
-IMG_H = 480
-FOV_H = 1.089          # 62° in radians
-FOCAL_LEN = IMG_W / (2 * math.tan(FOV_H / 2))   # ≈ 539 pixels
+# ── Camera constants ──────────────────────────────────────────────────────────
+# RPi Camera Module 3: 66° horizontal FOV, 2304×1296 native (streamed at 640×480)
+IMG_W   = 640
+IMG_H   = 480
+FOV_H   = math.radians(66)                          # horizontal FOV in radians
+FOCAL_LEN = IMG_W / (2 * math.tan(FOV_H / 2))       # ≈ 514 px
 
-# ── Colour palette — one colour per class, generated from class name hash ────
+
+# ── Colour palette — deterministic colour per class name ─────────────────────
 def _class_colour(name: str) -> ColorRGBA:
-    """Deterministic colour for a class name."""
     h = abs(hash(name)) % 360
-    # HSV → RGB
     h_norm = h / 60.0
     i = int(h_norm)
     f = h_norm - i
     q = 1 - f
-    table = [(1,f,0),(q,1,0),(0,1,f),(0,q,1),(f,0,1),(1,0,q)]
+    table = [(1, f, 0), (q, 1, 0), (0, 1, f), (0, q, 1), (f, 0, 1), (1, 0, q)]
     r, g, b = table[i % 6]
     c = ColorRGBA()
     c.r, c.g, c.b, c.a = float(r), float(g), float(b), 0.75
@@ -59,72 +73,44 @@ def _class_colour(name: str) -> ColorRGBA:
 
 @dataclass
 class SemanticObject:
-    label: str
-    x: float          # map frame metres
-    y: float
-    width: float      # estimated physical width (metres)
-    depth_size: float # estimated physical depth
+    label:      str
+    x:          float        # map frame metres
+    y:          float
+    width:      float        # estimated physical width (m)
+    depth_size: float        # estimated physical depth (m)
     confidence: float
-    sightings: int = 1
-    colour: ColorRGBA = field(default_factory=ColorRGBA)
-    last_seen: float = field(default_factory=time.monotonic)
+    sightings:  int          = 1
+    colour:     ColorRGBA   = field(default_factory=ColorRGBA)
+    last_seen:  float        = field(default_factory=time.monotonic)
 
 
 class SemanticSLAM(Node):
 
     # ── Hyperparameters ───────────────────────────────────────────────────────
-    DETECT_HZ        = 3.0    # how often to run YOLO (Hz)
-    CONF_THRESHOLD   = 0.25   # minimum YOLO confidence (lower for simulation)
-    MERGE_RADIUS     = 0.60   # merge detections within this distance (m)
-    MIN_SIGHTINGS    = 3      # don't publish until seen this many times
-    MIN_DEPTH        = 0.35   # ignore LiDAR readings closer than this (m)
-    MAX_DEPTH        = 8.0    # ignore LiDAR readings farther than this (m)
-    SAVE_PATH        = "/tmp/semantic_map.json"
+    DETECT_HZ      = 5.0    # max rate to process /yolo messages (Hz)
+    CONF_THRESHOLD = 0.25   # minimum detection confidence to accept
+    MERGE_RADIUS   = 0.60   # merge two detections within this distance (m)
+    MIN_SIGHTINGS  = 3      # don't publish marker until seen this many times
+    MIN_DEPTH      = 0.20   # ignore LiDAR readings closer than this (m)
+    MAX_DEPTH      = 8.0    # ignore LiDAR readings farther than this (m)
+    SAVE_PATH      = "/tmp/semantic_map.json"
 
     def __init__(self) -> None:
         super().__init__("semantic_slam")
 
-        # ── Parameters ───────────────────────────────────────────────────────
-        self.declare_parameter("model_path",       "")
-        self.declare_parameter("detect_hz",        self.DETECT_HZ)
-        self.declare_parameter("conf",             self.CONF_THRESHOLD)
-        self.declare_parameter("startup_delay_sec", 60.0)   # wait for SLAM to settle
-        self.declare_parameter("max_depth",         4.0)    # reject far-wall hits
+        # ── ROS parameters ────────────────────────────────────────────────────
+        self.declare_parameter("conf",      self.CONF_THRESHOLD)
+        self.declare_parameter("max_depth", self.MAX_DEPTH)
 
-        model_path = self.get_parameter("model_path").value
-        if not model_path:
-            # Default: look in the package share directory
-            from ament_index_python.packages import get_package_share_directory
-            pkg = get_package_share_directory("Ros_lidar_bot")
-            model_path = os.path.join(pkg, "Vision Model", "best.pt")
-
-        detect_hz            = float(self.get_parameter("detect_hz").value)
-        self.CONF_THRESHOLD  = float(self.get_parameter("conf").value)
-        self._startup_delay  = float(self.get_parameter("startup_delay_sec").value)
-        self.MAX_DEPTH       = float(self.get_parameter("max_depth").value)
-        self._node_start     = None   # set on first tick, used for startup delay
-
-        # ── Load YOLO model ───────────────────────────────────────────────────
-        self.get_logger().info(f"Loading YOLO model from: {model_path}")
-        try:
-            from ultralytics import YOLO
-            self.model = YOLO(model_path)
-            self.class_names: Dict[int, str] = self.model.names
-            self.get_logger().info(
-                f"Model loaded — {len(self.class_names)} classes: "
-                f"{list(self.class_names.values())}"
-            )
-        except Exception as e:
-            self.get_logger().error(f"Failed to load YOLO model: {e}")
-            self.model = None
-            self.class_names = {}
+        self.CONF_THRESHOLD = float(self.get_parameter("conf").value)
+        self.MAX_DEPTH      = float(self.get_parameter("max_depth").value)
 
         # ── State ─────────────────────────────────────────────────────────────
-        self.bridge = CvBridge()
-        self.latest_image: Optional[np.ndarray] = None
-        self.latest_scan:  Optional[LaserScan]  = None
-        self.objects:      List[SemanticObject] = []
-        self._marker_id = 0
+        # Latest raw detections from /yolo (list of dicts)
+        self._latest_detections: List[Dict] = []
+        self.latest_scan:        Optional[LaserScan] = None
+        self.objects:            List[SemanticObject] = []
+        self._last_process_time: float = 0.0
 
         # Load previously saved semantic map
         self._load_map()
@@ -133,113 +119,98 @@ class SemanticSLAM(Node):
         self.tf_buffer   = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        # ── Subscriptions ─────────────────────────────────────────────────────
+        # ── QoS ───────────────────────────────────────────────────────────────
         sensor_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST, depth=1,
         )
-        self.create_subscription(Image,     "/camera/image_raw", self._image_cb, sensor_qos)
-        self.create_subscription(LaserScan, "/scan",             self._scan_cb,  sensor_qos)
+
+        # ── Subscriptions ─────────────────────────────────────────────────────
+        # /yolo — JSON detections from the OpenCV + YOLO World publisher node
+        self.create_subscription(String,    "/yolo",  self._yolo_cb,  10)
+        # /scan — LiDAR scan for object depth estimation
+        self.create_subscription(LaserScan, "/scan",  self._scan_cb,  sensor_qos)
 
         # ── Publishers ────────────────────────────────────────────────────────
         self.marker_pub = self.create_publisher(MarkerArray, "/semantic_markers", 10)
-        # Debug image: annotated frame with bounding boxes — view in rqt_image_view
-        # or RViz2 → Add → By Topic → /semantic_debug → Image
-        self.debug_pub  = self.create_publisher(Image, "/semantic_debug", 1)
 
-        # ── Detection timer ───────────────────────────────────────────────────
-        self.create_timer(1.0 / detect_hz, self._detect)
+        # ── Processing timer ──────────────────────────────────────────────────
+        self.create_timer(1.0 / self.DETECT_HZ, self._process)
 
-        self.get_logger().info("Semantic SLAM node ready.")
+        self.get_logger().info(
+            "Semantic SLAM node ready.\n"
+            "  Subscribing: /yolo (std_msgs/String JSON), /scan\n"
+            "  Publishing:  /semantic_markers\n"
+            f"  Merge radius: {self.MERGE_RADIUS} m | "
+            f"Min sightings: {self.MIN_SIGHTINGS} | "
+            f"Depth range: {self.MIN_DEPTH}–{self.MAX_DEPTH} m"
+        )
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
-    def _image_cb(self, msg: Image) -> None:
+    def _yolo_cb(self, msg: String) -> None:
+        """Parse the JSON detection array from the YOLO World publisher."""
         try:
-            self.latest_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-        except Exception:
-            pass
+            data = json.loads(msg.data)
+            if isinstance(data, list):
+                self._latest_detections = data
+            else:
+                self.get_logger().warn(
+                    "Received /yolo message that is not a JSON array — ignoring.",
+                    throttle_duration_sec=5.0,
+                )
+        except json.JSONDecodeError as e:
+            self.get_logger().warn(
+                f"Failed to parse /yolo JSON: {e}",
+                throttle_duration_sec=5.0,
+            )
 
     def _scan_cb(self, msg: LaserScan) -> None:
         self.latest_scan = msg
 
-    # ── Main detection tick ───────────────────────────────────────────────────
+    # ── Main processing tick ──────────────────────────────────────────────────
 
-    def _detect(self) -> None:
-        if self.latest_image is None:
+    def _process(self) -> None:
+        """Run on timer: localise latest detections in map frame."""
+        if not self._latest_detections:
             return
 
-        # ── Startup delay: wait until SLAM is stable before recording positions ─
-        now = self.get_clock().now()
-        if self._node_start is None:
-            self._node_start = now
-        elapsed = (now - self._node_start).nanoseconds / 1e9
-        if elapsed < self._startup_delay:
-            frame = self.latest_image.copy()
-            remaining = int(self._startup_delay - elapsed)
-            cv2.putText(frame, f"Map settling — detection starts in {remaining}s",
-                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
-            self._publish_debug(frame)
+        if self.latest_scan is None:
+            self.get_logger().warn(
+                "Waiting for /scan data — check LiDAR topic.",
+                throttle_duration_sec=10.0,
+            )
             return
 
-        # Always publish the raw camera feed so the user can verify the camera
-        # works even before the model finishes loading.
-        if self.model is None or self.latest_scan is None:
-            # Annotate the raw frame with status text so the issue is visible
-            frame = self.latest_image.copy()
-            if self.model is None:
-                msg = "YOLO not loaded — pip3 install ultralytics"
-                self.get_logger().warn(msg, throttle_duration_sec=10.0)
-            else:
-                msg = "Waiting for /scan data..."
-                self.get_logger().warn(
-                    "No LiDAR scan received yet — check /scan topic",
-                    throttle_duration_sec=10.0,
-                )
-            cv2.putText(frame, msg, (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-            self._publish_debug(frame)
-            return
-
-        # Get robot pose BEFORE running YOLO (saves time, robot barely moves in 0.3 s)
         robot_pose = self._get_robot_pose()
         if robot_pose is None:
-            return
-        robot_x, robot_y, robot_yaw = robot_pose
-
-        # Run YOLO
-        try:
-            results = self.model.predict(
-                self.latest_image,
-                conf=self.CONF_THRESHOLD,
-                verbose=False,
-                stream=False,
+            self.get_logger().warn(
+                "Cannot get robot pose from TF (map → base_link) — is SLAM running?",
+                throttle_duration_sec=10.0,
             )
-        except Exception as e:
-            self.get_logger().warn(f"YOLO inference failed: {e}", throttle_duration_sec=5.0)
             return
 
-        # ── Draw debug frame (always, even if no detections) ─────────────────
-        debug_frame = self.latest_image.copy()
-
-        if not results or results[0].boxes is None:
-            self._publish_debug(debug_frame)
-            return
-
+        robot_x, robot_y, robot_yaw = robot_pose
         scan = self.latest_scan
+        # Consume the latest batch — avoid processing the same frame twice
+        detections = self._latest_detections
+        self._latest_detections = []
 
-        for box in results[0].boxes:
-            cls_id    = int(box.cls[0])
-            conf      = float(box.conf[0])
-            label     = self.class_names.get(cls_id, f"class_{cls_id}")
-            x1, y1, x2, y2 = box.xyxy[0].tolist()
+        for det in detections:
+            # ── Extract detection fields ──────────────────────────────────────
+            label = str(det.get("class", "unknown"))
+            conf  = float(det.get("conf", 1.0))
+            cx_px = float(det.get("x", IMG_W / 2))   # bbox centre x in pixels
+            w_px  = float(det.get("w", 10))
+            h_px  = float(det.get("h", 10))
 
-            # ── Step 1: horizontal angle from bounding box centre ─────────────
-            cx_px = (x1 + x2) / 2.0
-            # angle from camera forward axis (+ = left, - = right)
+            if conf < self.CONF_THRESHOLD:
+                continue
+
+            # ── Step 1: horizontal angle from bbox centre ─────────────────────
+            # angle from camera forward axis (positive = right in image = robot -Y)
             angle = math.atan2(cx_px - IMG_W / 2, FOCAL_LEN)
-            # Negate: camera X-right maps to robot -Y (right = negative in ROS)
-            lidar_angle = -angle
+            lidar_angle = -angle   # camera X-right → robot -Y
 
             # ── Step 2: LiDAR depth at that angle ────────────────────────────
             depth = self._lidar_depth(scan, lidar_angle)
@@ -258,46 +229,30 @@ class SemanticSLAM(Node):
                          + obj_x_base * math.sin(robot_yaw)
                          + obj_y_base * math.cos(robot_yaw))
 
-            # ── Step 5: estimate physical width from bbox pixel span ──────────
-            pixel_width  = x2 - x1
-            angle_width  = pixel_width / FOCAL_LEN   # radians
-            phys_width   = max(0.1, depth * angle_width)
-            phys_depth   = phys_width * 0.8          # rough square assumption
+            # ── Step 5: estimate physical size from pixel bbox ────────────────
+            phys_width = max(0.1, depth * (w_px / FOCAL_LEN))
+            phys_depth = max(0.1, depth * (h_px / FOCAL_LEN))
 
             self._update_objects(label, obj_x_map, obj_y_map,
                                  phys_width, phys_depth, conf)
 
-            # Draw bounding box on debug frame
-            colour_rgb = self.class_names.get(cls_id, "")
-            c = _class_colour(label)
-            bgr = (int(c.b * 255), int(c.g * 255), int(c.r * 255))
-            cv2.rectangle(debug_frame, (int(x1), int(y1)), (int(x2), int(y2)), bgr, 2)
-            cv2.putText(
-                debug_frame,
-                f"{label} {conf:.0%}  {depth:.1f}m",
-                (int(x1), max(int(y1) - 8, 12)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, bgr, 2,
-            )
-
-        self._publish_debug(debug_frame)
         self._publish_markers()
         self._save_map()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _lidar_depth(self, scan: LaserScan, angle: float) -> Optional[float]:
-        """Return LiDAR range at the given angle (radians), or None if invalid."""
-        # Normalise angle to scan range
+        """Return LiDAR range at the given angle (radians), or None."""
         while angle > math.pi:  angle -= 2 * math.pi
         while angle < -math.pi: angle += 2 * math.pi
 
         if not (scan.angle_min <= angle <= scan.angle_max):
             return None
 
-        idx = int(round((angle - scan.angle_min) / scan.angle_increment))
-        idx = max(0, min(idx, len(scan.ranges) - 1))
-
+        idx   = int(round((angle - scan.angle_min) / scan.angle_increment))
+        idx   = max(0, min(idx, len(scan.ranges) - 1))
         depth = scan.ranges[idx]
+
         if math.isnan(depth) or math.isinf(depth):
             return None
         if not (self.MIN_DEPTH <= depth <= self.MAX_DEPTH):
@@ -327,74 +282,72 @@ class SemanticSLAM(Node):
                 continue
             dist = math.hypot(obj.x - mx, obj.y - my)
             if dist < self.MERGE_RADIUS:
-                # Weighted average — more sightings → slower update
-                w = 1.0 / (obj.sightings + 1)
-                obj.x         = obj.x * (1 - w) + mx * w
-                obj.y         = obj.y * (1 - w) + my * w
-                obj.width     = obj.width     * (1 - w) + width     * w
-                obj.depth_size= obj.depth_size* (1 - w) + depth_size* w
-                obj.confidence= max(obj.confidence, conf)
+                w          = 1.0 / (obj.sightings + 1)
+                obj.x      = obj.x * (1 - w) + mx * w
+                obj.y      = obj.y * (1 - w) + my * w
+                obj.width  = obj.width      * (1 - w) + width      * w
+                obj.depth_size = obj.depth_size * (1 - w) + depth_size * w
+                obj.confidence = max(obj.confidence, conf)
                 obj.sightings += 1
-                obj.last_seen = time.monotonic()
+                obj.last_seen  = time.monotonic()
                 return
 
         # New object
-        colour = _class_colour(label)
         self.objects.append(SemanticObject(
             label=label, x=mx, y=my,
             width=width, depth_size=depth_size,
-            confidence=conf, colour=colour,
+            confidence=conf, colour=_class_colour(label),
         ))
 
     def _publish_markers(self) -> None:
         """Publish a MarkerArray: box + text label for every confirmed object."""
         array = MarkerArray()
-        mid = 0
+        mid   = 0
 
-        # First: delete all old markers
-        del_m = Marker()
-        del_m.action = Marker.DELETEALL
+        # Delete all old markers first
+        del_m              = Marker()
+        del_m.action       = Marker.DELETEALL
         del_m.header.frame_id = "map"
         del_m.header.stamp = self.get_clock().now().to_msg()
         array.markers.append(del_m)
 
         for obj in self.objects:
             if obj.sightings < self.MIN_SIGHTINGS:
-                continue   # not confirmed yet
+                continue
 
             stamp = self.get_clock().now().to_msg()
 
-            # ── Box marker ────────────────────────────────────────────────────
-            box = Marker()
-            box.header.frame_id = "map"
-            box.header.stamp    = stamp
-            box.ns              = "semantic_boxes"
-            box.id              = mid; mid += 1
-            box.type            = Marker.CUBE
-            box.action          = Marker.ADD
-            box.pose.position   = Point(x=obj.x, y=obj.y, z=0.5)
-            box.scale.x         = max(0.15, obj.width)
-            box.scale.y         = max(0.15, obj.depth_size)
-            box.scale.z         = 1.0
-            box.color           = obj.colour
-            box.color.a         = 0.35
-            box.lifetime.sec    = 3     # disappear if not refreshed
+            # Box marker
+            box                   = Marker()
+            box.header.frame_id   = "map"
+            box.header.stamp      = stamp
+            box.ns                = "semantic_boxes"
+            box.id                = mid; mid += 1
+            box.type              = Marker.CUBE
+            box.action            = Marker.ADD
+            box.pose.position     = Point(x=obj.x, y=obj.y, z=0.5)
+            box.scale.x           = max(0.15, obj.width)
+            box.scale.y           = max(0.15, obj.depth_size)
+            box.scale.z           = 1.0
+            box.color             = obj.colour
+            box.color.a           = 0.35
+            box.lifetime.sec      = 3
             array.markers.append(box)
 
-            # ── Text label ────────────────────────────────────────────────────
-            txt = Marker()
-            txt.header.frame_id = "map"
-            txt.header.stamp    = stamp
-            txt.ns              = "semantic_labels"
-            txt.id              = mid; mid += 1
-            txt.type            = Marker.TEXT_VIEW_FACING
-            txt.action          = Marker.ADD
-            txt.pose.position   = Point(x=obj.x, y=obj.y, z=1.6)
-            txt.scale.z         = 0.22
-            txt.text            = f"{obj.label} ({obj.confidence:.0%})"
+            # Text label
+            txt                   = Marker()
+            txt.header.frame_id   = "map"
+            txt.header.stamp      = stamp
+            txt.ns                = "semantic_labels"
+            txt.id                = mid; mid += 1
+            txt.type              = Marker.TEXT_VIEW_FACING
+            txt.action            = Marker.ADD
+            txt.pose.position     = Point(x=obj.x, y=obj.y, z=1.6)
+            txt.scale.z           = 0.22
+            txt.text              = f"{obj.label} ({obj.confidence:.0%})"
             txt.color.r = txt.color.g = txt.color.b = 1.0
-            txt.color.a         = 1.0
-            txt.lifetime.sec    = 3
+            txt.color.a           = 1.0
+            txt.lifetime.sec      = 3
             array.markers.append(txt)
 
         self.marker_pub.publish(array)
@@ -425,13 +378,12 @@ class SemanticSLAM(Node):
             with open(self.SAVE_PATH) as f:
                 data = json.load(f)
             for d in data:
-                obj = SemanticObject(
+                self.objects.append(SemanticObject(
                     label=d["label"], x=d["x"], y=d["y"],
                     width=d["width"], depth_size=d["depth_size"],
                     confidence=d["confidence"], sightings=d["sightings"],
                     colour=_class_colour(d["label"]),
-                )
-                self.objects.append(obj)
+                ))
             self.get_logger().info(
                 f"Loaded {len(self.objects)} objects from {self.SAVE_PATH}"
             )
@@ -439,21 +391,6 @@ class SemanticSLAM(Node):
             pass
         except Exception as e:
             self.get_logger().warn(f"Could not load saved map: {e}")
-
-
-    def _publish_debug(self, frame: np.ndarray) -> None:
-        """Publish annotated camera frame to /semantic_debug.
-
-        View with:  ros2 run rqt_image_view rqt_image_view  → select /semantic_debug
-        Or in RViz2: Add → By Topic → /semantic_debug → Image
-        """
-        try:
-            msg = self.bridge.cv2_to_imgmsg(frame, "bgr8")
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.header.frame_id = "camera_link_optical"
-            self.debug_pub.publish(msg)
-        except Exception:
-            pass
 
 
 def main(args=None) -> None:
