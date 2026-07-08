@@ -44,18 +44,28 @@ install(
     Ros_lidar_bot/frontier_explorer_node.py
     Ros_lidar_bot/safety_stop_node.py
     Ros_lidar_bot/semantic_slam_node.py
+    Ros_lidar_bot/imu_data_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
-install(
-  DIRECTORY scripts
-  DESTINATION share/${PROJECT_NAME}
-  USE_SOURCE_PERMISSIONS
-)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts")
+  install(
+    DIRECTORY scripts
+    DESTINATION share/${PROJECT_NAME}
+    USE_SOURCE_PERMISSIONS
+  )
+endif()
 
 install(
-  DIRECTORY config description launch worlds meshes
+  DIRECTORY config description launch meshes
   DESTINATION share/${PROJECT_NAME}
 )
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/worlds")
+  install(
+    DIRECTORY worlds
+    DESTINATION share/${PROJECT_NAME}
+  )
+endif()
 
 ament_package()

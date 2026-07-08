@@ -1,8 +1,0 @@
-# Python dependencies for Ros_lidar_bot
-# Install with: pip3 install -r requirements.txt
-# (install_deps.sh does this automatically)
-
-# numpy<2 required — numpy 2.x breaks system matplotlib on Ubuntu 22.04
-numpy>=1.21.0,<2.0
-ultralytics>=8.0.0
-opencv-python>=4.5.0
