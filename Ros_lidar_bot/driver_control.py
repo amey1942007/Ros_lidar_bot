@@ -60,7 +60,7 @@ def raw_to_degrees(raw_int: int) -> float:
 
 
 class MotorControl:
-    def __init__(self, device="/dev/ttyACM0", baudrate=115200):
+    def __init__(self, device="/dev/ttyUSB0", baudrate=115200):
         self.ser = serial.Serial(device, baudrate, timeout=0.01)
         self.lock = threading.Lock()
         self.monitor_running = False
@@ -241,7 +241,7 @@ class MotorControl:
 
 def main():
     parser = argparse.ArgumentParser(description="DDSM115 motor feedback/control CLI")
-    parser.add_argument("--port", default="/dev/ttyACM0", help="USB serial port")
+    parser.add_argument("--port", default="/dev/ttyUSB0", help="USB serial port")
     parser.add_argument("--baud", type=int, default=115200, help="serial baud rate")
     args = parser.parse_args()
 

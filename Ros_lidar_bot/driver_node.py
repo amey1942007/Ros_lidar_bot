@@ -61,7 +61,7 @@ class DriverNode(Node):
     def __init__(self):
         super().__init__("driver_node")
 
-        self._port = self.declare_parameter("serial_port", "/dev/ttyACM0").value
+        self._port = self.declare_parameter("serial_port", "/dev/ttyUSB0").value
         self._baud = self.declare_parameter("baud_rate", 115200).value
         self._left_name = self.declare_parameter("left_wheel_name", "left_wheel_joint").value
         self._right_name = self.declare_parameter("right_wheel_name", "right_wheel_joint").value
