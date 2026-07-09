@@ -36,6 +36,10 @@ setup(
         'console_scripts': [
             'teleop = Ros_lidar_bot.teleop_node:main',
             'frontier_explorer = Ros_lidar_bot.frontier_explorer_node:main',
+            'lidar_node = Ros_lidar_bot.lidar_node:main',
+            'odom_node = Ros_lidar_bot.odom_node:main',
+            'imu_node = Ros_lidar_bot.imu_node:main',
+            'driver_node = Ros_lidar_bot.driver_node:main',
         ],
     },
 )
