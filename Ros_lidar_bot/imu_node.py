@@ -1,251 +1,255 @@
 #!/usr/bin/env python3
 """
-imu_node.py – BNO055 IMU publisher node (Jazzy-targeted).
+imu_node.py — BNO055 IMU publisher via Arduino Mega UART bridge (Jazzy-targeted).
 
-Hardware : Adafruit BNO055 over I2C (Raspberry Pi 5).
+Hardware : Arduino Mega reads BNO055 over I2C, sends JSON lines over UART (USB/serial)
 Publishes: sensor_msgs/Imu on /imu
-             frame_id = "imu_link"   (matches TF tree: base_footprint → imu_link)
+              frame_id = "imu_link"   (matches TF tree: base_footprint → imu_link)
+
+Expected JSON line format (one object per line):
+{
+  "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+  "angular_velocity": {"x": 0.0, "y": 0.0, "z": 0.0},
+  "linear_acceleration": {"x": 0.0, "y": 0.0, "z": 0.0},
+  "orientation_covariance": [0.0, ... 9 values],
+  "angular_velocity_covariance": [0.0, ... 9 values],
+  "linear_acceleration_covariance": [0.0, ... 9 values]
+}
+
+All values in SI units: quaternion normalized, rad/s, m/s².
+Covariances are 3×3 row-major (9 floats each).
 
 Unit notes (Rule 9):
-  BNO055 euler[]            → degrees        (converted → radians here)
-  BNO055 gyro[]             → rad/s          ✓ no conversion needed
-  BNO055 linear_acceleration → m/s²          ✓ no conversion needed
+  Arduino should send already-converted SI units.
+  This node does NOT convert degrees→rad or raw→m/s².
 
-Quaternion (Rule 6):
-  Full 3-axis Euler (heading, roll, pitch) → quaternion via standard ZYX formula.
-  Normalisation guaranteed by construction (sin²+cos²=1 per axis).
-  ⚠ BNO055 Euler convention: euler[0]=heading(yaw), euler[1]=roll, euler[2]=pitch
-    This differs from aerospace (roll,pitch,yaw) — order handled explicitly below.
-
-Covariance (Rule 5 — never all-zero, values explained):
-  BNO055 datasheet + typical measured noise at 100 Hz:
-    Orientation (yaw)     σ ≈ 1.0°  = 0.017 rad → σ² ≈ 3e-4  rad²
-    Orientation (r/p)     σ ≈ 2.5°  = 0.044 rad → σ² ≈ 2e-3  rad²
-    Angular velocity      σ ≈ 0.01  rad/s        → σ² ≈ 1e-4  rad²/s²
-    Linear acceleration   σ ≈ 0.12  m/s²         → σ² ≈ 0.014 m²/s⁴
-  Roll/pitch orientation not reliable without full calibration on a 2-D robot →
-  large but finite value (not -1, not 99999).  EKF will down-weight them.
+Covariance (Rule 5 — never all-zero, values documented):
+  If Arduino omits covariances, sensible defaults are applied.
 
 Jazzy notes:
-  • get_logger().warn(..., throttle_duration_sec=N) is available since Humble,
-    stable on Jazzy — used here instead of manual time.monotonic() tracking.
-  • No other Jazzy-specific differences affect this node.
+  • get_logger().warn(..., throttle_duration_sec=N) stable since Humble.
+  • rclpy.time.Time.nanoseconds property stable across Humble/Iron/Jazzy.
+  • No Jazzy-specific API differences affect this node.
 
-Parameters:
-  output_topic  (string, default '/imu')
-  frame_id      (string, default 'imu_link')
-  publish_rate  (float,  default 50.0 Hz)   BNO055 fusion output ≤ 100 Hz
-  i2c_address   (int,    default 0x28)      alt address: 0x29
+Parameters (override via launch or --ros-args -p):
+  serial_port        (string, default '/dev/ttyACM0')  — Arduino Mega USB port
+  baud_rate          (int,    default 115200)          — must match Arduino Serial.begin()
+  output_topic       (string, default '/imu')
+  frame_id           (string, default 'imu_link')
+  publish_rate       (float,  default 100.0)           — max Hz (throttles if Arduino faster)
+  timeout            (float,  default 0.1)             — serial read timeout (s)
 """
 
-import math
+import json
+import threading
+import time
 
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
 
 try:
-    import adafruit_bno055
-    import board
+    import serial
 except ImportError:
-    adafruit_bno055 = None
-    board = None
+    serial = None
 
 
-# ── Covariance constants (see module docstring for derivation) ────────────────
+# ── Default covariances (used if Arduino omits them) ────────────────────────────
+# BNO055 typical noise at 100 Hz fusion mode:
+#   Orientation (heading)     σ ≈ 1.0°  = 0.017 rad → σ² ≈ 3e-4  rad²
+#   Orientation (roll/pitch)  σ ≈ 2.5°  = 0.044 rad → σ² ≈ 2e-3  rad²
+#   Angular velocity          σ ≈ 0.01  rad/s        → σ² ≈ 1e-4  rad²/s²
+#   Linear acceleration       σ ≈ 0.12  m/s²         → σ² ≈ 1.4e-2 m²/s⁴
+_ORI_COV_ROLL_PITCH = 2e-3
+_ORI_COV_YAW        = 3e-4
+_GYR_COV            = 1e-4
+_ACC_COV            = 1.44e-2
 
-# Orientation [roll, pitch, yaw] diagonal (rad²)
-_ORI_COV_ROLL_PITCH = 2e-3   # larger — less reliable on a flat robot
-_ORI_COV_YAW        = 3e-4   # BNO055 heading noise at full calibration
-
-# Angular velocity [x, y, z] diagonal (rad²/s²)
-_GYR_COV = 1e-4              # BNO055 gyro noise floor
-
-# Linear acceleration [x, y, z] diagonal (m²/s⁴)
-_ACC_COV = 1.44e-2           # ≈ 0.12² m/s²
-
-
-# ── Helper ────────────────────────────────────────────────────────────────────
-
-def euler_to_quaternion(roll: float, pitch: float, yaw: float):
-    """
-    Convert ZYX Euler angles (rad) to a normalised quaternion (x, y, z, w).
-
-    Rotation order: first yaw (Z), then pitch (Y), then roll (X).
-    This is the standard ROS / aerospace convention.
-
-    BNO055 provides: euler[0]=heading(yaw), euler[1]=roll, euler[2]=pitch
-    Caller is responsible for mapping sensor fields to this function's arguments.
-
-    Math (standard ZYX):
-      cy = cos(yaw/2),  sy = sin(yaw/2)
-      cp = cos(pitch/2), sp = sin(pitch/2)
-      cr = cos(roll/2),  sr = sin(roll/2)
-
-      w =  cr·cp·cy + sr·sp·sy
-      x =  sr·cp·cy - cr·sp·sy
-      y =  cr·sp·cy + sr·cp·sy
-      z =  cr·cp·sy - sr·sp·cy
-
-    ||q||² = w²+x²+y²+z² = 1  (guaranteed by trig identity, no explicit
-    normalization step needed).
-    """
-    cy = math.cos(yaw   * 0.5);  sy = math.sin(yaw   * 0.5)
-    cp = math.cos(pitch * 0.5);  sp = math.sin(pitch * 0.5)
-    cr = math.cos(roll  * 0.5);  sr = math.sin(roll  * 0.5)
-
-    w =  cr * cp * cy + sr * sp * sy
-    x =  sr * cp * cy - cr * sp * sy
-    y =  cr * sp * cy + sr * cp * sy
-    z =  cr * cp * sy - sr * sp * cy
-    return x, y, z, w
+_DEFAULT_ORI_COV = [
+    _ORI_COV_ROLL_PITCH, 0.0,                 0.0,
+    0.0,                 _ORI_COV_ROLL_PITCH, 0.0,
+    0.0,                 0.0,                 _ORI_COV_YAW,
+]
+_DEFAULT_GYR_COV = [
+    _GYR_COV, 0.0,      0.0,
+    0.0,      _GYR_COV, 0.0,
+    0.0,      0.0,      _GYR_COV,
+]
+_DEFAULT_ACC_COV = [
+    _ACC_COV, 0.0,      0.0,
+    0.0,      _ACC_COV, 0.0,
+    0.0,      0.0,      _ACC_COV,
+]
 
 
-# ── Node ──────────────────────────────────────────────────────────────────────
+# ── Helper: validate quaternion is normalized (Rule 6) ──────────────────────────
+def _normalize_quat(q: dict) -> tuple[float, float, float, float]:
+    """Return (x, y, z, w) normalized to unit length."""
+    x, y, z, w = float(q["x"]), float(q["y"]), float(q["z"]), float(q["w"])
+    norm = (x * x + y * y + z * z + w * w) ** 0.5
+    if norm == 0.0:
+        return 0.0, 0.0, 0.0, 1.0
+    return x / norm, y / norm, z / norm, w / norm
 
+
+# ── Node ────────────────────────────────────────────────────────────────────────
 class ImuNode(Node):
-    """Reads BNO055 via I2C and publishes sensor_msgs/Imu on /imu."""
+    """Reads JSON lines from Arduino Mega over UART and publishes sensor_msgs/Imu."""
 
     def __init__(self):
-        super().__init__('imu_node')
+        super().__init__("imu_node")
 
         # ── Parameters ────────────────────────────────────────────────────────
-        self._topic       = self.declare_parameter('output_topic', '/imu').value
-        self._frame_id    = self.declare_parameter('frame_id',     'imu_link').value
-        self._rate        = self.declare_parameter('publish_rate', 50.0).value
-        self._i2c_address = self.declare_parameter('i2c_address',  0x28).value
+        self._port        = self.declare_parameter("serial_port", "/dev/ttyACM0").value
+        self._baud        = self.declare_parameter("baud_rate", 115200).value
+        self._topic       = self.declare_parameter("output_topic", "/imu").value
+        self._frame_id    = self.declare_parameter("frame_id", "imu_link").value
+        self._rate_hz     = self.declare_parameter("publish_rate", 100.0).value
+        self._timeout     = self.declare_parameter("timeout", 0.1).value
 
-        # ── Hardware connection ────────────────────────────────────────────────
-        self._sensor = self._connect_bno055()
+        # ── Serial connection ────────────────────────────────────────────────
+        self._serial = self._connect_serial()
 
-        # ── Publisher + timer (Rule 7: timer-driven, no sleep loops) ──────────
-        self._pub   = self.create_publisher(Imu, self._topic, 10)
-        self._timer = self.create_timer(1.0 / self._rate, self._publish_imu)
+        # ── Latest parsed IMU data (thread-safe) ─────────────────────────────
+        self._latest_msg: Imu | None = None
+        self._lock = threading.Lock()
+        self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._reader_thread.start()
+
+        # ── Publisher + rate-limited timer ───────────────────────────────────
+        self._pub = self.create_publisher(Imu, self._topic, 10)
+        self._timer = self.create_timer(1.0 / self._rate_hz, self._publish_latest)
 
         self.get_logger().info(
-            f'ImuNode ready: I2C 0x{self._i2c_address:02x} → '
-            f'{self._topic} @ {self._rate} Hz  frame={self._frame_id}'
+            f"ImuNode ready: {self._port} @ {self._baud} baud → "
+            f"{self._topic} @ {self._rate_hz} Hz  frame={self._frame_id}"
         )
 
-    # ── Hardware ──────────────────────────────────────────────────────────────
-
-    def _connect_bno055(self):
-        if adafruit_bno055 is None or board is None:
-            self.get_logger().fatal(
-                'adafruit-circuitpython-bno055 not installed.\n'
-                'Run: pip3 install adafruit-circuitpython-bno055'
-            )
+    # ── Serial connection ────────────────────────────────────────────────────
+    def _connect_serial(self):
+        if serial is None:
+            self.get_logger().fatal("pyserial not installed. Run: pip3 install pyserial")
             raise SystemExit(1)
 
-        i2c = board.I2C()
-        sensor = adafruit_bno055.BNO055_I2C(i2c, address=self._i2c_address)
-        self.get_logger().info(
-            f'BNO055 connected at I2C address 0x{self._i2c_address:02x}'
-        )
-        return sensor
+        while rclpy.ok():
+            try:
+                ser = serial.Serial(self._port, self._baud, timeout=self._timeout)
+                self.get_logger().info(f"Serial connected: {self._port} @ {self._baud}")
+                return ser
+            except serial.SerialException as exc:
+                self.get_logger().warn(
+                    f"Failed to open {self._port}: {exc}. Retrying in 2 s...",
+                    throttle_duration_sec=5.0,
+                )
+                time.sleep(2.0)
 
-    # ── Timer callback ────────────────────────────────────────────────────────
+    # ── Background reader thread ─────────────────────────────────────────────
+    def _read_loop(self):
+        """Continuously read lines, parse JSON, build Imu message."""
+        buffer = ""
+        while rclpy.ok():
+            try:
+                data = self._serial.read(self._serial.in_waiting or 1)
+                if not data:
+                    continue
+                buffer += data.decode("utf-8", errors="ignore")
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    self._parse_line(line)
+            except serial.SerialException as exc:
+                self.get_logger().error(f"Serial error: {exc}. Reconnecting...")
+                time.sleep(1.0)
+                self._serial = self._connect_serial()
+            except Exception as exc:
+                self.get_logger().warn(
+                    f"Reader loop error: {exc}",
+                    throttle_duration_sec=5.0,
+                )
 
-    def _publish_imu(self) -> None:
-        """Read BNO055 and publish sensor_msgs/Imu. Called by rclpy timer."""
-
-        # ── Read sensor (all three fields in one go) ───────────────────────────
+    # ── Parse one JSON line ──────────────────────────────────────────────────
+    def _parse_line(self, line: str):
         try:
-            euler               = self._sensor.euler
-            gyro                = self._sensor.gyro
-            linear_acceleration = self._sensor.linear_acceleration
-        except OSError as exc:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
             self.get_logger().warn(
-                f'BNO055 I2C read error: {exc}',
+                f"Invalid JSON: {line[:80]}...",
                 throttle_duration_sec=5.0,
             )
             return
 
-        # ── Validate — BNO055 returns None until calibrated ───────────────────
-        #   euler[0]=heading(yaw°), euler[1]=roll°, euler[2]=pitch°
-        if euler is None or any(v is None for v in euler):
+        # Required fields
+        try:
+            qx, qy, qz, qw = _normalize_quat(obj["orientation"])
+            gx, gy, gz = (
+                float(obj["angular_velocity"]["x"]),
+                float(obj["angular_velocity"]["y"]),
+                float(obj["angular_velocity"]["z"]),
+            )
+            ax, ay, az = (
+                float(obj["linear_acceleration"]["x"]),
+                float(obj["linear_acceleration"]["y"]),
+                float(obj["linear_acceleration"]["z"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
             self.get_logger().warn(
-                'BNO055 Euler not ready — check calibration status.',
+                f"Missing/invalid field in JSON: {exc}",
                 throttle_duration_sec=5.0,
             )
             return
 
-        if gyro is None or any(v is None for v in gyro):
-            self.get_logger().warn(
-                'BNO055 gyro not ready.',
-                throttle_duration_sec=5.0,
-            )
-            return
+        # Optional covariances — fall back to defaults
+        ori_cov = obj.get("orientation_covariance", _DEFAULT_ORI_COV)
+        gyr_cov = obj.get("angular_velocity_covariance", _DEFAULT_GYR_COV)
+        acc_cov = obj.get("linear_acceleration_covariance", _DEFAULT_ACC_COV)
 
-        if linear_acceleration is None or any(v is None for v in linear_acceleration):
-            self.get_logger().warn(
-                'BNO055 linear acceleration not ready.',
-                throttle_duration_sec=5.0,
-            )
-            return
-
-        # ── Unit conversion: BNO055 Euler is in degrees → radians (Rule 9) ────
-        #   BNO055 field order: [heading/yaw, roll, pitch]  (non-standard!)
-        #   ROS EKF expects ZYX convention: yaw applied first.
-        yaw_rad   = math.radians(euler[0])   # heading: 0=North, CW positive
-        roll_rad  = math.radians(euler[1])
-        pitch_rad = math.radians(euler[2])
-
-        # ── Quaternion from full 3-axis Euler (Rule 6: normalised) ────────────
-        qx, qy, qz, qw = euler_to_quaternion(roll_rad, pitch_rad, yaw_rad)
-
-        # ── Build message ──────────────────────────────────────────────────────
+        # Build message
         msg = Imu()
-        msg.header.stamp    = self.get_clock().now().to_msg()   # Rule 4
-        msg.header.frame_id = self._frame_id                    # "imu_link"
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self._frame_id
 
-        # Orientation — full 3-axis, normalised quaternion
         msg.orientation.x = qx
         msg.orientation.y = qy
         msg.orientation.z = qz
         msg.orientation.w = qw
+        msg.orientation_covariance = [float(v) for v in ori_cov]
 
-        # Orientation covariance 3×3 row-major [roll, pitch, yaw] (Rule 5)
-        # BNO055 datasheet heading accuracy: ±1° when fully calibrated (σ²≈3e-4 rad²)
-        # Roll/pitch less reliable on a flat robot: larger variance used.
-        msg.orientation_covariance = [
-            _ORI_COV_ROLL_PITCH, 0.0,                 0.0,
-            0.0,                 _ORI_COV_ROLL_PITCH,  0.0,
-            0.0,                 0.0,                  _ORI_COV_YAW,
-        ]
+        msg.angular_velocity.x = gx
+        msg.angular_velocity.y = gy
+        msg.angular_velocity.z = gz
+        msg.angular_velocity_covariance = [float(v) for v in gyr_cov]
 
-        # Angular velocity — all 3 axes from BNO055 gyro (rad/s, no conversion)
-        # ⚠ Previous version hardcoded x=y=0 — now uses real sensor values.
-        msg.angular_velocity.x = float(gyro[0])
-        msg.angular_velocity.y = float(gyro[1])
-        msg.angular_velocity.z = float(gyro[2])
+        msg.linear_acceleration.x = ax
+        msg.linear_acceleration.y = ay
+        msg.linear_acceleration.z = az
+        msg.linear_acceleration_covariance = [float(v) for v in acc_cov]
 
-        # Angular velocity covariance 3×3 row-major [x, y, z]
-        # BNO055 gyro noise: ~0.01 rad/s → σ² ≈ 1e-4 rad²/s²
-        msg.angular_velocity_covariance = [
-            _GYR_COV, 0.0,      0.0,
-            0.0,      _GYR_COV, 0.0,
-            0.0,      0.0,      _GYR_COV,
-        ]
+        with self._lock:
+            self._latest_msg = msg
 
-        # Linear acceleration — all 3 axes (m/s², no conversion needed)
-        msg.linear_acceleration.x = float(linear_acceleration[0])
-        msg.linear_acceleration.y = float(linear_acceleration[1])
-        msg.linear_acceleration.z = float(linear_acceleration[2])
+    # ── Timer callback: publish latest at configured rate ─────────────────────
+    def _publish_latest(self):
+        with self._lock:
+            msg = self._latest_msg
+        if msg is not None:
+            # Update timestamp to now (Rule 4: stamp at publish time)
+            msg.header.stamp = self.get_clock().now().to_msg()
+            self._pub.publish(msg)
 
-        # Linear acceleration covariance 3×3 row-major [x, y, z]
-        # BNO055 accel noise: ~0.12 m/s² → σ² ≈ 0.014 m²/s⁴
-        msg.linear_acceleration_covariance = [
-            _ACC_COV, 0.0,      0.0,
-            0.0,      _ACC_COV, 0.0,
-            0.0,      0.0,      _ACC_COV,
-        ]
-
-        self._pub.publish(msg)
+    # ── Cleanup ───────────────────────────────────────────────────────────────
+    def destroy_node(self):
+        self.get_logger().info("Shutting down ImuNode...")
+        try:
+            if self._serial and self._serial.is_open:
+                self._serial.close()
+        except Exception:
+            pass
+        super().destroy_node()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
-
 def main(args=None):
     rclpy.init(args=args)
     node = ImuNode()
@@ -258,5 +262,5 @@ def main(args=None):
         rclpy.shutdown()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

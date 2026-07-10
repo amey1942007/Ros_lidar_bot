@@ -8,7 +8,7 @@ import sys, termios, tty
 class MyTeleop(Node):
     def __init__(self):
         super().__init__('my_teleop')
-        self.pub = self.create_publisher(Twist, '/cmd_vel_safe', 10)
+        self.pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
         self.linear = 0.0
         self.angular = 0.0
