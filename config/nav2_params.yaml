@@ -4,7 +4,7 @@
 
 bt_navigator:
   ros__parameters:
-    use_sim_time: true
+    use_sim_time: false
     global_frame: map
     robot_base_frame: base_footprint
     odom_topic: /odom
@@ -59,7 +59,7 @@ bt_navigator:
 
 controller_server:
   ros__parameters:
-    use_sim_time: true
+    use_sim_time: false
     controller_frequency: 10.0
     min_x_velocity_threshold: 0.001
     min_theta_velocity_threshold: 0.001
@@ -112,7 +112,7 @@ controller_server:
 
 planner_server:
   ros__parameters:
-    use_sim_time: true
+    use_sim_time: false
     expected_planner_frequency: 5.0
     planner_plugins: ["GridBased"]
     GridBased:
@@ -123,7 +123,7 @@ planner_server:
 
 behavior_server:
   ros__parameters:
-    use_sim_time: true
+    use_sim_time: false
     global_frame: map
     robot_base_frame: base_footprint
     costmap_topic: local_costmap/costmap_raw
@@ -145,7 +145,7 @@ behavior_server:
 local_costmap:
   local_costmap:
     ros__parameters:
-      use_sim_time: true
+      use_sim_time: false
       update_frequency: 5.0
       publish_frequency: 2.0
       global_frame: odom
@@ -171,7 +171,7 @@ local_costmap:
           raytrace_min_range: 0.0
           obstacle_max_range: 4.5    # reduced — only mark obstacles the robot is actually close to
           obstacle_min_range: 0.10   # ignore scan hits right at robot's feet (carpet/floor noise)
-          observation_persistence: 0.3   # stale obstacle marks expire after 0.3 s — reduces ghost obstacles
+          observation_keep_time: 0.3   # stale obstacle marks expire after 0.3 s — reduces ghost obstacles
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
@@ -181,7 +181,7 @@ local_costmap:
 global_costmap:
   global_costmap:
     ros__parameters:
-      use_sim_time: true
+      use_sim_time: false
       update_frequency: 1.0
       publish_frequency: 1.0
       global_frame: map
@@ -208,7 +208,7 @@ global_costmap:
           raytrace_min_range: 0.0
           obstacle_max_range: 4.5
           obstacle_min_range: 0.10
-          observation_persistence: 0.3
+          observation_keep_time: 0.3
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
@@ -217,7 +217,7 @@ global_costmap:
 
 lifecycle_manager_navigation:
   ros__parameters:
-    use_sim_time: true
+    use_sim_time: false
     autostart: true
     node_names:
       - controller_server

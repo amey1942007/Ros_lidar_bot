@@ -4,7 +4,7 @@ imu_node.py — BNO055 IMU publisher via Arduino Mega UART bridge (Jazzy-targete
 
 Hardware : Arduino Mega reads BNO055 over I2C, sends JSON lines over UART (USB/serial)
 Publishes: sensor_msgs/Imu on /imu
-              frame_id = "imu_link"   (matches TF tree: base_footprint → imu_link)
+              frame_id = "imu_for_urdf_1"   (matches URDF link name)
 
 Expected JSON line format (one object per line):
 {
@@ -103,7 +103,7 @@ class ImuNode(Node):
         self._port        = self.declare_parameter("serial_port", "/dev/ttyACM0").value
         self._baud        = self.declare_parameter("baud_rate", 115200).value
         self._topic       = self.declare_parameter("output_topic", "/imu").value
-        self._frame_id    = self.declare_parameter("frame_id", "imu_link").value
+        self._frame_id    = self.declare_parameter("frame_id", "imu_for_urdf_1").value
         self._rate_hz     = self.declare_parameter("publish_rate", 100.0).value
         self._timeout     = self.declare_parameter("timeout", 0.1).value
 

@@ -24,13 +24,13 @@
         <visual>
             <origin xyz="0.001839 -0.002589 -0.104922" rpy="0 0 0"/>
             <geometry>
-            <mesh filename="file://$(find Ros_lidar_bot)/meshes/lidar_urdf_1.stl" scale="0.001 0.001 0.001"/>
+            <mesh filename="file://$(find-pkg-share Ros_lidar_bot)/meshes/lidar_urdf_1.stl" scale="0.001 0.001 0.001"/>
             </geometry>
         </visual>
         <collision>
             <origin xyz="0.001839 -0.002589 -0.104922" rpy="0 0 0"/>
             <geometry>
-            <mesh filename="file://$(find Ros_lidar_bot)/meshes/lidar_urdf_1.stl" scale="0.001 0.001 0.001"/>
+            <mesh filename="file://$(find-pkg-share Ros_lidar_bot)/meshes/lidar_urdf_1.stl" scale="0.001 0.001 0.001"/>
             </geometry>
         </collision>
     </link>

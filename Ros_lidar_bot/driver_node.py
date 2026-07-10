@@ -67,8 +67,8 @@ class DriverNode(Node):
         self._right_name = self.declare_parameter("right_wheel_name", "right_wheel_joint").value
         self._id_left = self.declare_parameter("left_wheel_id", 1).value
         self._id_right = self.declare_parameter("right_wheel_id", 2).value
-        self._r = self.declare_parameter("wheel_radius", 0.033).value
-        self._b = self.declare_parameter("wheel_base", 0.160).value
+        self._r = self.declare_parameter("wheel_radius", 0.081).value
+        self._b = self.declare_parameter("wheel_base", 0.3395).value
         self._poll_rate = self.declare_parameter("poll_rate", 10.0).value
         self._cmd_timeout = self.declare_parameter("command_timeout", 0.5).value
 

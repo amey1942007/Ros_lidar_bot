@@ -21,12 +21,20 @@ def generate_launch_description():
         launch_arguments={"use_sim_time": "false"}.items(),
     )
 
-    # ── 2. IMU Node (BNO055 via I2C) ─────────────────────────────────────────
+    # ── 2. IMU Node (BNO055 via Arduino Mega UART) ─────────────────────────────
     imu_node = Node(
         package=package_name,
         executable="imu_node.py",
         name="imu_node",
         output="screen",
+        parameters=[{
+            "serial_port": "/dev/ttyACM0",
+            "baud_rate": 115200,
+            "output_topic": "/imu",
+            "frame_id": "imu_for_urdf_1",
+            "publish_rate": 100.0,
+            "timeout": 0.1,
+        }],
     )
 
     # ── 3. Motor Driver Node (DDSM115 via UART) ──────────────────────────────
@@ -56,7 +64,7 @@ def generate_launch_description():
     # ── 6. Safety Stop Node ──────────────────────────────────────────────────
     safety_stop = Node(
         package=package_name,
-        executable="safety_stop_node.py",
+        executable="safety_stop_node",
         name="safety_stop",
         output="screen",
         parameters=[{
@@ -99,7 +107,7 @@ def generate_launch_description():
     # ── 9. Semantic SLAM Node ────────────────────────────────────────────────
     semantic_slam = Node(
         package=package_name,
-        executable="semantic_slam_node.py",
+        executable="semantic_slam_node",
         name="semantic_slam",
         output="screen",
         parameters=[{

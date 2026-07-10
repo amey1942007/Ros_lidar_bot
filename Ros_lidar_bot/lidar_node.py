@@ -48,7 +48,7 @@ class LidarNode(Node):
         self.serial_port  = self.declare_parameter('serial_port',  '/dev/ttyUSB0').value
         self.serial_baud  = self.declare_parameter('serial_baud',  115200).value
         self.scan_topic   = self.declare_parameter('scan_topic',   '/scan').value
-        self.frame_id     = self.declare_parameter('frame_id',     'laser').value
+        self.frame_id     = self.declare_parameter('frame_id',     'laser_frame').value
         self.min_range    = self.declare_parameter('min_range',    0.15).value
         self.max_range    = self.declare_parameter('max_range',    12.0).value
         self.publish_rate = self.declare_parameter('publish_rate', 10.0).value

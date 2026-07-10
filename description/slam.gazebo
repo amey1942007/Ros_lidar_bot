@@ -11,14 +11,14 @@
     <gravity>true</gravity>
   </gazebo>
 
-<gazebo reference="BHARAT_-FIH_-AMR-MAIN_WHEEL_WITH_MOTOR-PA-001__1__1">
+<gazebo reference="wheel_urdf_1">
   <material>Gazebo/Silver</material>
   <mu1>0.2</mu1>
   <mu2>0.2</mu2>
   <self_collide>false</self_collide>
 </gazebo>
 
-<gazebo reference="BHARAT_-FIH_-AMR-MAIN_WHEEL_WITH_MOTOR-PA-001_1">
+<gazebo reference="wheel_urdf__1__1">
   <material>${body_color}</material>
   <mu1>0.2</mu1>
   <mu2>0.2</mu2>

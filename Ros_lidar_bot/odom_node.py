@@ -33,8 +33,8 @@ Jazzy notes:
 Parameters (override via launch or --ros-args -p):
   left_wheel_name   (string, default 'left_wheel_joint')
   right_wheel_name  (string, default 'right_wheel_joint')
-  wheel_radius      (float,  default 0.033  m)
-  wheel_base        (float,  default 0.160  m)   centre-to-centre
+  wheel_radius      (float,  default 0.081  m)
+  wheel_base        (float,  default 0.3395 m)   centre-to-centre
   encoder_topic     (string, default '/encoder')
   odom_topic        (string, default '/odom_raw')
   odom_frame        (string, default 'odom')
@@ -126,8 +126,8 @@ class OdomNode(Node):
             'left_wheel_name', 'left_wheel_joint').value
         self._right_name = self.declare_parameter(
             'right_wheel_name', 'right_wheel_joint').value
-        self._r          = self.declare_parameter('wheel_radius', 0.033).value   # m
-        self._b          = self.declare_parameter('wheel_base',   0.160).value   # m
+        self._r          = self.declare_parameter('wheel_radius', 0.081).value   # m
+        self._b          = self.declare_parameter('wheel_base',   0.3395).value  # m
         enc_topic        = self.declare_parameter('encoder_topic', '/encoder').value
         odom_topic       = self.declare_parameter('odom_topic',   '/odom_raw').value
         self._odom_frame = self.declare_parameter('odom_frame',   'odom').value
