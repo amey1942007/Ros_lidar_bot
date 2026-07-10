@@ -152,11 +152,13 @@ class SemanticSLAM(Node):
         """Parse the JSON detection array from the YOLO World publisher."""
         try:
             data = json.loads(msg.data)
-            if isinstance(data, list):
+            if isinstance(data, dict) and "detections" in data:
+                self._latest_detections = data["detections"]
+            elif isinstance(data, list):
                 self._latest_detections = data
             else:
                 self.get_logger().warn(
-                    "Received /yolo message that is not a JSON array — ignoring.",
+                    "Received /yolo message that is not in a recognized format — ignoring.",
                     throttle_duration_sec=5.0,
                 )
         except json.JSONDecodeError as e:
@@ -199,10 +201,15 @@ class SemanticSLAM(Node):
         for det in detections:
             # ── Extract detection fields ──────────────────────────────────────
             label = str(det.get("class", "unknown"))
-            conf  = float(det.get("conf", 1.0))
-            cx_px = float(det.get("x", IMG_W / 2))   # bbox centre x in pixels
-            w_px  = float(det.get("w", 10))
-            h_px  = float(det.get("h", 10))
+            conf  = float(det.get("confidence") if det.get("confidence") is not None else det.get("conf", 1.0))
+            
+            if "bbox" in det:
+                x1, y1, w_px, h_px = det["bbox"]
+                cx_px = x1 + w_px / 2.0
+            else:
+                cx_px = float(det.get("x", IMG_W / 2))   # bbox centre x in pixels
+                w_px  = float(det.get("w", 10))
+                h_px  = float(det.get("h", 10))
 
             if conf < self.CONF_THRESHOLD:
                 continue

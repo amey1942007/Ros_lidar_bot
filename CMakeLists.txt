@@ -44,6 +44,7 @@ install(
     Ros_lidar_bot/frontier_explorer_node.py
     Ros_lidar_bot/safety_stop_node.py
     Ros_lidar_bot/semantic_slam_node.py
+    Ros_lidar_bot/yolo.py
     Ros_lidar_bot/lidar_node.py
     Ros_lidar_bot/odom_node.py
     Ros_lidar_bot/imu_node.py

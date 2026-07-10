@@ -119,6 +119,21 @@ def generate_launch_description():
         }],
     )
 
+    # ── 10. YOLO-World Publisher Node ────────────────────────────────────────
+    # Note: parses arguments via argparse, so we pass them via 'arguments' instead of 'parameters'.
+    yolo_node = Node(
+        package=package_name,
+        executable="yolo.py",
+        name="yolo_world_publisher",
+        output="screen",
+        arguments=[
+            "--model", "yolov8s-world.pt",
+            "--camera", "0",
+            "--conf", "0.25",
+            "--rate", "10.0",
+        ],
+    )
+
     return LaunchDescription([
         # Stage 1 (T=0): Base setup, sensors, and hardware drivers
         rsp,
@@ -131,6 +146,6 @@ def generate_launch_description():
         # Stage 2 (T=3s): Start EKF and SLAM after sensors are online
         TimerAction(period=3.0, actions=[ekf_node, slam_toolbox]),
 
-        # Stage 3 (T=8s): Start Semantic SLAM once map is building
-        TimerAction(period=8.0, actions=[semantic_slam]),
+        # Stage 3 (T=8s): Start YOLO-World and Semantic SLAM once map is building
+        TimerAction(period=8.0, actions=[yolo_node, semantic_slam]),
     ])

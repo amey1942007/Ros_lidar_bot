@@ -121,10 +121,9 @@ class MotorControl:
     def set_drive_mode(self, motor_id: int, mode: int):
         if mode not in (1, 2, 3):
             raise ValueError("mode must be 1=current, 2=velocity, or 3=position")
-        packet = bytes([
+        packet = make_packet([
             motor_id,
             0xA0,
-            0x00,
             0x00,
             0x00,
             0x00,
