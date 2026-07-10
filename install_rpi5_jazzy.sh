@@ -220,21 +220,13 @@ section "10. Python Dependencies"
 sudo apt-get install -y \
     python3-numpy \
     python3-opencv \
-    python3-serial \
-    python3-smbus \
-    i2c-tools
+    python3-serial
 
 # pip packages (use --break-system-packages for Ubuntu 24.04)
 PIP_FLAGS="--break-system-packages"
 
 log "Installing RPLidar driver..."
 pip3 install $PIP_FLAGS rplidar-roboticia
-
-log "Installing Adafruit BNO055 (IMU) libraries..."
-pip3 install $PIP_FLAGS \
-    adafruit-circuitpython-bno055 \
-    adafruit-blinka \
-    RPi.GPIO
 
 log "Installing pyserial (UART driver)..."
 pip3 install $PIP_FLAGS pyserial
@@ -254,30 +246,8 @@ section "11. RPi5 Hardware Permissions"
 
 # Add user to required groups
 log "Adding $USER to hardware groups..."
-sudo usermod -a -G dialout,gpio,i2c,spi,video "$USER"
+sudo usermod -a -G dialout,video "$USER"
 
-# Enable I2C in firmware config (for BNO055)
-FIRMWARE_CONFIG="/boot/firmware/config.txt"
-if [[ -f "$FIRMWARE_CONFIG" ]]; then
-    if ! grep -q "dtparam=i2c_arm=on" "$FIRMWARE_CONFIG"; then
-        log "Enabling I2C in $FIRMWARE_CONFIG..."
-        echo "dtparam=i2c_arm=on" | sudo tee -a "$FIRMWARE_CONFIG"
-    else
-        log "I2C already enabled in firmware config."
-    fi
-
-    # Enable I2C-1 device tree overlay (RPi5 uses i2c-1 for GPIO header)
-    if ! grep -q "dtoverlay=i2c1" "$FIRMWARE_CONFIG"; then
-        echo "dtoverlay=i2c1" | sudo tee -a "$FIRMWARE_CONFIG"
-    fi
-else
-    warn "$FIRMWARE_CONFIG not found. Enable I2C manually via raspi-config."
-fi
-
-# Load i2c-dev module on boot
-if ! grep -q "^i2c-dev" /etc/modules 2>/dev/null; then
-    echo "i2c-dev" | sudo tee -a /etc/modules
-fi
 
 # udev rules for serial/USB devices (RPLidar, DDSM115)
 UDEV_RULES="/etc/udev/rules.d/99-ros-hardware.rules"
@@ -446,7 +416,7 @@ done
 
 echo ""
 echo "--- Python Packages ---"
-PY_PACKAGES=("rplidar" "adafruit_circuitpython_bno055" "serial" "cv2" "numpy" "ultralytics")
+PY_PACKAGES=("rplidar" "serial" "cv2" "numpy" "ultralytics")
 for pkg in "${PY_PACKAGES[@]}"; do
     if python3 -c "import $pkg" 2>/dev/null; then
         echo -e "  ${GREEN}✓${NC} python3: $pkg"
@@ -454,11 +424,6 @@ for pkg in "${PY_PACKAGES[@]}"; do
         echo -e "  ${YELLOW}?${NC} python3: $pkg (may need manual check)"
     fi
 done
-
-echo ""
-echo "--- Hardware ---"
-echo -n "  I2C devices: "
-i2cdetect -l 2>/dev/null || echo "i2c-tools not available or no I2C bus found"
 
 echo ""
 # ---------------------------------------------------------------------------
@@ -478,18 +443,14 @@ echo ""
 echo "  3. Verify UART port (for DDSM115 motor driver):"
 echo "       ls -la /dev/ttyAMA* /dev/ttyUSB*"
 echo ""
-echo "  4. Verify I2C (for BNO055):"
-echo "       i2cdetect -y 1"
-echo "       (BNO055 should appear at address 0x28 or 0x29)"
-echo ""
-echo "  5. Verify RPLidar port:"
+echo "  4. Verify RPLidar port:"
 echo "       ls -la /dev/rplidar  (if udev rule matched)"
 echo "       ls -la /dev/ttyUSB0  (fallback)"
 echo ""
-echo "  6. Launch the robot:"
+echo "  5. Launch the robot:"
 echo "       ros2 launch Ros_lidar_bot launch_robot.launch.py"
 echo ""
-echo "  7. In another terminal, start autonomous navigation:"
+echo "  6. In another terminal, start autonomous navigation:"
 echo "       ros2 launch Ros_lidar_bot autonomous_robot.launch.py"
 echo ""
 echo -e "${YELLOW}Important:${NC} driver_node.py uses /dev/ttyAMA0 or /dev/ttyUSB0."
