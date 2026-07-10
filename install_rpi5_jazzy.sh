@@ -242,7 +242,8 @@ pip3 install $PIP_FLAGS pyserial
 log "Installing OpenCV extras..."
 pip3 install $PIP_FLAGS \
     opencv-python-headless \
-    scikit-image
+    scikit-image \
+    ultralytics
 
 log "Python dependencies installed."
 
@@ -445,7 +446,7 @@ done
 
 echo ""
 echo "--- Python Packages ---"
-PY_PACKAGES=("rplidar" "adafruit_circuitpython_bno055" "serial" "cv2" "numpy")
+PY_PACKAGES=("rplidar" "adafruit_circuitpython_bno055" "serial" "cv2" "numpy" "ultralytics")
 for pkg in "${PY_PACKAGES[@]}"; do
     if python3 -c "import $pkg" 2>/dev/null; then
         echo -e "  ${GREEN}✓${NC} python3: $pkg"
