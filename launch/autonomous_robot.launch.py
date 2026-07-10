@@ -55,7 +55,7 @@ def generate_launch_description():
     # Starts after Nav2 is fully operational to command autonomous exploration.
     frontier_explorer = Node(
         package=package_name,
-        executable="frontier_explorer_node",
+        executable="frontier_explorer_node.py",
         name="frontier_explorer",
         output="screen",
         parameters=[os.path.join(pkg_share, "config", "frontier_explorer.yaml")],

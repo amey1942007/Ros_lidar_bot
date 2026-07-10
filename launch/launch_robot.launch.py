@@ -64,7 +64,7 @@ def generate_launch_description():
     # ── 6. Safety Stop Node ──────────────────────────────────────────────────
     safety_stop = Node(
         package=package_name,
-        executable="safety_stop_node",
+        executable="safety_stop_node.py",
         name="safety_stop",
         output="screen",
         parameters=[{
@@ -107,7 +107,7 @@ def generate_launch_description():
     # ── 9. Semantic SLAM Node ────────────────────────────────────────────────
     semantic_slam = Node(
         package=package_name,
-        executable="semantic_slam_node",
+        executable="semantic_slam_node.py",
         name="semantic_slam",
         output="screen",
         parameters=[{
