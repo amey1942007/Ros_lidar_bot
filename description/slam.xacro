@@ -1,7 +1,7 @@
 <?xml version="1.0" ?>
 <robot name="slam" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
-<xacro:include filename="$(find-pkg-share Ros_lidar_bot)/description/slam.gazebo" />
+
 <link name="base_link">
   <inertial>
     <origin xyz="-0.0019297244191736867 0.0018747496550703066 0.06995619724607677" rpy="0 0 0"/>
@@ -134,13 +134,13 @@
   <axis xyz="0.0 1.0 -0.0"/>
 </joint>
 
-<joint name="Rigid 3" type="fixed">
+<joint name="rigid_3" type="fixed">
   <origin xyz="-0.166839 0.002589 -0.016578" rpy="0 0 0"/>
   <parent link="base_link"/>
   <child link="ball_caster_wheel__1__1"/>
 </joint>
 
-<joint name="Rigid 4" type="fixed">
+<joint name="rigid_4" type="fixed">
   <origin xyz="0.163161 0.002589 -0.016578" rpy="0 0 0"/>
   <parent link="base_link"/>
   <child link="ball_caster_wheel_1"/>

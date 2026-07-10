@@ -21,19 +21,12 @@
   </collision>
 </link>
 
-<joint name="Rigid 5" type="fixed">
+<joint name="rigid_5" type="fixed">
   <origin xyz="-0.001839 0.002589 0.104922" rpy="0 0 0"/>
   <parent link="base_link"/>
   <child link="imu_for_urdf_1"/>
 </joint>
 
-<gazebo reference="imu_for_urdf_1">
-  <sensor name="imu_sensor" type="imu">
-    <always_on>1</always_on>
-    <update_rate>50</update_rate>
-    <visualize>true</visualize>
-    <topic>imu</topic>
-  </sensor>
-</gazebo>
+
 
 </robot>

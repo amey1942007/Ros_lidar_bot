@@ -45,7 +45,7 @@ class LidarNode(Node):
         super().__init__('lidar_node')
 
         # ── Parameters ────────────────────────────────────────────────────
-        self.serial_port  = self.declare_parameter('serial_port',  '/dev/ttyUSB0').value
+        self.serial_port  = self.declare_parameter('serial_port',  '/dev/ttyUSB1').value
         self.serial_baud  = self.declare_parameter('serial_baud',  115200).value
         self.scan_topic   = self.declare_parameter('scan_topic',   '/scan').value
         self.frame_id     = self.declare_parameter('frame_id',     'laser_frame').value
