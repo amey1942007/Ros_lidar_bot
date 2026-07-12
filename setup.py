@@ -25,6 +25,7 @@ setup(
         'console_scripts': [
             'imu_node = Ros_lidar_bot.imu_node:main',
             'driver_node = Ros_lidar_bot.driver_node:main',
+            'driver_control = Ros_lidar_bot.driver_control:main',
             'odom_node = Ros_lidar_bot.odom_node:main',
             'lidar_node = Ros_lidar_bot.lidar_node:main',
             'safety_stop_node = Ros_lidar_bot.safety_stop_node:main',

@@ -1,87 +1,11 @@
-cmake_minimum_required(VERSION 3.5)
-project(Ros_lidar_bot)
-
-# Default to C99
-if(NOT CMAKE_C_STANDARD)
-  set(CMAKE_C_STANDARD 99)
-endif()
-
-# Default to C++17
-if(NOT CMAKE_CXX_STANDARD)
-  set(CMAKE_CXX_STANDARD 17)
-endif()
-
-if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic)
-endif()
-
-# find dependencies
-find_package(ament_cmake REQUIRED)
-find_package(ament_cmake_python REQUIRED)
-find_package(rclpy REQUIRED)
-find_package(geometry_msgs REQUIRED)
-find_package(sensor_msgs REQUIRED)
-# uncomment the following section in order to fill in
-# further dependencies manually.
-# find_package(<dependency> REQUIRED)
-
-if(BUILD_TESTING)
-  find_package(ament_lint_auto REQUIRED)
-  # the following line skips the linter which checks for copyrights
-  # uncomment the line when a copyright and license is not present in all source files
-  #set(ament_cmake_copyright_FOUND TRUE)
-  # the following line skips cpplint (only works in a git repo)
-  # uncomment the line when this package is not in a git repo
-  #set(ament_cmake_cpplint_FOUND TRUE)
-  ament_lint_auto_find_test_dependencies()
-endif()
-
-ament_python_install_package(${PROJECT_NAME})
-
-# Generate entry_points.txt for ros2 run support
-file(GENERATE
-    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/entry_points.txt
-    CONTENT "[console_scripts]\nimu_node = Ros_lidar_bot.imu_node:main\ndriver_node = Ros_lidar_bot.driver_node:main\nodom_node = Ros_lidar_bot.odom_node:main\nlidar_node = Ros_lidar_bot.lidar_node:main\nsafety_stop_node = Ros_lidar_bot.safety_stop_node:main\nsemantic_slam_node = Ros_lidar_bot.semantic_slam_node:main\nfrontier_explorer_node = Ros_lidar_bot.frontier_explorer_node:main\nyolo = Ros_lidar_bot.yolo:main\nteleop_node = Ros_lidar_bot.teleop_node:main\n"
-)
-
-install(
-    FILES ${CMAKE_CURRENT_BINARY_DIR}/entry_points.txt
-    DESTINATION share/${PROJECT_NAME}
-    RENAME entry_points.txt
-)
-
-install(
-  PROGRAMS
-    Ros_lidar_bot/teleop_node.py
-    Ros_lidar_bot/frontier_explorer_node.py
-    Ros_lidar_bot/safety_stop_node.py
-    Ros_lidar_bot/semantic_slam_node.py
-    Ros_lidar_bot/yolo.py
-    Ros_lidar_bot/lidar_node.py
-    Ros_lidar_bot/odom_node.py
-    Ros_lidar_bot/imu_node.py
-    Ros_lidar_bot/driver_node.py
-  DESTINATION lib/${PROJECT_NAME}
-)
-
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts")
-  install(
-    DIRECTORY scripts
-    DESTINATION share/${PROJECT_NAME}
-    USE_SOURCE_PERMISSIONS
-  )
-endif()
-
-install(
-  DIRECTORY config description launch meshes
-  DESTINATION share/${PROJECT_NAME}
-)
-
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/worlds")
-  install(
-    DIRECTORY worlds
-    DESTINATION share/${PROJECT_NAME}
-  )
-endif()
-
-ament_package()
+# ──────────────────────────────────────────────────────────────────────────────
+# This package uses ament_python (setup.py) as its build system.
+# package.xml declares: <build_type>ament_python</build_type>
+#
+# colcon IGNORES this file entirely — all build configuration lives in:
+#   • setup.py     → entry points, data_files (launch/config/description/meshes)
+#   • setup.cfg    → install_scripts path
+#   • package.xml  → dependencies
+#
+# If you ever need to add C++ nodes, switch to ament_cmake and delete setup.py.
+# ──────────────────────────────────────────────────────────────────────────────

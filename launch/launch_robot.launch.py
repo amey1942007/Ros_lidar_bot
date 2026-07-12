@@ -28,7 +28,7 @@ def generate_launch_description():
         name="imu_node",
         output="screen",
         parameters=[{
-            "serial_port": "/dev/ttyACM0",
+            "serial_port": "/dev/ttyACM1",
             "baud_rate": 115200,
             "output_topic": "/imu",
             "frame_id": "imu_for_urdf_1",
@@ -43,6 +43,10 @@ def generate_launch_description():
         executable="driver_node",
         name="driver_node",
         output="screen",
+        parameters=[{
+            "serial_port": "/dev/ttyACM0",
+            "baud_rate": 115200,
+        }],
     )
 
     # ── 4. Odometry Node ─────────────────────────────────────────────────────
