@@ -7,7 +7,7 @@
        ============================================================ -->
   <xacro:property name="laser_x"      value="0.0"/>  <!-- forward/back  -->
   <xacro:property name="laser_y"      value="0.0"/>  <!-- left/right    -->
-  <xacro:property name="laser_z"      value="0.0"/>  <!-- height above base_link (2nd floor) -->
+  <xacro:property name="laser_z"      value="0.20"/>  <!-- height above base_link (2nd floor) -->
 
   <!-- Lidar cylinder dimensions (default ~RPLidar A1) -->
   <xacro:property name="laser_radius" value="0.035"/> <!-- 70 mm diameter -->

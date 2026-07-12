@@ -1,0 +1,49 @@
+frontier_explorer:
+  ros__parameters:
+    map_topic: /map
+    map_frame: map
+    base_frame: base_footprint
+
+    # Goal lifecycle
+    goal_timeout_sec: 90.0
+    goal_interval_sec: 3.0
+    goal_cooldown_sec: 3.0
+    goal_reached_radius: 0.45
+
+    # Progress monitoring — must be > nav2's movement_time_allowance (25 s)
+    progress_timeout_sec: 25.0    # must be > nav2's movement_time_allowance (12 s)
+    min_progress_delta: 0.12
+
+    # Frontier filtering
+    min_frontier_size: 3          # lowest practical value — catches all real occlusion shadows
+    min_goal_distance: 0.35
+    max_goal_distance: 5.5
+    max_range_expansion_factor: 2.0
+    # Absolute ceiling on max_goal_distance (used by auto-calibration and relaxation)
+    max_goal_distance_cap: 12.0
+
+    # Reject frontier targets this close to the map boundary edge (prevents worldToMap errors).
+    # 0.15 m = 3 cells — just enough to keep goals off the literal boundary.
+    # Keeping this small is critical: in a 10×10 m room the walls ARE at the map boundary,
+    # so a large value (old: 0.6 m) filters every wall-adjacent frontier and exploration stops.
+    wall_safe_distance: 0.15
+
+    # Blacklist — larger radius so one failure excludes the whole inaccessible zone.
+    goal_blacklist_radius: 0.80
+    # 300 s (5 min) timeout so a failed area stays excluded even after long manual
+    # navigation detours. auto-calibrate also scales done_ticks with room size.
+    blacklist_timeout_sec: 300.0
+
+    # Scoring weights
+    size_weight: 1.8
+    distance_weight: 1.0
+    heading_weight: 0.5
+    openness_weight: 0.7    # increased — strongly penalise goals near obstacles/walls
+
+    # Hysteresis
+    improvement_margin: 0.20
+
+    # Exploration completion
+    # Baseline ticks — auto-calibrate scales this up with room size
+    # (2 ticks/metre of larger dimension: 10 m room → 20, 15 m warehouse → 30)
+    no_frontier_done_ticks: 20

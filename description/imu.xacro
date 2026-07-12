@@ -6,7 +6,7 @@
        ============================================================ -->
   <xacro:property name="imu_x"  value="0.0"/>  <!-- forward/back  -->
   <xacro:property name="imu_y"  value="0.0"/>  <!-- left/right    -->
-  <xacro:property name="imu_z"  value="0.0"/>  <!-- height        -->
+  <xacro:property name="imu_z"  value="0.05"/>  <!-- height        -->
 
   <!-- IMU box size (small PCB) -->
   <xacro:property name="imu_size_x" value="0.030"/>

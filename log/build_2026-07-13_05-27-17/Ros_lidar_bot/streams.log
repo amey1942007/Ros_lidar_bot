@@ -1,0 +1,145 @@
+[0.008s] Invoking command in '/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot -DCMAKE_INSTALL_PREFIX=/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot
+[0.049s] -- The C compiler identification is GNU 11.4.0
+[0.088s] -- The CXX compiler identification is GNU 11.4.0
+[0.094s] -- Detecting C compiler ABI info
+[0.158s] -- Detecting C compiler ABI info - done
+[0.167s] -- Check for working C compiler: /usr/bin/cc - skipped
+[0.167s] -- Detecting C compile features
+[0.167s] -- Detecting C compile features - done
+[0.169s] -- Detecting CXX compiler ABI info
+[0.241s] -- Detecting CXX compiler ABI info - done
+[0.248s] -- Check for working CXX compiler: /usr/bin/c++ - skipped
+[0.248s] -- Detecting CXX compile features
+[0.249s] -- Detecting CXX compile features - done
+[0.251s] -- Found ament_cmake: 1.3.13 (/opt/ros/humble/share/ament_cmake/cmake)
+[0.374s] -- Found Python3: /usr/bin/python3 (found version "3.10.12") found components: Interpreter 
+[0.439s] -- Found rclpy: 3.3.20 (/opt/ros/humble/share/rclpy/cmake)
+[0.440s] -- Found geometry_msgs: 4.9.1 (/opt/ros/humble/share/geometry_msgs/cmake)
+[0.460s] -- Found rosidl_generator_c: 3.1.8 (/opt/ros/humble/share/rosidl_generator_c/cmake)
+[0.462s] -- Found rosidl_adapter: 3.1.8 (/opt/ros/humble/share/rosidl_adapter/cmake)
+[0.467s] -- Found rosidl_generator_cpp: 3.1.8 (/opt/ros/humble/share/rosidl_generator_cpp/cmake)
+[0.473s] -- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c
+[0.481s] -- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp
+[0.501s] -- Found sensor_msgs: 4.9.1 (/opt/ros/humble/share/sensor_msgs/cmake)
+[0.510s] -- Found ament_lint_auto: 0.12.15 (/opt/ros/humble/share/ament_lint_auto/cmake)
+[0.544s] WARNING: Package name "Ros_lidar_bot" does not follow the naming conventions. It should start with a lower case letter and only contain lower case letters, digits, underscores, and dashes.
+[0.573s] -- Added test 'copyright' to check source files copyright and LICENSE
+[0.596s] -- Added test 'cppcheck' to perform static code analysis on C / C++ code
+[0.596s] -- Configured cppcheck include dirs: 
+[0.596s] -- Configured cppcheck exclude dirs and/or files: 
+[0.619s] -- Added test 'cpplint' to check C / C++ code against the Google style
+[0.619s] -- Configured cpplint exclude dirs and/or files: 
+[0.622s] -- Added test 'flake8' to check Python code syntax and style conventions
+[0.628s] -- Added test 'lint_cmake' to check CMake code style
+[0.631s] -- Added test 'pep257' to check Python code against some of the docstring style conventions in PEP 257
+[0.652s] -- Added test 'uncrustify' to check C / C++ code style
+[0.652s] -- Configured uncrustify additional arguments: 
+[0.655s] -- Added test 'xmllint' to check XML markup files
+[0.656s] -- Configuring done
+[0.659s] -- Generating done
+[0.660s] -- Build files have been written to: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot
+[0.665s] Invoked command in '/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot -DCMAKE_INSTALL_PREFIX=/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot
+[0.667s] Invoking command in '/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --build /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot -- -j20 -l20
+[0.713s] Built target ament_cmake_python_copy_Ros_lidar_bot
+[0.716s] Built target ament_cmake_python_copy_Ros_lidar_bot_setup
+[0.870s] running egg_info
+[0.870s] creating Ros_lidar_bot.egg-info
+[0.870s] writing Ros_lidar_bot.egg-info/PKG-INFO
+[0.871s] writing dependency_links to Ros_lidar_bot.egg-info/dependency_links.txt
+[0.871s] writing top-level names to Ros_lidar_bot.egg-info/top_level.txt
+[0.871s] writing manifest file 'Ros_lidar_bot.egg-info/SOURCES.txt'
+[0.872s] reading manifest file 'Ros_lidar_bot.egg-info/SOURCES.txt'
+[0.872s] writing manifest file 'Ros_lidar_bot.egg-info/SOURCES.txt'
+[0.891s] Built target ament_cmake_python_build_Ros_lidar_bot_egg
+[0.899s] Invoked command in '/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --build /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot -- -j20 -l20
+[0.907s] Invoking command in '/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --install /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot
+[0.914s] -- Install configuration: ""
+[0.914s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/environment/pythonpath.sh
+[0.914s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/environment/pythonpath.dsv
+[0.914s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot-0.0.0-py3.10.egg-info
+[0.914s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot-0.0.0-py3.10.egg-info/PKG-INFO
+[0.914s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot-0.0.0-py3.10.egg-info/top_level.txt
+[0.914s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot-0.0.0-py3.10.egg-info/dependency_links.txt
+[0.914s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot-0.0.0-py3.10.egg-info/SOURCES.txt
+[0.914s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot
+[0.914s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/__init__.py
+[0.914s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/teleop_node.py
+[0.914s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/semantic_slam_node.py
+[0.914s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/safety_stop_node.py
+[0.914s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/imu_node.py
+[0.914s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/frontier_explorer_node.py
+[0.914s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/non_safety_teleop_node.py
+[0.949s] Listing '/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot'...
+[0.949s] Compiling '/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/__init__.py'...
+[0.949s] Compiling '/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/frontier_explorer_node.py'...
+[0.949s] Compiling '/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/imu_node.py'...
+[0.949s] Compiling '/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/non_safety_teleop_node.py'...
+[0.949s] Compiling '/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/safety_stop_node.py'...
+[0.949s] Compiling '/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/semantic_slam_node.py'...
+[0.949s] Compiling '/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/local/lib/python3.10/dist-packages/Ros_lidar_bot/teleop_node.py'...
+[0.951s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot/teleop_node.py
+[0.951s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot/frontier_explorer_node.py
+[0.951s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot/safety_stop_node.py
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot/semantic_slam_node.py
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/scripts
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/scripts/kill_sim.sh
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/scripts/install_deps.sh
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/view_bot.rviz
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/mapper_params_online_sync.yaml
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/mapper_params_offline.yaml
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/mapper_params_localization.yaml
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/nav2_params.yaml
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/frontier_explorer.yaml
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/mapper_params_lifelong.yaml
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/mapper_params_online_async.yaml
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/empty.yaml
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config/ekf.yaml
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/inertial_macros.xacro
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/robot_core.xacro
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/imu.xacro
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/slam.gazebo
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/camera.xacro
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/robot_control.xacro
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/lidar.xacro
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/slam.ros2control
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/slam.xacro
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/materials.xacro
+[0.952s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/temp.xacro
+[0.953s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description/robot.urdf.xacro
+[0.953s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/launch
+[0.953s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/launch/rsp.launch.py
+[0.953s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/launch/launch_robot.launch.py
+[0.953s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/launch/autonomous_exploration.launch.py
+[0.953s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/launch/launch_sim.launch.py
+[0.953s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/worlds
+[0.953s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/worlds/apartment.world
+[0.953s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/worlds/room.world
+[0.953s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/worlds/office.world
+[0.953s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/worlds/testing.world
+[0.953s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/worlds/warehouse.world
+[0.953s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes
+[0.953s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/ball_caster_wheel_1.stl
+[0.953s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/ball_caster_wheel__1__1.stl
+[0.953s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/wheel_urdf_1.stl
+[0.953s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/base_link.stl
+[0.954s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/wheel_urdf__1__1.stl
+[0.954s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/imu_for_urdf_1.stl
+[0.954s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes/lidar_urdf_1.stl
+[0.954s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/ament_index/resource_index/package_run_dependencies/Ros_lidar_bot
+[0.954s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/ament_index/resource_index/parent_prefix_path/Ros_lidar_bot
+[0.955s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/environment/ament_prefix_path.sh
+[0.955s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/environment/ament_prefix_path.dsv
+[0.955s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/environment/path.sh
+[0.955s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/environment/path.dsv
+[0.955s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/local_setup.bash
+[0.955s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/local_setup.sh
+[0.955s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/local_setup.zsh
+[0.955s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/local_setup.dsv
+[0.955s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/package.dsv
+[0.955s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/ament_index/resource_index/packages/Ros_lidar_bot
+[0.955s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/cmake/Ros_lidar_botConfig.cmake
+[0.955s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/cmake/Ros_lidar_botConfig-version.cmake
+[0.955s] -- Installing: /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/package.xml
+[0.956s] Invoked command in '/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --install /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot

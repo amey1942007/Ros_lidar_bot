@@ -1,0 +1,78 @@
+'/odom@nav_msgs/msg/Odometry[ignition.msgs.Odometry',
+            '/cmd_vel@geometry_msgs/msg/Twist]ignition.msgs.Twist',
+            '/scan@sensor_msgs/msg/LaserScan[ignition.msgs.LaserScan',
+            # REMOVED /tf bridge to let EKF and SLAM handle transforms
+            '/joint_states@sensor_msgs/msg/JointState@ignition.msgs.Model',
+            '/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock',
+            '/imu@sensor_msgs/msg/Imu[ignition.msgs.IMU' # Added IMU
+
+
+            '/odom@nav_msgs/msg/Odometry[ignition.msgs.Odometry',
+            '/cmd_vel@geometry_msgs/msg/Twist]ignition.msgs.Twist',
+            '/scan@sensor_msgs/msg/LaserScan[ignition.msgs.LaserScan',
+            '/tf@tf2_msgs/msg/TFMessage@ignition.msgs.Pose_V',
+            '/joint_states@sensor_msgs/msg/JointState@ignition.msgs.Model',
+            '/camera/image_raw@sensor_msgs/msg/Image[ignition.msgs.Image',
+            '/camera/camera_info@sensor_msgs/msg/CameraInfo[ignition.msgs.CameraInfo',
+            '/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock'
+            '/imu@sensor_msgs/msg/Imu[ignition.msgs.IMU'
+
+
+
+
+# 1. Update Bridge: Map Gazebo's Odom to a 'raw' topic
+    bridge = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        arguments=[
+            # We change the name here so it doesn't collide with the EKF output
+            '/model/my_bot/odometry@nav_msgs/msg/Odometry[ignition.msgs.Odometry',
+            '/cmd_vel@geometry_msgs/msg/Twist]ignition.msgs.Twist',
+            '/scan@sensor_msgs/msg/LaserScan[ignition.msgs.LaserScan',
+            '/joint_states@sensor_msgs/msg/JointState[ignition.msgs.Model',
+            '/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock',
+            '/imu@sensor_msgs/msg/Imu[ignition.msgs.IMU' 
+        ],
+        remappings=[
+            ('/model/my_bot/odometry', '/odom_raw') # Raw drifting data
+        ],
+        output='screen'
+    )
+
+    # 2. EKF Node: Consumes /odom_raw + /imu -> Produces /odom
+    ekf_node = Node(
+        package='robot_localization',
+        executable='ekf_node',
+        name='ekf_filter_node',
+        output='screen',
+        parameters=[ekf_params_file, {'use_sim_time': True}],
+        remappings=[('/odometry/filtered', '/odom')] # Clean filtered data
+    )
+
+
+----------------------------------------------------------------------------------------------------------------------------------
+        ekf_node = Node(
+        package='robot_localization',
+        executable='ekf_node',
+        name='ekf_filter_node',
+        output='screen',
+        parameters=[ekf_params_file, {'use_sim_time': True}],
+        remappings=[('/odometry/filtered', '/odom')]  # THIS IS KEY
+    )
+
+    bridge = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        arguments=[
+            '/odom@nav_msgs/msg/Odometry[ignition.msgs.Odometry',
+            '/cmd_vel@geometry_msgs/msg/Twist]ignition.msgs.Twist',
+            '/scan@sensor_msgs/msg/LaserScan[ignition.msgs.LaserScan',
+            # REMOVED /tf bridge to let EKF and SLAM handle transforms
+            '/joint_states@sensor_msgs/msg/JointState@ignition.msgs.Model',
+            '/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock',
+            '/imu@sensor_msgs/msg/Imu[ignition.msgs.IMU' # Added IMU
+        ],
+        output='screen'
+    )
+
+    ----------------------------------------------------------------------------------------------------------------------------------

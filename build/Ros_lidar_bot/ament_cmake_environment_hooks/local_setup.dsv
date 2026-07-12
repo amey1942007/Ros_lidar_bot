@@ -1,0 +1,3 @@
+source;share/Ros_lidar_bot/environment/ament_prefix_path.sh
+source;share/Ros_lidar_bot/environment/path.sh
+source;share/Ros_lidar_bot/environment/pythonpath.sh

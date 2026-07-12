@@ -1,0 +1,49 @@
+<?xml version="1.0" ?>
+<robot name="slam" xmlns:xacro="http://www.ros.org/wiki/xacro" >
+
+<xacro:property name="body_color" value="Gazebo/Silver" />
+
+  <gazebo reference="base_link">
+    <material>Gazebo/Silver</material>
+    <mu1>0.2</mu1>
+    <mu2>0.2</mu2>
+    <self_collide>false</self_collide>
+    <gravity>true</gravity>
+  </gazebo>
+
+<gazebo reference="BHARAT_-FIH_-AMR-MAIN_WHEEL_WITH_MOTOR-PA-001__1__1">
+  <material>Gazebo/Silver</material>
+  <mu1>0.2</mu1>
+  <mu2>0.2</mu2>
+  <self_collide>false</self_collide>
+</gazebo>
+
+<gazebo reference="BHARAT_-FIH_-AMR-MAIN_WHEEL_WITH_MOTOR-PA-001_1">
+  <material>${body_color}</material>
+  <mu1>0.2</mu1>
+  <mu2>0.2</mu2>
+  <self_collide>false</self_collide>
+</gazebo>
+
+<gazebo reference="ball_caster_wheel__1__1">
+  <material>${body_color}</material>
+  <mu1>0.2</mu1>
+  <mu2>0.2</mu2>
+  <self_collide>false</self_collide>
+</gazebo>
+
+<gazebo reference="ball_caster_wheel_1">
+  <material>${body_color}</material>
+  <mu1>0.2</mu1>
+  <mu2>0.2</mu2>
+  <self_collide>false</self_collide>
+</gazebo>
+
+<gazebo reference="laser_frame">
+  <material>${body_color}</material>
+  <mu1>0.2</mu1>
+  <mu2>0.2</mu2>
+  <self_collide>false</self_collide>
+</gazebo>
+
+</robot>
