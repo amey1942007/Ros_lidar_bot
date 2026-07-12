@@ -227,6 +227,10 @@ class DriverNode(Node):
         return None
 
     def _read_feedback(self, motor_id: int):
+        """Send a passive 0x74 poll and read back the feedback reply.
+        Uses a longer timeout (30 ms) than velocity commands because the
+        DDSM115 at idle/rest takes slightly longer to respond.
+        """
         packet = make_packet([
             motor_id & 0xFF,
             0x74,
@@ -244,7 +248,7 @@ class DriverNode(Node):
             except Exception:
                 pass
         if self._write_packet(packet):
-            return self._read_reply(motor_id)
+            return self._read_reply(motor_id, timeout=0.03)  # 30 ms — motor at rest responds slower
         return None
 
     def _control_loop(self):

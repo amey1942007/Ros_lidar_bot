@@ -55,6 +55,9 @@ def generate_launch_description():
         executable="odom_node",
         name="odom_node",
         output="screen",
+        parameters=[{
+            "broadcast_tf": False,   # EKF publishes odom→base_footprint — don't double-publish
+        }],
     )
 
     # ── 5. LiDAR Node (RPLidar A1 via UART) ──────────────────────────────────
