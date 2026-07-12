@@ -1,0 +1,14 @@
+Metadata-Version: 2.1
+Name: Ros-lidar-bot
+Version: 0.0.0
+Summary: Robot description package
+Home-page: UNKNOWN
+Maintainer: Amey Chaudhari
+Maintainer-email: ameychaudhar19@gmail.com
+License: Apache License 2.0
+Platform: UNKNOWN
+Provides-Extra: test
+License-File: LICENSE.md
+
+UNKNOWN
+

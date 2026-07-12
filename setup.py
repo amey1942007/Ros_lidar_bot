@@ -33,6 +33,7 @@ setup(
             'frontier_explorer_node = Ros_lidar_bot.frontier_explorer_node:main',
             'yolo = Ros_lidar_bot.yolo:main',
             'teleop_node = Ros_lidar_bot.teleop_node:main',
+            'non_safety_teleop = Ros_lidar_bot.non_safety_teleop_node:main',
         ],
     },
     extras_require={

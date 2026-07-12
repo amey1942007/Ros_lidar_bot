@@ -1,0 +1,101 @@
+[0.299s] Invoking command in '/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot': PYTHONPATH=/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base build/Ros_lidar_bot build --build-base /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build install --record /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/install.log --single-version-externally-managed install_data
+[0.418s] running egg_info
+[0.419s] creating build/Ros_lidar_bot/Ros_lidar_bot.egg-info
+[0.419s] writing build/Ros_lidar_bot/Ros_lidar_bot.egg-info/PKG-INFO
+[0.419s] writing dependency_links to build/Ros_lidar_bot/Ros_lidar_bot.egg-info/dependency_links.txt
+[0.419s] writing entry points to build/Ros_lidar_bot/Ros_lidar_bot.egg-info/entry_points.txt
+[0.419s] writing requirements to build/Ros_lidar_bot/Ros_lidar_bot.egg-info/requires.txt
+[0.419s] writing top-level names to build/Ros_lidar_bot/Ros_lidar_bot.egg-info/top_level.txt
+[0.419s] writing manifest file 'build/Ros_lidar_bot/Ros_lidar_bot.egg-info/SOURCES.txt'
+[0.420s] reading manifest file 'build/Ros_lidar_bot/Ros_lidar_bot.egg-info/SOURCES.txt'
+[0.420s] adding license file 'LICENSE.md'
+[0.420s] writing manifest file 'build/Ros_lidar_bot/Ros_lidar_bot.egg-info/SOURCES.txt'
+[0.421s] running build
+[0.421s] running build_py
+[0.421s] creating /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build
+[0.421s] creating /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib
+[0.421s] creating /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot
+[0.421s] copying Ros_lidar_bot/yolo.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot
+[0.421s] copying Ros_lidar_bot/__init__.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot
+[0.421s] copying Ros_lidar_bot/teleop_node.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot
+[0.421s] copying Ros_lidar_bot/driver_control.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot
+[0.421s] copying Ros_lidar_bot/semantic_slam_node.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot
+[0.421s] copying Ros_lidar_bot/safety_stop_node.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot
+[0.421s] copying Ros_lidar_bot/driver_node.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot
+[0.421s] copying Ros_lidar_bot/imu_node.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot
+[0.421s] copying Ros_lidar_bot/frontier_explorer_node.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot
+[0.422s] copying Ros_lidar_bot/non_safety_teleop_node.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot
+[0.422s] copying Ros_lidar_bot/lidar_node.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot
+[0.422s] copying Ros_lidar_bot/odom_node.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot
+[0.422s] running install
+[0.422s] running install_lib
+[0.422s] creating /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot
+[0.422s] copying /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot/yolo.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot
+[0.422s] copying /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot/__init__.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot
+[0.422s] copying /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot/teleop_node.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot
+[0.422s] copying /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot/driver_control.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot
+[0.422s] copying /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot/semantic_slam_node.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot
+[0.422s] copying /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot/safety_stop_node.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot
+[0.422s] copying /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot/driver_node.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot
+[0.422s] copying /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot/imu_node.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot
+[0.422s] copying /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot/frontier_explorer_node.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot
+[0.422s] copying /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot/non_safety_teleop_node.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot
+[0.422s] copying /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot/lidar_node.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot
+[0.422s] copying /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build/lib/Ros_lidar_bot/odom_node.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot
+[0.422s] byte-compiling /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/yolo.py to yolo.cpython-310.pyc
+[0.423s] byte-compiling /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/__init__.py to __init__.cpython-310.pyc
+[0.423s] byte-compiling /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/teleop_node.py to teleop_node.cpython-310.pyc
+[0.423s] byte-compiling /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/driver_control.py to driver_control.cpython-310.pyc
+[0.425s] byte-compiling /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/semantic_slam_node.py to semantic_slam_node.cpython-310.pyc
+[0.426s] byte-compiling /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/safety_stop_node.py to safety_stop_node.cpython-310.pyc
+[0.426s] byte-compiling /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/driver_node.py to driver_node.cpython-310.pyc
+[0.427s] byte-compiling /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/imu_node.py to imu_node.cpython-310.pyc
+[0.428s] byte-compiling /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/frontier_explorer_node.py to frontier_explorer_node.cpython-310.pyc
+[0.433s] byte-compiling /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/non_safety_teleop_node.py to non_safety_teleop_node.cpython-310.pyc
+[0.433s] byte-compiling /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/lidar_node.py to lidar_node.cpython-310.pyc
+[0.434s] byte-compiling /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/odom_node.py to odom_node.cpython-310.pyc
+[0.434s] running install_data
+[0.434s] copying package.xml -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot
+[0.434s] creating /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/launch
+[0.434s] copying launch/autonomous_robot.launch.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/launch
+[0.434s] copying launch/rsp.launch.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/launch
+[0.435s] copying launch/launch_robot.launch.py -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/launch
+[0.435s] creating /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config
+[0.435s] copying config/mapper_params_online_sync.yaml -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config
+[0.435s] copying config/mapper_params_offline.yaml -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config
+[0.435s] copying config/mapper_params_localization.yaml -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config
+[0.435s] copying config/nav2_params.yaml -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config
+[0.435s] copying config/frontier_explorer.yaml -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config
+[0.435s] copying config/mapper_params_lifelong.yaml -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config
+[0.435s] copying config/mapper_params_online_async.yaml -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config
+[0.435s] copying config/ekf.yaml -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/config
+[0.435s] creating /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description
+[0.435s] copying description/imu.xacro -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description
+[0.435s] copying description/camera.xacro -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description
+[0.435s] copying description/lidar.xacro -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description
+[0.435s] copying description/slam.xacro -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description
+[0.435s] copying description/robot.urdf.xacro -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/description
+[0.435s] creating /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes
+[0.435s] copying meshes/ball_caster_wheel_1.stl -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes
+[0.435s] copying meshes/ball_caster_wheel__1__1.stl -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes
+[0.436s] copying meshes/wheel_urdf_1.stl -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes
+[0.436s] copying meshes/base_link.stl -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes
+[0.436s] copying meshes/wheel_urdf__1__1.stl -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes
+[0.437s] copying meshes/imu_for_urdf_1.stl -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes
+[0.437s] copying meshes/lidar_urdf_1.stl -> /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/share/Ros_lidar_bot/meshes
+[0.437s] running install_egg_info
+[0.438s] Copying build/Ros_lidar_bot/Ros_lidar_bot.egg-info to /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot-0.0.0-py3.10.egg-info
+[0.439s] running install_scripts
+[0.450s] Installing driver_control script to /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot
+[0.450s] Installing driver_node script to /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot
+[0.450s] Installing frontier_explorer_node script to /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot
+[0.450s] Installing imu_node script to /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot
+[0.450s] Installing lidar_node script to /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot
+[0.450s] Installing non_safety_teleop script to /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot
+[0.450s] Installing odom_node script to /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot
+[0.450s] Installing safety_stop_node script to /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot
+[0.450s] Installing semantic_slam_node script to /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot
+[0.450s] Installing teleop_node script to /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot
+[0.450s] Installing yolo script to /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot
+[0.450s] writing list of installed files to '/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/install.log'
+[0.465s] Invoked command in '/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot' returned '0': PYTHONPATH=/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base build/Ros_lidar_bot build --build-base /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/build install --record /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/Ros_lidar_bot/install.log --single-version-externally-managed install_data
