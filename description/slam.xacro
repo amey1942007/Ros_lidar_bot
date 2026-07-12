@@ -11,7 +11,7 @@
   <visual>
     <origin xyz="0 0 0" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="file://$(find-pkg-share Ros_lidar_bot)/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="white">
       <color rgba="1.0 1.0 1.0 1.0"/>
@@ -20,7 +20,7 @@
   <collision>
     <origin xyz="0 0 0" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="file://$(find-pkg-share Ros_lidar_bot)/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
@@ -41,18 +41,18 @@
     <inertia ixx="0.013521" iyy="0.024417" izz="0.013521" ixy="-0.0" iyz="0.0" ixz="0.0"/>
   </inertial>
   <visual>
-    <origin xyz="0.001839 0.112411 -0.034922" rpy="0 0 0"/>
+    <origin xyz="0.001839 0.162411 -0.034922" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="file://$(find-pkg-share Ros_lidar_bot)/meshes/wheel_urdf_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/wheel_urdf_1.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="black">
       <color rgba="0.00 0.00 0.00 1.0"/>
     </material>
   </visual>
   <collision>
-    <origin xyz="0.001839 0.112411 -0.034922" rpy="0 0 0"/>
+    <origin xyz="0.001839 0.162411 -0.034922" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="file://$(find-pkg-share Ros_lidar_bot)/meshes/wheel_urdf_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/wheel_urdf_1.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
@@ -64,18 +64,18 @@
     <inertia ixx="0.013521" iyy="0.024417" izz="0.013521" ixy="0.0" iyz="0.0" ixz="-0.0"/>
   </inertial>
   <visual>
-    <origin xyz="0.001839 -0.117589 -0.034922" rpy="0 0 0"/>
+    <origin xyz="0.001839 -0.167589 -0.034922" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="file://$(find-pkg-share Ros_lidar_bot)/meshes/wheel_urdf__1__1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/wheel_urdf__1__1.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="black">
       <color rgba="0.00 0.00 0.00 1.0"/>
     </material>
   </visual>
   <collision>
-    <origin xyz="0.001839 -0.117589 -0.034922" rpy="0 0 0"/>
+    <origin xyz="0.001839 -0.167589 -0.034922" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="file://$(find-pkg-share Ros_lidar_bot)/meshes/wheel_urdf__1__1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/wheel_urdf__1__1.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
@@ -89,13 +89,13 @@
   <visual>
     <origin xyz="0.166839 -0.002589 0.016578" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="file://$(find-pkg-share Ros_lidar_bot)/meshes/ball_caster_wheel__1__1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/ball_caster_wheel__1__1.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </visual>
   <collision>
     <origin xyz="0.166839 -0.002589 0.016578" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="file://$(find-pkg-share Ros_lidar_bot)/meshes/ball_caster_wheel__1__1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/ball_caster_wheel__1__1.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
@@ -109,26 +109,26 @@
   <visual>
     <origin xyz="-0.163161 -0.002589 0.016578" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="file://$(find-pkg-share Ros_lidar_bot)/meshes/ball_caster_wheel_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/ball_caster_wheel_1.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </visual>
   <collision>
     <origin xyz="-0.163161 -0.002589 0.016578" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="file://$(find-pkg-share Ros_lidar_bot)/meshes/ball_caster_wheel_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="file://$(find Ros_lidar_bot)/meshes/ball_caster_wheel_1.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
 <joint name="right_wheel_joint" type="continuous">
-  <origin xyz="-0.001839 -0.112411 0.034922" rpy="0 0 0"/>
+  <origin xyz="-0.001839 -0.162411 0.034922" rpy="0 0 0"/>
   <parent link="base_link"/>
   <child link="wheel_urdf_1"/>
   <axis xyz="0.0 1.0 0.0"/>
 </joint>
 
 <joint name="left_wheel_joint" type="continuous">
-  <origin xyz="-0.001839 0.117589 0.034922" rpy="0 0 0"/>
+  <origin xyz="-0.001839 0.167589 0.034922" rpy="0 0 0"/>
   <parent link="base_link"/>
   <child link="wheel_urdf__1__1"/>
   <axis xyz="0.0 1.0 -0.0"/>

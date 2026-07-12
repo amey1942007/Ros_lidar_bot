@@ -24,7 +24,7 @@ def generate_launch_description():
     # ── 2. IMU Node (BNO055 via Arduino Mega UART) ─────────────────────────────
     imu_node = Node(
         package=package_name,
-        executable="imu_node.py",
+        executable="imu_node",
         name="imu_node",
         output="screen",
         parameters=[{
@@ -40,7 +40,7 @@ def generate_launch_description():
     # ── 3. Motor Driver Node (DDSM115 via UART) ──────────────────────────────
     driver_node = Node(
         package=package_name,
-        executable="driver_node.py",
+        executable="driver_node",
         name="driver_node",
         output="screen",
     )
@@ -48,7 +48,7 @@ def generate_launch_description():
     # ── 4. Odometry Node ─────────────────────────────────────────────────────
     odom_node = Node(
         package=package_name,
-        executable="odom_node.py",
+        executable="odom_node",
         name="odom_node",
         output="screen",
     )
@@ -56,7 +56,7 @@ def generate_launch_description():
     # ── 5. LiDAR Node (RPLidar A1 via UART) ──────────────────────────────────
     lidar_node = Node(
         package=package_name,
-        executable="lidar_node.py",
+        executable="lidar_node",
         name="lidar_node",
         output="screen",
     )
@@ -64,7 +64,7 @@ def generate_launch_description():
     # ── 6. Safety Stop Node ──────────────────────────────────────────────────
     safety_stop = Node(
         package=package_name,
-        executable="safety_stop_node.py",
+        executable="safety_stop_node",
         name="safety_stop",
         output="screen",
         parameters=[{
@@ -105,25 +105,26 @@ def generate_launch_description():
     )
 
     # ── 9. Semantic SLAM Node ────────────────────────────────────────────────
-    semantic_slam = Node(
-        package=package_name,
-        executable="semantic_slam_node.py",
-        name="semantic_slam",
-        output="screen",
-        parameters=[{
-            "model_path": os.path.join(pkg_share, "Vision Model", "best.pt"),
-            "detect_hz": 1.0,
-            "conf": 0.25,
-            "startup_delay_sec": 15.0,  # Wait for SLAM to settle
-            "max_depth": 4.0,
-        }],
-    )
+    # DISABLED: Missing model file "Vision Model/best.pt"
+    # semantic_slam = Node(
+    #     package=package_name,
+    #     executable="semantic_slam_node.py",
+    #     name="semantic_slam",
+    #     output="screen",
+    #     parameters=[{
+    #         "model_path": os.path.join(pkg_share, "Vision Model", "best.pt"),
+    #         "detect_hz": 1.0,
+    #         "conf": 0.25,
+    #         "startup_delay_sec": 15.0,  # Wait for SLAM to settle
+    #         "max_depth": 4.0,
+    #     }],
+    # )
 
     # ── 10. YOLO-World Publisher Node ────────────────────────────────────────
     # Note: parses arguments via argparse, so we pass them via 'arguments' instead of 'parameters'.
     yolo_node = Node(
         package=package_name,
-        executable="yolo.py",
+        executable="yolo",
         name="yolo_world_publisher",
         output="screen",
         arguments=[
@@ -146,6 +147,6 @@ def generate_launch_description():
         # Stage 2 (T=3s): Start EKF and SLAM after sensors are online
         TimerAction(period=3.0, actions=[ekf_node, slam_toolbox]),
 
-        # Stage 3 (T=8s): Start YOLO-World and Semantic SLAM once map is building
-        TimerAction(period=8.0, actions=[yolo_node, semantic_slam]),
+        # Stage 3 (T=8s): Start YOLO-World (semantic_slam disabled - missing model)
+        TimerAction(period=8.0, actions=[yolo_node]),
     ])

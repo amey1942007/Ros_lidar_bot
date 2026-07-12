@@ -38,6 +38,18 @@ endif()
 
 ament_python_install_package(${PROJECT_NAME})
 
+# Generate entry_points.txt for ros2 run support
+file(GENERATE
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/entry_points.txt
+    CONTENT "[console_scripts]\nimu_node = Ros_lidar_bot.imu_node:main\ndriver_node = Ros_lidar_bot.driver_node:main\nodom_node = Ros_lidar_bot.odom_node:main\nlidar_node = Ros_lidar_bot.lidar_node:main\nsafety_stop_node = Ros_lidar_bot.safety_stop_node:main\nsemantic_slam_node = Ros_lidar_bot.semantic_slam_node:main\nfrontier_explorer_node = Ros_lidar_bot.frontier_explorer_node:main\nyolo = Ros_lidar_bot.yolo:main\nteleop_node = Ros_lidar_bot.teleop_node:main\n"
+)
+
+install(
+    FILES ${CMAKE_CURRENT_BINARY_DIR}/entry_points.txt
+    DESTINATION share/${PROJECT_NAME}
+    RENAME entry_points.txt
+)
+
 install(
   PROGRAMS
     Ros_lidar_bot/teleop_node.py
