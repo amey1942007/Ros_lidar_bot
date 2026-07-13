@@ -52,6 +52,7 @@ class LidarNode(Node):
         self.min_range    = self.declare_parameter('min_range',    0.15).value
         self.max_range    = self.declare_parameter('max_range',    12.0).value
         self.publish_rate = self.declare_parameter('publish_rate', 10.0).value
+        self.motor_pwm    = self.declare_parameter('motor_pwm',    660).value
 
         # ── Publisher ──────────────────────────────────────────────────────
         self.publisher_ = self.create_publisher(LaserScan, self.scan_topic, 10)
@@ -95,6 +96,14 @@ class LidarNode(Node):
         health = lidar.get_health()
         self.get_logger().info(f'RPLidar info:   {info}')
         self.get_logger().info(f'RPLidar health: {health}')
+
+        # Set motor speed/PWM if specified (valid range: 0 to 1023)
+        if 0 <= self.motor_pwm <= 1023:
+            self.get_logger().info(f'Setting RPLidar motor PWM to: {self.motor_pwm}')
+            try:
+                lidar.set_pwm(self.motor_pwm)
+            except Exception as e:
+                self.get_logger().error(f'Failed to set motor PWM: {e}')
 
         # Persistent iterator – yields complete 360° scans as lists of
         # (quality, angle_deg, distance_mm) tuples.
