@@ -225,8 +225,8 @@ sudo apt-get install -y \
 # pip packages (use --break-system-packages for Ubuntu 24.04)
 PIP_FLAGS="--break-system-packages"
 
-log "Installing RPLidar driver..."
-pip3 install $PIP_FLAGS rplidar-roboticia
+log "Installing RPLidar driver (pyrplidar – supports Sensitivity/Express scan mode)..."
+pip3 install $PIP_FLAGS pyrplidar
 
 log "Installing pyserial (UART driver)..."
 pip3 install $PIP_FLAGS pyserial
@@ -416,7 +416,7 @@ done
 
 echo ""
 echo "--- Python Packages ---"
-PY_PACKAGES=("rplidar" "serial" "cv2" "numpy" "ultralytics")
+PY_PACKAGES=("pyrplidar" "serial" "cv2" "numpy" "ultralytics")
 for pkg in "${PY_PACKAGES[@]}"; do
     if python3 -c "import $pkg" 2>/dev/null; then
         echo -e "  ${GREEN}✓${NC} python3: $pkg"

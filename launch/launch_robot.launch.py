@@ -67,8 +67,10 @@ def generate_launch_description():
         name="lidar_node",
         output="screen",
         parameters=[{
-            "motor_pwm": 660,      # Default: 660. Range: 0 to 1023 (controls physical speed)
-            "publish_rate": 10.0,  # Default: 10.0 Hz (controls ROS 2 publication frequency)
+            "motor_pwm": 660,           # Default: 660. Range: 0 to 1023 (controls physical speed)
+            "publish_rate": 10.0,       # Default: 10.0 Hz (controls ROS 2 publication frequency)
+            "sensitivity_mode": True,   # True = Express/Sensitivity scan mode (mode id=1)
+                                        # False = Standard scan mode (mode id=0)
         }],
     )
 
