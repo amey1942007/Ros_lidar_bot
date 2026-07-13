@@ -1,13 +1,18 @@
 <?xml version="1.0" ?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
-  <!-- ============================================================
-       LIDAR POSITION — FILL IN YOUR VALUES (metres, from base_link)
-       Lidar is on the 2nd floor of the chassis.
-       ============================================================ -->
+  <!-- =======================================================================
+       LIDAR POSITION — FILL IN YOUR VALUES (metres)
+       Reference Point:
+         Measure X, Y, Z offsets relative to the 'base_link' origin.
+         - 'base_link' is located at the center of the bottom face of the chassis box.
+         - X: distance forward from the center of the chassis bottom (positive front, negative back).
+         - Y: distance left from the center of the chassis bottom (positive left, negative right).
+         - Z: height upwards from the center of the chassis bottom face.
+       ======================================================================= -->
   <xacro:property name="laser_x"      value="0.0"/>  <!-- forward/back  -->
   <xacro:property name="laser_y"      value="0.0"/>  <!-- left/right    -->
-  <xacro:property name="laser_z"      value="0.0"/>  <!-- height above base_link (2nd floor) -->
+  <xacro:property name="laser_z"      value="0.0"/>  <!-- height above base_link (e.g. 2nd floor height) -->
 
   <!-- Lidar cylinder dimensions (default ~RPLidar A1) -->
   <xacro:property name="laser_radius" value="0.035"/> <!-- 70 mm diameter -->

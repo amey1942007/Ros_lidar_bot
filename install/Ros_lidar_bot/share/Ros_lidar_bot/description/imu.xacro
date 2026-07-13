@@ -1,9 +1,15 @@
 <?xml version="1.0" ?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
-  <!-- ============================================================
-       IMU POSITION — FILL IN YOUR VALUES (metres, from base_link)
-       ============================================================ -->
+  <!-- =======================================================================
+       IMU POSITION — FILL IN YOUR VALUES (metres)
+       Reference Point:
+         Measure X, Y, Z offsets relative to the 'base_link' origin.
+         - 'base_link' is located at the center of the bottom face of the chassis box.
+         - X: distance forward from the center of the chassis bottom (positive front, negative back).
+         - Y: distance left from the center of the chassis bottom (positive left, negative right).
+         - Z: height upwards from the center of the chassis bottom face.
+       ======================================================================= -->
   <xacro:property name="imu_x"  value="0.0"/>  <!-- forward/back  -->
   <xacro:property name="imu_y"  value="0.0"/>  <!-- left/right    -->
   <xacro:property name="imu_z"  value="0.0"/>  <!-- height        -->

@@ -6,13 +6,13 @@
        ============================================================ -->
 
   <!-- Chassis box size -->
-  <xacro:property name="chassis_length"  value="0.0"/>   <!-- front-to-back   -->
-  <xacro:property name="chassis_width"   value="0.0"/>   <!-- left-to-right   -->
-  <xacro:property name="chassis_height"  value="0.0"/>   <!-- bottom-to-top   -->
+  <xacro:property name="chassis_length"  value="0.33"/>   <!-- front-to-back   -->
+  <xacro:property name="chassis_width"   value="0.25"/>   <!-- left-to-right   -->
+  <xacro:property name="chassis_height"  value="0.25"/>   <!-- bottom-to-top   -->
 
   <!-- Drive wheel -->
   <xacro:property name="wheel_radius"    value="0.05035"/>   <!-- RADIUS = 50.35 mm (from sketch) -->
-  <xacro:property name="wheel_width"     value="0.0"/>       <!-- axial thickness -->
+  <xacro:property name="wheel_width"     value="0.04"/>       <!-- axial thickness -->
   <!-- X position of wheel axle from robot centre (0 = at centre) -->
   <xacro:property name="wheel_x"         value="0.0"/>
   <!-- Half-separation: each wheel is this far from the centre in Y
@@ -23,9 +23,9 @@
   <xacro:property name="wheel_z"         value="0.011"/>
 
   <!-- Caster wheels -->
-  <xacro:property name="caster_radius"    value="0.0"/>  <!-- ball caster radius -->
-  <xacro:property name="caster_front_x"  value="0.0"/>   <!-- front caster X     -->
-  <xacro:property name="caster_rear_x"   value="0.0"/>   <!-- rear  caster X     -->
+  <xacro:property name="caster_radius"    value="0.019675"/>  <!-- ball caster radius (diameter = 39.35 mm = 50.35 - 11) -->
+  <xacro:property name="caster_front_x"  value="0.12"/>   <!-- front caster X     -->
+  <xacro:property name="caster_rear_x"   value="-0.12"/>   <!-- rear  caster X     -->
 
   <!-- ============================================================
        DERIVED VALUE
@@ -167,7 +167,7 @@
     <parent link="base_link"/>
     <child  link="caster_front_link"/>
     <!-- caster centre sits at wheel ground level; same Z as drive wheel bottom -->
-    <origin xyz="${caster_front_x} 0 ${caster_radius}" rpy="0 0 0"/>
+    <origin xyz="${caster_front_x} 0 ${-caster_radius}" rpy="0 0 0"/>
   </joint>
 
   <link name="caster_front_link">
@@ -201,7 +201,7 @@
   <joint name="caster_rear_joint" type="fixed">
     <parent link="base_link"/>
     <child  link="caster_rear_link"/>
-    <origin xyz="${caster_rear_x} 0 ${caster_radius}" rpy="0 0 0"/>
+    <origin xyz="${caster_rear_x} 0 ${-caster_radius}" rpy="0 0 0"/>
   </joint>
 
   <link name="caster_rear_link">
