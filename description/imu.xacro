@@ -10,14 +10,14 @@
          - Y: distance left from the center of the chassis bottom (positive left, negative right).
          - Z: height upwards from the center of the chassis bottom face.
        ======================================================================= -->
-  <xacro:property name="imu_x"  value="0.0"/>  <!-- forward/back  -->
+  <xacro:property name="imu_x"  value="-0.115"/>  <!-- forward/back  -->
   <xacro:property name="imu_y"  value="0.0"/>  <!-- left/right    -->
-  <xacro:property name="imu_z"  value="0.0"/>  <!-- height        -->
+  <xacro:property name="imu_z"  value="0.004"/>  <!-- height        -->
 
   <!-- IMU box size (small PCB) -->
   <xacro:property name="imu_size_x" value="0.030"/>
-  <xacro:property name="imu_size_y" value="0.030"/>
-  <xacro:property name="imu_size_z" value="0.010"/>
+  <xacro:property name="imu_size_y" value="0.020"/>
+  <xacro:property name="imu_size_z" value="0.001"/>
 
   <!-- ============================================================
        IMU JOINT & LINK

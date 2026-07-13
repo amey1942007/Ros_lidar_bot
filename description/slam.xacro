@@ -6,9 +6,9 @@
        ============================================================ -->
 
   <!-- Chassis box size -->
-  <xacro:property name="chassis_length"  value="0.33"/>   <!-- front-to-back   -->
+  <xacro:property name="chassis_length"  value="0.45"/>   <!-- front-to-back   -->
   <xacro:property name="chassis_width"   value="0.25"/>   <!-- left-to-right   -->
-  <xacro:property name="chassis_height"  value="0.25"/>   <!-- bottom-to-top   -->
+  <xacro:property name="chassis_height"  value="0.20"/>   <!-- bottom-to-top   -->
 
   <!-- Drive wheel -->
   <xacro:property name="wheel_radius"    value="0.05035"/>   <!-- RADIUS = 50.35 mm (from sketch) -->
