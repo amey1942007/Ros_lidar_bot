@@ -101,10 +101,10 @@ class ImuNode(Node):
 
         # ── Parameters ────────────────────────────────────────────────────────
         self._port        = self.declare_parameter("serial_port", "/dev/ttyACM1").value
-        self._baud        = self.declare_parameter("baud_rate", 115200).value
+        self._baud        = self.declare_parameter("baud_rate", 500000).value
         self._topic       = self.declare_parameter("output_topic", "/imu").value
         self._frame_id    = self.declare_parameter("frame_id", "imu_link").value
-        self._rate_hz     = self.declare_parameter("publish_rate", 100.0).value
+        self._rate_hz     = self.declare_parameter("publish_rate", 50.0).value
         self._timeout     = self.declare_parameter("timeout", 0.1).value
 
         # ── Serial connection ────────────────────────────────────────────────
@@ -259,7 +259,8 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

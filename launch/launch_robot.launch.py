@@ -29,10 +29,10 @@ def generate_launch_description():
         output="screen",
         parameters=[{
             "serial_port": "/dev/ttyACM1",
-            "baud_rate": 115200,
+            "baud_rate": 500000,
             "output_topic": "/imu",
             "frame_id": "imu_link",
-            "publish_rate": 100.0,
+            "publish_rate": 50.0,
             "timeout": 0.1,
         }],
     )
