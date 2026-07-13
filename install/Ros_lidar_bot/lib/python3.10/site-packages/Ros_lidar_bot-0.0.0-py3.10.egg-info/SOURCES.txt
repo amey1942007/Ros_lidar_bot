@@ -4,6 +4,7 @@ package.xml
 setup.cfg
 setup.py
 Ros_lidar_bot/__init__.py
+Ros_lidar_bot/check_qos_mismatch.py
 Ros_lidar_bot/driver_control.py
 Ros_lidar_bot/driver_node.py
 Ros_lidar_bot/frontier_explorer_node.py

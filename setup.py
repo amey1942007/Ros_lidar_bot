@@ -34,6 +34,7 @@ setup(
             'yolo = Ros_lidar_bot.yolo:main',
             'teleop_node = Ros_lidar_bot.teleop_node:main',
             'non_safety_teleop = Ros_lidar_bot.non_safety_teleop_node:main',
+            'check_qos_mismatch = Ros_lidar_bot.check_qos_mismatch:main',
         ],
     },
     extras_require={

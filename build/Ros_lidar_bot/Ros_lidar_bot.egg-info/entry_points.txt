@@ -1,4 +1,5 @@
 [console_scripts]
+check_qos_mismatch = Ros_lidar_bot.check_qos_mismatch:main
 driver_control = Ros_lidar_bot.driver_control:main
 driver_node = Ros_lidar_bot.driver_node:main
 frontier_explorer_node = Ros_lidar_bot.frontier_explorer_node:main

@@ -5,6 +5,7 @@
 /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/semantic_slam_node.py
 /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/safety_stop_node.py
 /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/driver_node.py
+/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/check_qos_mismatch.py
 /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/imu_node.py
 /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/frontier_explorer_node.py
 /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/non_safety_teleop_node.py
@@ -17,6 +18,7 @@
 /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/__pycache__/semantic_slam_node.cpython-310.pyc
 /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/__pycache__/safety_stop_node.cpython-310.pyc
 /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/__pycache__/driver_node.cpython-310.pyc
+/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/__pycache__/check_qos_mismatch.cpython-310.pyc
 /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/__pycache__/imu_node.cpython-310.pyc
 /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/__pycache__/frontier_explorer_node.cpython-310.pyc
 /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot/__pycache__/non_safety_teleop_node.cpython-310.pyc
@@ -53,6 +55,7 @@
 /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot-0.0.0-py3.10.egg-info/dependency_links.txt
 /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot-0.0.0-py3.10.egg-info/SOURCES.txt
 /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/python3.10/site-packages/Ros_lidar_bot-0.0.0-py3.10.egg-info/zip-safe
+/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot/check_qos_mismatch
 /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot/driver_control
 /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot/driver_node
 /home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/install/Ros_lidar_bot/lib/Ros_lidar_bot/frontier_explorer_node
