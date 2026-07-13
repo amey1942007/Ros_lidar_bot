@@ -1,1 +1,0 @@
-Ros_lidar_bot
