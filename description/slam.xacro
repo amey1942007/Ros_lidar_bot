@@ -23,7 +23,7 @@
   <xacro:property name="wheel_z"         value="0.011"/>
 
   <!-- Caster wheels -->
-  <xacro:property name="caster_radius"    value="0.011"/>  <!-- ball caster radius -->
+  <xacro:property name="caster_radius"    value="0.019675"/>  <!-- ball caster radius (diameter = 39.35 mm = 50.35 - 11) -->
   <xacro:property name="caster_front_x"  value="0.12"/>   <!-- front caster X     -->
   <xacro:property name="caster_rear_x"   value="-0.12"/>   <!-- rear  caster X     -->
 
@@ -167,7 +167,7 @@
     <parent link="base_link"/>
     <child  link="caster_front_link"/>
     <!-- caster centre sits at wheel ground level; same Z as drive wheel bottom -->
-    <origin xyz="${caster_front_x} 0 ${caster_radius}" rpy="0 0 0"/>
+    <origin xyz="${caster_front_x} 0 ${-caster_radius}" rpy="0 0 0"/>
   </joint>
 
   <link name="caster_front_link">
@@ -201,7 +201,7 @@
   <joint name="caster_rear_joint" type="fixed">
     <parent link="base_link"/>
     <child  link="caster_rear_link"/>
-    <origin xyz="${caster_rear_x} 0 ${caster_radius}" rpy="0 0 0"/>
+    <origin xyz="${caster_rear_x} 0 ${-caster_radius}" rpy="0 0 0"/>
   </joint>
 
   <link name="caster_rear_link">
