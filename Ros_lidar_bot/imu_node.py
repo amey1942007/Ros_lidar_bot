@@ -210,20 +210,32 @@ class ImuNode(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = self._frame_id
 
-        msg.orientation.x = qx
-        msg.orientation.y = qy
-        msg.orientation.z = qz
-        msg.orientation.w = qw
+        # Invert Y and Z axes due to upside down mounting (180 deg roll about X-axis)
+        # q_corrected = q_raw * q_rot_x_180
+        qx_c, qy_c, qz_c, qw_c = qw, qz, -qy, -qx
+        norm = (qx_c**2 + qy_c**2 + qz_c**2 + qw_c**2)**0.5
+        if norm > 1e-6:
+            qx_c /= norm
+            qy_c /= norm
+            qz_c /= norm
+            qw_c /= norm
+        else:
+            qx_c, qy_c, qz_c, qw_c = 0.0, 0.0, 0.0, 1.0
+
+        msg.orientation.x = qx_c
+        msg.orientation.y = qy_c
+        msg.orientation.z = qz_c
+        msg.orientation.w = qw_c
         msg.orientation_covariance = [float(v) for v in ori_cov]
 
         msg.angular_velocity.x = gx
-        msg.angular_velocity.y = gy
-        msg.angular_velocity.z = gz
+        msg.angular_velocity.y = -gy
+        msg.angular_velocity.z = -gz
         msg.angular_velocity_covariance = [float(v) for v in gyr_cov]
 
         msg.linear_acceleration.x = ax
-        msg.linear_acceleration.y = ay
-        msg.linear_acceleration.z = az
+        msg.linear_acceleration.y = -ay
+        msg.linear_acceleration.z = -az
         msg.linear_acceleration_covariance = [float(v) for v in acc_cov]
 
         with self._lock:
