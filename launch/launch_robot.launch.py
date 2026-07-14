@@ -140,23 +140,65 @@ def generate_launch_description():
     #     }],
     # )
 
-    # ── 10. YOLO-World Publisher Node ────────────────────────────────────────
-    # Note: parses arguments via argparse, so we pass them via 'arguments' instead of 'parameters'.
-    yolo_node = Node(
+    # ── 10. IMU Calibration Node ─────────────────────────────────────────────
+    # Runs ONCE at startup: warmup (3s still) → rotate in-place (2×360°, ~25s)
+    # → saves config/imu_calibration.yaml → shuts itself down automatically.
+    #
+    # Timing budget:
+    #   warmup_duration  =  3 s
+    #   rotation_count=2 at rotation_speed=0.5 rad/s → 2×2π/0.5 ≈ 25 s
+    #   extra buffer                                            ≈  7 s
+    #   ──────────────────────────────────────────────────────────────
+    #   Total from node start                                  ≈ 35 s
+    #
+    # EKF + SLAM are therefore delayed to T=40s to guarantee calibration
+    # is complete before the filter and mapper initialise.
+    #
+    # ⚠ IMPORTANT: Keep the robot STILL for the first 3 seconds after launch.
+    #   Clear ~1 m of space around the robot before launching.
+    imu_calibration_node = Node(
         package=package_name,
-        executable="yolo",
-        name="yolo_world_publisher",
+        executable="imu_calibration_node",
+        name="imu_calibration_node",
         output="screen",
-        arguments=[
-            "--model", "yolov8s-world.pt",
-            "--camera", "0",
-            "--conf", "0.25",
-            "--rate", "10.0",
-        ],
+        parameters=[{
+            "imu_topic":          "/imu",
+            "cmd_vel_topic":      "/cmd_vel",    # bypasses safety stop during calib spin
+            "rotation_speed":     0.5,           # rad/s — gentle spin
+            "rotation_count":     2.0,           # 2 full rotations = 720°
+            "warmup_duration":    3.0,           # seconds stationary at start
+            "min_mag_samples":    200,           # minimum mag samples for hard-iron fit
+            "output_yaml_path":   os.path.join(pkg_share, "config", "imu_calibration.yaml"),
+        }],
     )
 
+    # ── 11. Non-Safety Teleop Node (keyboard, bypasses safety stop) ───────────
+    # Publishes directly to /cmd_vel_safe so the safety_stop filter is skipped.
+    # Opens in its own xterm window so key events are captured cleanly.
+    non_safety_teleop = Node(
+        package=package_name,
+        executable="non_safety_teleop",
+        name="non_safety_teleop_node",
+        output="screen",
+        prefix="xterm -e",   # separate window — required for keyboard input capture
+    )
+
+    # ── [DISABLED] YOLO-World Publisher Node — re-enable when needed ─────────
+    # yolo_node = Node(
+    #     package=package_name,
+    #     executable="yolo",
+    #     name="yolo_world_publisher",
+    #     output="screen",
+    #     arguments=[
+    #         "--model", "yolov8s-world.pt",
+    #         "--camera", "0",
+    #         "--conf", "0.25",
+    #         "--rate", "10.0",
+    #     ],
+    # )
+
     return LaunchDescription([
-        # Stage 1 (T=0): Base setup, sensors, and hardware drivers
+        # ── Stage 1 (T=0s): Hardware — sensors + drivers come up first ─────────
         rsp,
         imu_node,
         driver_node,
@@ -164,9 +206,26 @@ def generate_launch_description():
         lidar_node,
         safety_stop,
 
-        # Stage 2 (T=3s): Start EKF and SLAM after sensors are online
-        TimerAction(period=3.0, actions=[ekf_node, slam_toolbox]),
+        # ── Stage 2 (T=2s): IMU Calibration ───────────────────────────────────
+        # Starts 2s after hardware to let serial connections settle.
+        # Warmup 3s (KEEP BOT STILL) → rotates 720° → saves YAML → auto-exits.
+        # Total duration ≈ 35s. EKF/SLAM start at T=40s to wait for it.
+        TimerAction(period=2.0, actions=[imu_calibration_node]),
 
-        # Stage 3 (T=8s): Start YOLO-World (semantic_slam disabled - missing model)
-        TimerAction(period=8.0, actions=[yolo_node]),
+        # ── Stage 3 (T=40s): Localization + SLAM ─────────────────────────────
+        # Starts after calibration is guaranteed complete (~35s after T=2s).
+        # EKF fuses /odom_raw + /imu → publishes /odom.
+        # SLAM Toolbox reads /scan + /odom TF → builds /map.
+        TimerAction(period=40.0, actions=[ekf_node, slam_toolbox]),
+
+        # ── Stage 4 (T=45s): Non-safety teleop for manual mapping drive ───────
+        # 5s after EKF/SLAM so the filter has time to initialise before driving.
+        TimerAction(period=45.0, actions=[non_safety_teleop]),
+
+        # ── [DISABLED] Semantic SLAM — re-enable when model is ready ──────────
+        # TimerAction(period=50.0, actions=[semantic_slam]),
+
+        # ── [DISABLED] YOLO-World — re-enable when needed ─────────────────────
+        # TimerAction(period=50.0, actions=[yolo_node]),
     ])
+

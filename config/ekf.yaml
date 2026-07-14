@@ -1,35 +1,65 @@
 ekf_filter_node:
   ros__parameters:
-    # 1. Frequency and Time
-    frequency: 15.0
-    sensor_timeout: 0.5
-    two_d_mode: true      # Essential for diff-drive (ignores Z/Roll/Pitch)
+    # ── Timing ────────────────────────────────────────────────────────────────
+    # Run EKF at 30 Hz — fast enough to track 50 Hz IMU, low enough for RPi.
+    frequency: 30.0
+    sensor_timeout: 0.5       # seconds before a sensor is considered stale
+    two_d_mode: true          # flat ground robot — ignore Z, roll, pitch
     use_sim_time: false
-    publish_tf: true      # The EKF will provide odom -> base_footprint
 
-    # 2. Frame Names
-    map_frame: map
-    odom_frame: odom
+    # ── TF output ─────────────────────────────────────────────────────────────
+    # EKF publishes odom -> base_footprint transform.
+    # odom_node also broadcasts this TF — set broadcast_tf:=false in odom_node
+    # launch args so only EKF owns this transform (avoids TF conflicts).
+    publish_tf: true
+
+    # ── Frame names ───────────────────────────────────────────────────────────
+    map_frame:       map
+    odom_frame:      odom
     base_link_frame: base_footprint
-    world_frame: odom
+    world_frame:     odom
 
-    # 3. Wheel Odometry (from Gazebo /odom_raw)
+    # ── Source 0: Wheel odometry (/odom_raw from odom_node) ───────────────────
+    # odom_node uses RPM from DDSM115 motors via driver_node.
+    # Config vector: [X, Y, Z, Roll, Pitch, Yaw, vX, vY, vZ, vRoll, vPitch, vYaw, aX, aY, aZ]
+    #
+    # We use:
+    #   X, Y position  — dead-reckoning absolute position
+    #   vX velocity     — forward wheel speed
+    #   vYaw            — REMOVED: IMU is more accurate for angular velocity
+    #                     (having both causes EKF to fight between sources)
+    #
+    # We do NOT use:
+    #   Yaw from odom  — IMU (BNO055 fusion) is far better for heading
+    #   vY             — differential drive has no lateral velocity
     odom0: /odom_raw
-    odom0_config: [true,  true,  false, # X, Y (Position)
-                   false, false, false, # R, P, Y (Orientation)
-                   true,  true,  false, # X', Y' (Velocity)
-                   false, false, true,  # R', P', Y' (Angular Velocity)
-                   false, false, false]
-    odom0_differential: false
+    odom0_config: [true,  true,  false,   # X, Y position (use)  | Z (ignore)
+                   false, false, false,   # Roll, Pitch, Yaw — all from IMU
+                   true,  false, false,   # vX (use) | vY (ignore, no lateral) | vZ (ignore)
+                   false, false, false,   # vRoll, vPitch, vYaw — all from IMU
+                   false, false, false]   # aX, aY, aZ — from IMU
+    odom0_differential: false             # odom_node gives absolute integrated pose
 
-    # 4. IMU Data (from Gazebo /imu)
+    # ── Source 1: IMU (/imu from imu_node / BNO055 via Arduino) ──────────────
+    # BNO055 in NDOF mode provides fused absolute orientation (quaternion)
+    # + raw angular velocity + raw linear acceleration.
+    # Config vector: [X, Y, Z, Roll, Pitch, Yaw, vX, vY, vZ, vRoll, vPitch, vYaw, aX, aY, aZ]
+    #
+    # We use:
+    #   Yaw             — absolute heading from BNO055 fusion (best source)
+    #   vYaw (ωz)       — gyro angular rate (faster than derived from odometry)
+    #   aX              — forward acceleration for velocity estimation
+    #
+    # We do NOT use:
+    #   Roll, Pitch     — two_d_mode ignores them anyway
+    #   aY, aZ          — lateral/vertical accel not meaningful for flat robot
     imu0: /imu
-    imu0_config: [false, false, false,
-                  false, false, true,  # Yaw (Trust IMU for heading!)
-                  false, false, false,
-                  false, false, true,  # Angular Velocity
-                  true,  false, false] # Linear Acceleration (X only)
-    
-    imu0_differential: false
-    imu0_relative: true    # Sets the initial orientation to zero on start
-    imu0_remove_gravity: true
+    imu0_config: [false, false, false,    # X, Y, Z position — from odom
+                  false, false, true,     # Roll, Pitch (ignore) | Yaw (USE — BNO055 fusion)
+                  false, false, false,    # vX, vY, vZ — from odom
+                  false, false, true,     # vRoll, vPitch (ignore) | vYaw ωz (USE — gyro)
+                  true,  false, false]    # aX (USE — forward accel) | aY, aZ (ignore)
+
+    imu0_differential: false              # BNO055 gives absolute orientation — do not diff
+    imu0_relative: true                   # Zero heading at startup (ignore absolute mag north)
+    imu0_remove_gravity: true             # Subtract 9.81 m/s² from aZ before fusion
