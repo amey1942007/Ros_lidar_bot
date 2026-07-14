@@ -35,6 +35,7 @@ setup(
             'non_safety_teleop = Ros_lidar_bot.non_safety_teleop_node:main',
             'check_qos_mismatch = Ros_lidar_bot.check_qos_mismatch:main',
             'imu_test_node = Ros_lidar_bot.imu_test_node:main',
+            'imu_calibration_node = Ros_lidar_bot.imu_calibration_node:main',
         ],
     },
     extras_require={
