@@ -3,7 +3,7 @@ ekf_filter_node:
     # ── Timing ────────────────────────────────────────────────────────────────
     # Run EKF at 30 Hz — fast enough to track 50 Hz IMU, low enough for RPi.
     frequency: 30.0
-    sensor_timeout: 0.5       # seconds before a sensor is considered stale
+    sensor_timeout: 1.5       # seconds before a sensor is considered stale
     two_d_mode: true          # flat ground robot — ignore Z, roll, pitch
     use_sim_time: false
 

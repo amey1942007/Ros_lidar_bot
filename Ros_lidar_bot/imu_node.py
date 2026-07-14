@@ -210,9 +210,21 @@ class ImuNode(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = self._frame_id
 
-        # Invert Y and Z axes due to upside down mounting (180 deg roll about X-axis)
-        # q_corrected = q_raw * q_rot_x_180
-        qx_c, qy_c, qz_c, qw_c = qw, qz, -qy, -qx
+        # Correct for upside-down mounting (180° roll about X-axis).
+        #
+        # q_rot_x_180 = (x=1, y=0, z=0, w=0)
+        #
+        # The sensor reports q_world→sensor.  We need q_world→body.
+        # Since body = rot_x_180 · sensor, the corrected quaternion is:
+        #
+        #   q_corrected = q_rot · q_raw        (extrinsic / body-frame correction)
+        #
+        # Hamilton product q_rot(1,0,0,0) · q_raw(x,y,z,w):
+        #   w' = -x,  x' = w,  y' = -z,  z' = y
+        #
+        # ⚠ Previous code used q_raw · q_rot (intrinsic) which INVERTS the yaw sign,
+        #   causing the EKF to see orientation opposite to angular velocity → yaw freeze.
+        qx_c, qy_c, qz_c, qw_c = qw, -qz, qy, -qx
         norm = (qx_c**2 + qy_c**2 + qz_c**2 + qw_c**2)**0.5
         if norm > 1e-6:
             qx_c /= norm
