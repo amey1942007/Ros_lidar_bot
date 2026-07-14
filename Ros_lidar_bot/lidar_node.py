@@ -27,10 +27,12 @@ Failure to do this results in scan points appearing mirrored in RViz2.
 ================================================================================
 DESIGN PATHWAY & THREADING MODEL
 ================================================================================
-This node uses a ROS 2 timer (0.001 s interval) to call next(generator) each
-tick, accumulating measurements in _pending_scan. When start_flag==True and
-_pending_scan is non-empty, a LaserScan is built and published (subject to
-publish_rate throttle). This avoids background-thread executor starvation.
+To prevent ROS executor starvation and ensure real-time responsiveness, all
+blocking serial operations and connection retries are run in a dedicated
+background thread. This background thread reads measurements from the generator
+as fast as they arrive, preventing any serial buffer backlog (which causes
+the "spiral/lag" effect in RViz) while leaving the ROS executor free to handle
+discovery and publishing.
 
 ================================================================================
 DEPENDENCY DETAIL (JAZZY TARGETED)
@@ -60,6 +62,7 @@ ROS parameters:
 
 import math
 import time
+import threading
 from typing import Optional
 
 import rclpy
@@ -86,13 +89,9 @@ class LidarNode(Node):
     ANGLE CONVENTION: RPLidar A1 reports angles clockwise (CW). This node converts
     them to the ROS CCW convention before building the LaserScan message.
 
-    Uses a 1 ms ROS timer to poll next(generator) so the ROS executor is never
-    starved by blocking serial reads.
+    Spins a background thread to read measurements as they arrive to prevent
+    serial port buffer backlog and avoid starving the ROS 2 executor.
     """
-
-    # Full 360° sweep, -π … +π convention (most common in ROS 2 nav stacks).
-    ANGLE_MIN = -math.pi
-    ANGLE_MAX =  math.pi
 
     def __init__(self):
         super().__init__('lidar_node')
@@ -118,12 +117,14 @@ class LidarNode(Node):
             1.0 / self.publish_rate if self.publish_rate > 0.0 else 0.0
         )
 
-        # ── Lidar state ────────────────────────────────────────────────────
+        # ── Connection + Scan Thread State ────────────────────────────────
         self.lidar: Optional[PyRPlidar] = None
         self._generator                  = None   # current measurement generator
         self._pending_scan               = []     # measurements accumulating for one sweep
         self._using_fallback_normal      = False  # True after express→normal fallback
-        self._reconnect_after            = 0.0    # monotonic time when reconnect is allowed
+        
+        self._running = True
+        self._thread = threading.Thread(target=self._scan_loop, daemon=True)
 
         if not PYRPLIDAR_AVAILABLE:
             self.get_logger().fatal(
@@ -133,11 +134,8 @@ class LidarNode(Node):
             )
             raise SystemExit(1)
 
-        # ── Connect immediately, then start timer ──────────────────────────
-        self._connect_lidar()
-
-        # 1 ms timer: each tick reads one measurement from the generator.
-        self._scan_timer = self.create_timer(0.001, self._scan_tick)
+        # Start the background scan thread
+        self._thread.start()
 
         mode_name = 'Sensitivity/Express (mode 1)' if self.sensitivity_mode else 'Standard (mode 0)'
         self.get_logger().info(
@@ -169,6 +167,10 @@ class LidarNode(Node):
             lidar = PyRPlidar()
             lidar.connect(port=self.serial_port, baudrate=self.serial_baud, timeout=3)
 
+            # Flush the serial port RX buffer immediately after connection to clear any junk bytes
+            if lidar.lidar_serial and lidar.lidar_serial._serial:
+                lidar.lidar_serial._serial.reset_input_buffer()
+
             info   = lidar.get_info()
             health = lidar.get_health()
             self.get_logger().info(f'RPLidar device info:   {info}')
@@ -177,6 +179,10 @@ class LidarNode(Node):
             self.get_logger().info(f'Setting motor PWM to {self.motor_pwm} …')
             lidar.set_motor_pwm(self.motor_pwm)
             time.sleep(1.5)  # let motor spin up and stabilise
+
+            # Flush again after motor spin up to clear any startup electrical/noise bytes
+            if lidar.lidar_serial and lidar.lidar_serial._serial:
+                lidar.lidar_serial._serial.reset_input_buffer()
 
             # Start the appropriate scan mode
             self._generator = self._start_generator(lidar)
@@ -189,7 +195,10 @@ class LidarNode(Node):
 
         except Exception as exc:
             self.get_logger().error(f'Failed to connect to RPLidar: {exc}')
-            self._safe_disconnect(getattr(self, 'lidar', None))
+            # Safe clean up of the local variable on error
+            if 'lidar' in locals():
+                self._safe_disconnect(lidar)
+            self._safe_disconnect(self.lidar)
             self.lidar = None
             self._generator = None
             return False
@@ -213,6 +222,9 @@ class LidarNode(Node):
                     f'To suppress this warning, set sensitivity_mode:=false.'
                 )
                 self._using_fallback_normal = True
+                # Flush the serial port input buffer to clear any failed express bytes
+                if lidar.lidar_serial and lidar.lidar_serial._serial:
+                    lidar.lidar_serial._serial.reset_input_buffer()
 
         # Standard scan (mode 0) — also used as fallback
         self.get_logger().info('Starting Standard scan (mode 0) …')
@@ -246,88 +258,57 @@ class LidarNode(Node):
         self.lidar      = None
         self._generator = None
 
-    # ── Scan Timer Tick ───────────────────────────────────────────────────
+    # ── Scan Loop ─────────────────────────────────────────────────────────
 
-    def _process_measurement(self, measurement):
-        """Processes a single measurement and handles sweep boundary publishing."""
-        # Skip invalid distance returns
-        if measurement.distance == 0:
-            return
-
-        # New sweep: publish the accumulated scan, then reset
-        if measurement.start_flag and self._pending_scan:
-            now = time.monotonic()
-            if self._min_publish_interval == 0.0 or (
-                now - self._last_publish_time >= self._min_publish_interval
-            ):
-                msg = self._build_laserscan(self._pending_scan)
-                msg.header.stamp = self.get_clock().now().to_msg()
-                self.publisher_.publish(msg)
-                self._last_publish_time = now
-            self._pending_scan = []
-
-        self._pending_scan.append(measurement)
-
-    def _scan_tick(self):
-        """Called every 1 ms by the ROS timer. Reads all available measurements per tick."""
-        # If not connected, attempt reconnect after a delay
-        if self.lidar is None or self._generator is None:
-            now = time.monotonic()
-            if now >= self._reconnect_after:
+    def _scan_loop(self):
+        """Background thread that reads measurements from RPLidar and publishes them."""
+        while rclpy.ok() and self._running:
+            if self.lidar is None or self._generator is None:
+                self._using_fallback_normal = False
                 if not self._connect_lidar():
-                    self._reconnect_after = time.monotonic() + 2.0
-            return
+                    time.sleep(2.0)
+                    continue
 
-        # 1. Read at least one measurement (blocking briefly if needed)
-        try:
-            measurement = next(self._generator)
-            self._process_measurement(measurement)
-        except StopIteration:
-            self._warn_throttled('Scan generator exhausted — reconnecting …')
-            self._disconnect_lidar()
-            self._reconnect_after = time.monotonic() + 1.0
-            return
-        except PyRPlidarConnectionError as exc:
-            self._warn_throttled(f'PyRPlidarConnectionError: {exc}')
-            self._disconnect_lidar()
-            self._reconnect_after = time.monotonic() + 2.0
-            return
-        except PyRPlidarProtocolError as exc:
-            self._warn_throttled(f'PyRPlidarProtocolError: {exc}')
-            self._disconnect_lidar()
-            self._reconnect_after = time.monotonic() + 2.0
-            return
-        except Exception as exc:
-            self._warn_throttled(f'Unexpected error reading scan: {exc}')
-            self._disconnect_lidar()
-            self._reconnect_after = time.monotonic() + 2.0
-            return
-
-        # 2. Flush any additional measurements waiting in the serial RX buffer to prevent lag/backlog
-        try:
-            while self.lidar and self.lidar.lidar_serial and self.lidar.lidar_serial._serial.in_waiting > 0:
+            try:
                 measurement = next(self._generator)
-                self._process_measurement(measurement)
-        except StopIteration:
-            self._warn_throttled('Scan generator exhausted in buffer flush — reconnecting …')
-            self._disconnect_lidar()
-            self._reconnect_after = time.monotonic() + 1.0
-            return
-        except PyRPlidarConnectionError as exc:
-            self._warn_throttled(f'PyRPlidarConnectionError in buffer flush: {exc}')
-            self._disconnect_lidar()
-            self._reconnect_after = time.monotonic() + 2.0
-            return
-        except PyRPlidarProtocolError as exc:
-            self._warn_throttled(f'PyRPlidarProtocolError in buffer flush: {exc}')
-            self._disconnect_lidar()
-            self._reconnect_after = time.monotonic() + 2.0
-            return
-        except Exception as exc:
-            self._warn_throttled(f'Unexpected error in buffer flush: {exc}')
-            self._disconnect_lidar()
-            self._reconnect_after = time.monotonic() + 2.0
-            return
+                
+                # Skip invalid distance returns
+                if measurement.distance == 0:
+                    continue
+
+                # New sweep: publish the accumulated scan, then reset
+                if measurement.start_flag and self._pending_scan:
+                    now = time.monotonic()
+                    if self._min_publish_interval == 0.0 or (
+                        now - self._last_publish_time >= self._min_publish_interval
+                    ):
+                        msg = self._build_laserscan(self._pending_scan)
+                        msg.header.stamp = self.get_clock().now().to_msg()
+                        self.publisher_.publish(msg)
+                        self.get_logger().info(f'Published scan with {len(self._pending_scan)} points.')
+                        self._last_publish_time = now
+                    self._pending_scan = []
+
+                self._pending_scan.append(measurement)
+
+            except StopIteration:
+                self._warn_throttled('Scan generator exhausted — reconnecting …')
+                self._disconnect_lidar()
+                time.sleep(1.0)
+            except PyRPlidarConnectionError as exc:
+                self._warn_throttled(f'PyRPlidarConnectionError: {exc}')
+                self._disconnect_lidar()
+                time.sleep(2.0)
+            except PyRPlidarProtocolError as exc:
+                self._warn_throttled(f'PyRPlidarProtocolError: {exc}')
+                self._disconnect_lidar()
+                time.sleep(2.0)
+            except Exception as exc:
+                self._warn_throttled(f'Unexpected error in scan loop: {exc}')
+                self._disconnect_lidar()
+                time.sleep(2.0)
+
+        self._disconnect_lidar()
 
     # ── LaserScan Builder ─────────────────────────────────────────────────
 
@@ -398,8 +379,7 @@ class LidarNode(Node):
     def destroy_node(self):
         """Clean shutdown: stop scan, motor, and disconnect."""
         self.get_logger().info('Shutting down LidarNode …')
-        if hasattr(self, '_scan_timer'):
-            self._scan_timer.cancel()
+        self._running = False
         self._disconnect_lidar()
         super().destroy_node()
 
