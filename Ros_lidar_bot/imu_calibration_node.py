@@ -173,7 +173,7 @@ class ImuCalibrationNode(Node):
         super().__init__("imu_calibration_node")
 
         # ── Parameters ────────────────────────────────────────────────────────
-        self._cmd_vel_topic = self.declare_parameter("cmd_vel_topic", "/cmd_vel").value
+        self._cmd_vel_topic = self.declare_parameter("cmd_vel_topic", "/cmd_vel_safe").value
         self._imu_topic     = self.declare_parameter("imu_topic", "/imu").value
         self._mag_topic     = self.declare_parameter("mag_topic", "/magnetic_field").value
         self._output_yaml   = self.declare_parameter("output_yaml_path", "").value
