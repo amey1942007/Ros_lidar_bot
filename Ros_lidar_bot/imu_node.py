@@ -112,6 +112,7 @@ class ImuNode(Node):
 
         # ── Latest parsed IMU data (thread-safe) ─────────────────────────────
         self._latest_msg: Imu | None = None
+        self._last_data_time = time.monotonic()
         self._lock = threading.Lock()
         self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
         self._reader_thread.start()
@@ -252,11 +253,24 @@ class ImuNode(Node):
 
         with self._lock:
             self._latest_msg = msg
+            self._last_data_time = time.monotonic()
 
     # ── Timer callback: publish latest at configured rate ─────────────────────
     def _publish_latest(self):
         with self._lock:
             msg = self._latest_msg
+            last_data = self._last_data_time
+
+        # Watchdog: Warn in red if no new data received from the serial port for 2.0s
+        if time.monotonic() - last_data > 2.0:
+            self.get_logger().error(
+                "\033[1;31m[IMU WATCHDOG] NO DATA FROM ARDUINO IMU ON SERIAL PORT! "
+                "Check connection, check if port is correct (/dev/ttyACM0 vs /dev/ttyACM1), "
+                "or verify if Arduino is powered on and sending data.\033[0m",
+                throttle_duration_sec=2.0
+            )
+            return
+
         if msg is not None:
             # Update timestamp to now (Rule 4: stamp at publish time)
             msg.header.stamp = self.get_clock().now().to_msg()
