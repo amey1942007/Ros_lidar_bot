@@ -32,11 +32,16 @@ def generate_launch_description():
         parameters=[params]
     )
 
-    # NOTE: joint_state_publisher REMOVED.
-    # It was publishing zero-state /joint_states for the continuous wheel joints,
-    # conflicting with robot_state_publisher and causing intermittent TF failures.
-    # All sensor frames (laser_frame, imu_link, camera_link) are fixed joints —
-    # robot_state_publisher handles them without JSP.
+    # Create a joint_state_publisher node that subscribes to the real /encoder topic
+    node_joint_state_publisher = Node(
+        package='joint_state_publisher',
+        executable='joint_state_publisher',
+        name='joint_state_publisher',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'source_list': ['/encoder']
+        }]
+    )
 
     # Launch
     return LaunchDescription([
@@ -46,4 +51,5 @@ def generate_launch_description():
             description='Use sim time if true'),
 
         node_robot_state_publisher,
+        node_joint_state_publisher
     ])

@@ -58,7 +58,7 @@ ekf_filter_node:
                   false, false, true,     # Roll, Pitch (ignore) | Yaw (USE — BNO055 fusion)
                   false, false, false,    # vX, vY, vZ — from odom
                   false, false, true,     # vRoll, vPitch (ignore) | vYaw ωz (USE — gyro)
-                  true,  false, false]    # aX (USE — forward accel) | aY, aZ (ignore)
+                  false, false, false]    # aX (disabled to prevent drift) | aY, aZ (ignore)
 
     imu0_differential: false              # BNO055 gives absolute orientation — do not diff
     imu0_relative: true                   # Zero heading at startup (ignore absolute mag north)
