@@ -228,6 +228,8 @@ class LidarNode(Node):
         intensities = [0.0]          * num_readings
 
         for quality, angle, distance in scan:
+            if quality is None or angle is None or distance is None:
+                continue
             angle_deg  = angle % 360.0
             idx        = int(angle_deg / 360.0 * num_readings) % num_readings
             distance_m = distance / 1000.0       # mm → m
