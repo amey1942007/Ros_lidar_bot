@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
 """
-imu_test_node.py — IMU Test Node + Built-in GUI Visualiser
+imu_test_node.py — IMU Test Node + Built-in Large GUI Visualiser
 
 Subscribes : /imu  (sensor_msgs/Imu)  from BNO055 via imu_node.py
 Opens      : A Tkinter GUI window automatically on launch showing:
-               • 3-D rotating axis widgets (IMU frame vs corrected Robot frame)
-               • Live numeric readouts — Euler angles, quaternion, gyro, accel
-               • Coordinate frame correction indicator
-
-Coordinate-frame correction (IMU → robot frame):
-    robot_x =  +imu_x   (same axis)
-    robot_y =  -imu_y   (bot -Y  <->  IMU +Y)
-    robot_z =  -imu_z   (bot -Z  <->  IMU +Z)
+               • 1 large 3-D rotating axis widget in the center
+               • Live dashboard with numeric readouts: Euler angles, quaternion, gyro, accel
+               • Fully aligned coordinate convention (+X, +Y, +Z)
 
 Usage:
     ros2 run Ros_lidar_bot imu_test_node
@@ -68,15 +63,6 @@ def quat_to_euler_deg(x, y, z, w):
     return math.degrees(roll), math.degrees(pitch), math.degrees(yaw)
 
 
-def correct_quaternion(qx, qy, qz, qw):
-    """Flip Y and Z axes: robot frame = IMU frame with -Y, -Z."""
-    cx, cy, cz, cw = qx, -qy, -qz, qw
-    n = math.sqrt(cx*cx + cy*cy + cz*cz + cw*cw)
-    if n > 1e-6:
-        cx /= n; cy /= n; cz /= n; cw /= n
-    return cx, cy, cz, cw
-
-
 def quat_to_matrix(qx, qy, qz, qw):
     """Quaternion → 3×3 rotation matrix (flat, row-major)."""
     xx, yy, zz = qx*qx, qy*qy, qz*qz
@@ -96,14 +82,11 @@ def mat_vec(m, v):
 
 
 def project(x, y, z, cx, cy, scale=80.0, persp=4.0):
-    """Simple perspective projection → canvas (px, py)."""
+    """Perspective projection."""
     d = persp / (persp + z)
     return cx + x*scale*d, cy - y*scale*d
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  3-D AXIS CANVAS WIDGET
-# ═══════════════════════════════════════════════════════════════════════════════
 CUBE_VERTS = [
     (-0.5,-0.5,-0.5),( 0.5,-0.5,-0.5),( 0.5, 0.5,-0.5),(-0.5, 0.5,-0.5),
     (-0.5,-0.5, 0.5),( 0.5,-0.5, 0.5),( 0.5, 0.5, 0.5),(-0.5, 0.5, 0.5),
@@ -114,8 +97,12 @@ CUBE_EDGES = [
     (0,4),(1,5),(2,6),(3,7),
 ]
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  3-D AXIS CANVAS WIDGET (LARGE CENTER SIZE)
+# ═══════════════════════════════════════════════════════════════════════════════
 class Axis3DCanvas(tk.Canvas):
-    def __init__(self, parent, label="", size=265, **kw):
+    def __init__(self, parent, label="", size=420, **kw):
         super().__init__(parent, width=size, height=size,
                          bg=BG_CARD, highlightthickness=1,
                          highlightbackground=BORDER, **kw)
@@ -136,25 +123,23 @@ class Axis3DCanvas(tk.Canvas):
         self.delete("all")
         cx, cy = self._cx, self._cy
         m  = quat_to_matrix(*self._quat)
-        sc = 78
+        sc = self._size * 0.32
 
-        # Outer ring
-        r = self._size // 2 - 6
-        self.create_oval(6, 6, self._size-6, self._size-6,
-                         outline=BORDER, width=1)
+        # Outer boundary ring
+        self.create_oval(8, 8, self._size-8, self._size-8, outline=BORDER, width=1)
 
-        # Cube wireframe
+        # Wireframe cube
         rotated   = [mat_vec(m, v) for v in CUBE_VERTS]
         projected = [project(v[0], v[1], v[2], cx, cy, scale=sc*0.68) for v in rotated]
         for i, j in CUBE_EDGES:
             z_avg = (rotated[i][2] + rotated[j][2]) / 2
-            bright = int(70 + 110 * (z_avg + 0.7) / 1.4)
-            bright = max(55, min(185, bright))
+            bright = int(75 + 115 * (z_avg + 0.7) / 1.4)
+            bright = max(60, min(190, bright))
             col = f"#{bright:02x}{bright:02x}{bright:02x}"
             x1, y1 = projected[i]; x2, y2 = projected[j]
             self.create_line(x1, y1, x2, y2, fill=col, width=1, dash=(3,2))
 
-        # X / Y / Z axis arrows
+        # Main X / Y / Z axis vectors
         ox, oy = project(0, 0, 0, cx, cy, scale=sc)
         for vec, color, name in (
             ([1,0,0], ACCENT_X, "X"),
@@ -163,35 +148,31 @@ class Axis3DCanvas(tk.Canvas):
         ):
             rv = mat_vec(m, vec)
             tx, ty = project(*rv, cx, cy, scale=sc)
-            self.create_line(ox, oy, tx, ty, fill=color, width=2,
-                             arrow=tk.LAST, arrowshape=(9,11,4))
+            self.create_line(ox, oy, tx, ty, fill=color, width=3,
+                             arrow=tk.LAST, arrowshape=(10,13,5))
             lx = tx + (tx-ox)*0.18
             ly = ty + (ty-oy)*0.18
-            self.create_text(lx, ly, text=name, fill=color,
-                             font=("Consolas", 9, "bold"))
+            self.create_text(lx, ly, text=name, fill=color, font=("Consolas", 11, "bold"))
 
-        # Origin dot
-        r2 = 4
-        self.create_oval(ox-r2, oy-r2, ox+r2, oy+r2,
-                         fill=FG_DIM, outline=FG_MAIN, width=1)
+        # Center dot
+        r2 = 5
+        self.create_oval(ox-r2, oy-r2, ox+r2, oy+r2, fill=FG_DIM, outline=FG_MAIN, width=1.5)
 
-        # Frame label
-        self.create_text(cx, 13, text=self._label, fill=FG_DIM,
-                         font=("Consolas", 8, "bold"))
+        # Header Label
+        self.create_text(cx, 20, text=self._label, fill=FG_DIM, font=("Consolas", 10, "bold"))
 
-        # Euler readout
+        # Inside Euler Readout
         roll, pitch, yaw = self._euler
         for i, (txt, col) in enumerate([
-            (f"R: {roll:+7.1f}°",  ACCENT_X),
-            (f"P: {pitch:+7.1f}°", ACCENT_Y),
-            (f"Y: {yaw:+7.1f}°",   ACCENT_Z),
+            (f"Roll:  {roll:+7.2f}°",  ACCENT_X),
+            (f"Pitch: {pitch:+7.2f}°", ACCENT_Y),
+            (f"Yaw:   {yaw:+7.2f}°",   ACCENT_Z),
         ]):
-            self.create_text(cx, self._size-40+i*13, text=txt,
-                             fill=col, font=("Consolas", 8))
+            self.create_text(cx, self._size - 65 + i*16, text=txt, fill=col, font=("Consolas", 10, "bold"))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  VALUE ROW WIDGET (label + value + mini bar)
+#  VALUE ROW WIDGET (label + numeric string + mini bar)
 # ═══════════════════════════════════════════════════════════════════════════════
 class ValueRow(tk.Frame):
     def __init__(self, parent, label, color=FG_MAIN, unit="", **kw):
@@ -205,8 +186,7 @@ class ValueRow(tk.Frame):
         if unit:
             tk.Label(self, text=unit, fg=FG_DIM, bg=BG_CARD,
                      font=("Consolas", 8)).pack(side=tk.LEFT, padx=2)
-        self._bar = tk.Canvas(self, width=65, height=7,
-                              bg=BG_CARD, highlightthickness=0)
+        self._bar = tk.Canvas(self, width=65, height=7, bg=BG_CARD, highlightthickness=0)
         self._bar.pack(side=tk.LEFT, padx=4)
         self._color = color
 
@@ -219,128 +199,88 @@ class ValueRow(tk.Frame):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  MAIN GUI APPLICATION
+#  MAIN GUI DASHBOARD (3-COLUMN CENTRALIZED LAYOUT)
 # ═══════════════════════════════════════════════════════════════════════════════
 class ImuGuiApp(tk.Tk):
-    POLL_MS = 50   # 20 Hz GUI refresh
+    POLL_MS = 50
 
     def __init__(self, data_ref: dict, lock: threading.Lock):
         super().__init__()
         self._data = data_ref
         self._lock = lock
 
-        self.title("IMU Test Node — BNO055 Visualiser")
+        self.title("IMU Visualiser Node")
         self.configure(bg=BG_DARK)
-        self.minsize(980, 620)
+        self.minsize(1050, 560)
         self.resizable(True, True)
 
         self._build_ui()
         self.after(self.POLL_MS, self._refresh)
 
-    # ── Build UI ─────────────────────────────────────────────────────────────
     def _build_ui(self):
-        # Top bar
-        top = tk.Frame(self, bg=BG_PANEL, pady=7)
+        # Top Header
+        top = tk.Frame(self, bg=BG_PANEL, pady=8)
         top.pack(fill=tk.X)
-        tk.Label(top, text="⬡  IMU TEST NODE  —  BNO055 Visualiser",
-                 fg=ACCENT_X, bg=BG_PANEL, font=("Consolas",13,"bold")
-                 ).pack(side=tk.LEFT, padx=14)
-        tk.Label(top, text="Subscribing: /imu", fg=FG_DIM, bg=BG_PANEL,
-                 font=("Consolas",9)).pack(side=tk.LEFT)
-        self._dot = tk.Label(top, text="●", fg="#f85149", bg=BG_PANEL,
-                             font=("Consolas",12))
+        tk.Label(top, text="⬡  IMU VISUALISER", fg=ACCENT_X, bg=BG_PANEL,
+                 font=("Consolas", 14, "bold")).pack(side=tk.LEFT, padx=16)
+        tk.Label(top, text="Subscribing: /imu", fg=FG_DIM, bg=BG_PANEL, font=("Consolas", 9)).pack(side=tk.LEFT)
+        
+        self._dot = tk.Label(top, text="●", fg="#f85149", bg=BG_PANEL, font=("Consolas", 12))
         self._dot.pack(side=tk.RIGHT, padx=4)
-        self._slbl = tk.Label(top, text="Waiting for /imu…", fg=FG_WARN,
-                              bg=BG_PANEL, font=("Consolas",9))
+        self._slbl = tk.Label(top, text="Waiting for /imu…", fg=FG_WARN, bg=BG_PANEL, font=("Consolas", 9))
         self._slbl.pack(side=tk.RIGHT, padx=(0,2))
 
         tk.Frame(self, bg=BORDER, height=1).pack(fill=tk.X)
 
-        # Body
+        # Dashboard layout body
         body = tk.Frame(self, bg=BG_DARK)
-        body.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
+        body.pack(fill=tk.BOTH, expand=True, padx=12, pady=10)
 
-        # ── Left: 3-D canvases ────────────────────────────────────────────
-        left = tk.Frame(body, bg=BG_DARK)
-        left.pack(side=tk.LEFT, fill=tk.Y, padx=(0,10))
+        # ── Columns ──
+        left_col = tk.Frame(body, bg=BG_DARK)
+        left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6)
 
-        tk.Label(left, text="RAW  IMU  FRAME", fg=ACCENT_X, bg=BG_DARK,
-                 font=("Consolas",9,"bold")).pack()
-        self._cv_imu = Axis3DCanvas(left, label="IMU Frame", size=268)
-        self._cv_imu.pack(pady=(2,8))
+        center_col = tk.Frame(body, bg=BG_DARK)
+        center_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=12)
 
-        tk.Label(left, text="CORRECTED  ROBOT  FRAME", fg=ACCENT_Y, bg=BG_DARK,
-                 font=("Consolas",9,"bold")).pack()
-        self._cv_bot = Axis3DCanvas(left, label="Robot Frame", size=268)
-        self._cv_bot.pack(pady=(2,0))
+        right_col = tk.Frame(body, bg=BG_DARK)
+        right_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6)
 
-        # ── Right: numeric panels ─────────────────────────────────────────
-        right = tk.Frame(body, bg=BG_DARK)
-        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # ── Left Column: Euler & Quaternion telemetry ──
+        self._euler_rows = self._make_xyz_section(left_col, "Euler Angles (deg)", unit="°")
+        self._quat_rows = self._make_xyzw_section(left_col, "Quaternion")
 
-        # Coordinate legend
-        leg = tk.Frame(right, bg=BG_CARD)
-        leg.pack(fill=tk.X, pady=(0,8))
-        tk.Label(leg, text="Frame Correction  ( IMU → Robot )", fg=ACCENT_W,
-                 bg=BG_CARD, font=("Consolas",9,"bold"), anchor="w"
-                 ).pack(fill=tk.X, padx=10, pady=(6,2))
-        for txt, col in [
-            ("  Robot X  =  +IMU X   (unchanged)", ACCENT_X),
-            ("  Robot Y  =  −IMU Y   (negated)",   ACCENT_Y),
-            ("  Robot Z  =  −IMU Z   (negated)",   ACCENT_Z),
-        ]:
-            tk.Label(leg, text=txt, fg=col, bg=BG_CARD,
-                     font=("Consolas",8), anchor="w"
-                     ).pack(fill=tk.X, padx=10, pady=1)
-        tk.Frame(leg, bg=BG_CARD, height=6).pack()
+        # ── Center Column: Large Axis Canvas ──
+        self._cv = Axis3DCanvas(center_col, label="IMU / Robot Frame", size=420)
+        self._cv.pack(pady=4)
 
-        # Notebook
-        style = ttk.Style(self)
-        style.theme_use("default")
-        style.configure("TNotebook",      background=BG_DARK,  borderwidth=0)
-        style.configure("TNotebook.Tab",  background=BG_PANEL, foreground=FG_DIM,
-                        font=("Consolas",8,"bold"), padding=[10,4])
-        style.map("TNotebook.Tab",
-                  background=[("selected", BG_CARD)],
-                  foreground=[("selected", FG_MAIN)])
+        # Bottom info card
+        leg = tk.Frame(center_col, bg=BG_CARD, highlightthickness=1, highlightbackground=BORDER)
+        leg.pack(fill=tk.X, pady=(6,0))
+        tk.Label(leg, text="Coordinate Alignment (1-to-1)", fg=ACCENT_W, bg=BG_CARD, font=("Consolas",9,"bold")).pack(pady=(4,2))
+        tk.Label(leg, text="+X_bot = +X_imu  |  +Y_bot = +Y_imu  |  +Z_bot = +Z_imu",
+                 fg=ACCENT_Y, bg=BG_CARD, font=("Consolas", 8)).pack(pady=(1, 4))
 
-        nb = ttk.Notebook(right)
-        nb.pack(fill=tk.BOTH, expand=True)
+        # ── Right Column: Gyro, Accel & Covariance ──
+        self._gyro_rows = self._make_xyz_section(right_col, "Angular Velocity (rad/s)", unit="rad/s", vrange=(-10, 10))
+        self._accel_rows = self._make_xyz_section(right_col, "Linear Acceleration (m/s²)", unit="m/s²", vrange=(-20, 20))
+        
+        self._section_header(right_col, "Covariance Diagonals (σ²)")
+        cov_frame = tk.Frame(right_col, bg=BG_CARD)
+        cov_frame.pack(fill=tk.X, padx=8)
+        self._cov_rows = {}
+        for name, col in [("Ori (R/P/Y)", ACCENT_X), ("Gyro (X/Y/Z)", ACCENT_Y), ("Accel (X/Y/Z)", ACCENT_Z)]:
+            r = ValueRow(cov_frame, name, color=col, unit="")
+            r.pack(fill=tk.X, pady=1)
+            self._cov_rows[name.split()[0].lower()] = r
+        tk.Frame(right_col, bg=BORDER, height=1).pack(fill=tk.X, padx=8, pady=4)
 
-        # Tab: Euler
-        t_euler = tk.Frame(nb, bg=BG_CARD); nb.add(t_euler, text=" Euler (°) ")
-        self._euler_imu   = self._make_xyz_section(t_euler, "Raw IMU Euler  (deg)")
-        self._euler_robot = self._make_xyz_section(t_euler, "Robot Euler    (deg)")
-
-        # Tab: Quaternion
-        t_quat = tk.Frame(nb, bg=BG_CARD); nb.add(t_quat, text=" Quaternion ")
-        self._quat_imu   = self._make_xyzw_section(t_quat, "Raw IMU Quaternion")
-        self._quat_robot = self._make_xyzw_section(t_quat, "Robot Quaternion")
-
-        # Tab: Gyro
-        t_gyro = tk.Frame(nb, bg=BG_CARD); nb.add(t_gyro, text=" Gyro (rad/s) ")
-        self._gyro_imu   = self._make_xyz_section(t_gyro, "Raw IMU Angular Vel (rad/s)",  unit="rad/s", vrange=(-10, 10))
-        self._gyro_robot = self._make_xyz_section(t_gyro, "Robot Angular Vel   (rad/s)",  unit="rad/s", vrange=(-10, 10))
-
-        # Tab: Accel
-        t_accel = tk.Frame(nb, bg=BG_CARD); nb.add(t_accel, text=" Accel (m/s²) ")
-        self._accel_imu   = self._make_xyz_section(t_accel, "Raw IMU Linear Accel (m/s²)", unit="m/s²", vrange=(-20, 20))
-        self._accel_robot = self._make_xyz_section(t_accel, "Robot Linear Accel   (m/s²)", unit="m/s²", vrange=(-20, 20))
-
-        # Tab: Covariance
-        t_cov = tk.Frame(nb, bg=BG_CARD); nb.add(t_cov, text=" Covariance ")
-        self._cov_ori   = self._make_xyz_section(t_cov, "Orientation Cov σ² (diag)", labels=["XX","YY","ZZ"], vrange=(-0.05, 0.05))
-        self._cov_gyro  = self._make_xyz_section(t_cov, "Gyro Cov σ²        (diag)", labels=["XX","YY","ZZ"], vrange=(-0.01, 0.01))
-        self._cov_accel = self._make_xyz_section(t_cov, "Accel Cov σ²       (diag)", labels=["XX","YY","ZZ"], vrange=(-0.1,  0.1))
-
-        # Status bar
+        # Status Footer
         bot = tk.Frame(self, bg=BG_PANEL, pady=4)
         bot.pack(fill=tk.X, side=tk.BOTTOM)
-        self._hz_lbl = tk.Label(bot, text="Rate: -- Hz", fg=FG_DIM, bg=BG_PANEL,
-                                font=("Consolas",8))
+        self._hz_lbl = tk.Label(bot, text="Rate: -- Hz", fg=FG_DIM, bg=BG_PANEL, font=("Consolas", 8))
         self._hz_lbl.pack(side=tk.LEFT, padx=10)
-        tk.Label(bot, text="ros2 run Ros_lidar_bot imu_test_node",
-                 fg=FG_DIM, bg=BG_PANEL, font=("Consolas",8)).pack(side=tk.RIGHT, padx=10)
+        tk.Label(bot, text="ros2 run Ros_lidar_bot imu_test_node", fg=FG_DIM, bg=BG_PANEL, font=("Consolas", 8)).pack(side=tk.RIGHT, padx=10)
 
     def _make_xyz_section(self, parent, title, labels=None, unit="°", vrange=(-180,180)):
         if labels is None:
@@ -368,16 +308,13 @@ class ImuGuiApp(tk.Tk):
 
     def _section_header(self, parent, title):
         tk.Label(parent, text=title, fg=ACCENT_W, bg=BG_CARD,
-                 font=("Consolas",8,"bold"), anchor="w"
-                 ).pack(fill=tk.X, padx=8, pady=(8,2))
+                 font=("Consolas",9,"bold"), anchor="w").pack(fill=tk.X, padx=8, pady=(4,2))
 
-    # ── Helpers ──────────────────────────────────────────────────────────────
     def _set_rows(self, rows_dict, values_dict):
         for key, (row, vrange) in rows_dict.items():
             val = values_dict.get(key, 0.0)
             row.set(val, *vrange)
 
-    # ── Refresh loop ─────────────────────────────────────────────────────────
     def _refresh(self):
         try:
             with self._lock:
@@ -386,7 +323,7 @@ class ImuGuiApp(tk.Tk):
             has_data = bool(d)
             if has_data:
                 self._dot.config(fg="#3fb950")
-                self._slbl.config(text=f"Live  ✓", fg="#3fb950")
+                self._slbl.config(text="Live  ✓", fg="#3fb950")
             else:
                 self._dot.config(fg="#f0883e")
                 self._slbl.config(text="Waiting for /imu…", fg=FG_WARN)
@@ -394,48 +331,30 @@ class ImuGuiApp(tk.Tk):
             if not has_data:
                 return
 
-            imu   = d.get("imu", {})
-            robot = d.get("robot", {})
-            cov   = d.get("cov", {})
+            imu = d.get("imu", {})
+            cov = d.get("cov", {})
 
-            # 3-D canvases
+            # 3-D rotation widget update
             iq = imu.get("quat", {}); ie = imu.get("euler", {})
-            self._cv_imu.set_orientation(
+            self._cv.set_orientation(
                 iq.get("x",0), iq.get("y",0), iq.get("z",0), iq.get("w",1),
                 ie.get("roll",0), ie.get("pitch",0), ie.get("yaw",0))
 
-            rq = robot.get("quat", {}); re = robot.get("euler", {})
-            self._cv_bot.set_orientation(
-                rq.get("x",0), rq.get("y",0), rq.get("z",0), rq.get("w",1),
-                re.get("roll",0), re.get("pitch",0), re.get("yaw",0))
+            # Numeric readouts
+            self._set_rows(self._euler_rows, ie)
+            self._set_rows(self._quat_rows, iq)
+            self._set_rows(self._gyro_rows, imu.get("gyro", {}))
+            self._set_rows(self._accel_rows, imu.get("accel", {}))
 
-            # Euler
-            self._set_rows(self._euler_imu,   ie)
-            self._set_rows(self._euler_robot,  re)
-
-            # Quaternion
-            self._set_rows(self._quat_imu,   iq)
-            self._set_rows(self._quat_robot,  rq)
-
-            # Gyro
-            ig = imu.get("gyro",  {}); rg = robot.get("gyro", {})
-            self._set_rows(self._gyro_imu,   ig)
-            self._set_rows(self._gyro_robot,  rg)
-
-            # Accel
-            ia = imu.get("accel", {}); ra = robot.get("accel", {})
-            self._set_rows(self._accel_imu,   ia)
-            self._set_rows(self._accel_robot,  ra)
-
-            # Covariance
+            # Covariances
             oc = cov.get("ori",   [0,0,0])
             gc = cov.get("gyro",  [0,0,0])
             ac = cov.get("accel", [0,0,0])
-            self._set_rows(self._cov_ori,   {"xx":oc[0],"yy":oc[1],"zz":oc[2]})
-            self._set_rows(self._cov_gyro,  {"xx":gc[0],"yy":gc[1],"zz":gc[2]})
-            self._set_rows(self._cov_accel, {"xx":ac[0],"yy":ac[1],"zz":ac[2]})
+            self._cov_rows["ori"].set(oc[2], -0.05, 0.05)
+            self._cov_rows["gyro"].set(gc[0], -0.01, 0.01)
+            self._cov_rows["accel"].set(ac[0], -0.1, 0.1)
 
-            # Hz
+            # Frequency rate update
             hz = d.get("_hz", 0.0)
             self._hz_lbl.config(text=f"Rate: {hz:.1f} Hz")
 
@@ -446,7 +365,7 @@ class ImuGuiApp(tk.Tk):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  ROS2 NODE
+#  ROS2 NODE SUBSCRIBER
 # ═══════════════════════════════════════════════════════════════════════════════
 class ImuTestNode(Node):
     def __init__(self, shared_data: dict, lock: threading.Lock):
@@ -464,8 +383,7 @@ class ImuTestNode(Node):
         )
         topic = self.declare_parameter("imu_topic", "/imu").value
         self._sub = self.create_subscription(Imu, topic, self._cb, qos)
-        self.get_logger().info(
-            f"ImuTestNode ready — subscribing '{topic}' | GUI launched in main thread")
+        self.get_logger().info(f"ImuTestNode ready — subscribing '{topic}' | GUI launched in main thread")
 
     def _cb(self, msg: Imu):
         self._count += 1
@@ -473,45 +391,24 @@ class ImuTestNode(Node):
         dt  = now - self._t0
         hz  = self._count / dt if dt > 0 else 0.0
 
-        qx, qy, qz, qw = (msg.orientation.x, msg.orientation.y,
-                           msg.orientation.z, msg.orientation.w)
-        roll_i, pitch_i, yaw_i = quat_to_euler_deg(qx, qy, qz, qw)
+        qx, qy, qz, qw = (msg.orientation.x, msg.orientation.y, msg.orientation.z, msg.orientation.w)
+        roll, pitch, yaw = quat_to_euler_deg(qx, qy, qz, qw)
 
-        gx, gy, gz = (msg.angular_velocity.x,
-                      msg.angular_velocity.y, msg.angular_velocity.z)
-        ax, ay, az = (msg.linear_acceleration.x,
-                      msg.linear_acceleration.y, msg.linear_acceleration.z)
-
-        # Corrected robot frame
-        qxc, qyc, qzc, qwc = correct_quaternion(qx, qy, qz, qw)
-        roll_r, pitch_r, yaw_r = quat_to_euler_deg(qxc, qyc, qzc, qwc)
+        gx, gy, gz = msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z
+        ax, ay, az = msg.linear_acceleration.x, msg.linear_acceleration.y, msg.linear_acceleration.z
 
         payload = {
             "_hz": round(hz, 2),
             "imu": {
                 "quat":  {"x": qx,  "y": qy,  "z": qz,  "w": qw},
-                "euler": {"x": roll_i, "y": pitch_i, "z": yaw_i,
-                          "roll": roll_i, "pitch": pitch_i, "yaw": yaw_i},
+                "euler": {"x": roll, "y": pitch, "z": yaw, "roll": roll, "pitch": pitch, "yaw": yaw},
                 "gyro":  {"x": gx,  "y": gy,  "z": gz},
                 "accel": {"x": ax,  "y": ay,  "z": az},
             },
-            "robot": {
-                "quat":  {"x": qxc, "y": qyc, "z": qzc, "w": qwc},
-                "euler": {"x": roll_r, "y": pitch_r, "z": yaw_r,
-                          "roll": roll_r, "pitch": pitch_r, "yaw": yaw_r},
-                "gyro":  {"x": gx,  "y": -gy, "z": -gz},
-                "accel": {"x": ax,  "y": -ay, "z": -az},
-            },
             "cov": {
-                "ori":   [msg.orientation_covariance[0],
-                          msg.orientation_covariance[4],
-                          msg.orientation_covariance[8]],
-                "gyro":  [msg.angular_velocity_covariance[0],
-                          msg.angular_velocity_covariance[4],
-                          msg.angular_velocity_covariance[8]],
-                "accel": [msg.linear_acceleration_covariance[0],
-                          msg.linear_acceleration_covariance[4],
-                          msg.linear_acceleration_covariance[8]],
+                "ori":   [msg.orientation_covariance[0], msg.orientation_covariance[4], msg.orientation_covariance[8]],
+                "gyro":  [msg.angular_velocity_covariance[0], msg.angular_velocity_covariance[4], msg.angular_velocity_covariance[8]],
+                "accel": [msg.linear_acceleration_covariance[0], msg.linear_acceleration_covariance[4], msg.linear_acceleration_covariance[8]],
             },
         }
 
@@ -524,11 +421,10 @@ class ImuTestNode(Node):
 #  ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════════════════
 def main(args=None):
-    # Shared state between ROS2 thread and GUI thread
     shared_data: dict = {}
     lock = threading.Lock()
 
-    # ── Start ROS2 in a background thread ────────────────────────────────────
+    # Spin ROS 2 in the background
     rclpy.init(args=args)
     node = ImuTestNode(shared_data, lock)
 
@@ -545,7 +441,7 @@ def main(args=None):
     ros_thread = threading.Thread(target=ros_spin, daemon=True)
     ros_thread.start()
 
-    # ── Run GUI on main thread (Tkinter requirement) ──────────────────────────
+    # Start Tkinter on the main thread
     try:
         app = ImuGuiApp(shared_data, lock)
         app.mainloop()
