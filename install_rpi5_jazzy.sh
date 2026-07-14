@@ -225,8 +225,10 @@ sudo apt-get install -y \
 # pip packages (use --break-system-packages for Ubuntu 24.04)
 PIP_FLAGS="--break-system-packages"
 
-log "Installing RPLidar driver (pyrplidar – supports Sensitivity/Express scan mode)..."
-pip3 install $PIP_FLAGS pyrplidar
+log "Installing RPLidar driver (rplidar-roboticia – pure-Python, supports express/normal scan)..."
+# IMPORTANT: Use 'rplidar-roboticia' NOT 'pyrplidar'. The node imports 'from rplidar import RPLidar'
+# which is provided by the rplidar-roboticia package. pyrplidar is a DIFFERENT incompatible package.
+pip3 install $PIP_FLAGS rplidar-roboticia
 
 log "Installing pyserial (UART driver)..."
 pip3 install $PIP_FLAGS pyserial
@@ -416,12 +418,13 @@ done
 
 echo ""
 echo "--- Python Packages ---"
-PY_PACKAGES=("pyrplidar" "serial" "cv2" "numpy" "ultralytics")
+# Note: rplidar-roboticia is imported as 'rplidar' (not 'rplidar_roboticia')
+PY_PACKAGES=("rplidar" "serial" "cv2" "numpy" "ultralytics")
 for pkg in "${PY_PACKAGES[@]}"; do
     if python3 -c "import $pkg" 2>/dev/null; then
         echo -e "  ${GREEN}✓${NC} python3: $pkg"
     else
-        echo -e "  ${YELLOW}?${NC} python3: $pkg (may need manual check)"
+        echo -e "  ${YELLOW}✗${NC} python3: $pkg (NOT installed — run: pip3 install rplidar-roboticia --break-system-packages)"
     fi
 done
 

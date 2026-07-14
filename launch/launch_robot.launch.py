@@ -67,10 +67,19 @@ def generate_launch_description():
         name="lidar_node",
         output="screen",
         parameters=[{
-            "motor_pwm": 660,           # Default: 660. Range: 0 to 1023 (controls physical speed)
-            "publish_rate": 10.0,       # Default: 10.0 Hz (controls ROS 2 publication frequency)
-            "sensitivity_mode": True,   # True = Express/Sensitivity scan mode (mode id=1)
-                                        # False = Standard scan mode (mode id=0)
+            "serial_port":      "/dev/ttyUSB0",  # RPLidar A1 USB-serial (CP2102). Adjust if different.
+            "serial_baud":      115200,           # A1 default baud rate
+            "scan_topic":       "/scan",
+            "frame_id":         "laser_frame",   # Must match URDF link name
+            "min_range":        0.15,             # Ignore returns closer than 15 cm
+            "max_range":        12.0,             # A1 max range
+            "publish_rate":     10.0,             # Hz — publish rate throttle
+            "motor_pwm":        660,              # Motor PWM (informational; ignored by rplidar-roboticia)
+            "sensitivity_mode": False,            # A1 firmware v1.29 does NOT support express scan.
+                                                  # False = Standard (normal) mode — reliable on all A1.
+                                                  # If you upgrade firmware, set to True for higher density.
+            "min_quality":      10,               # Quality threshold 0–15. 10 = good balance.
+                                                  # Lower value → more points but noisier.
         }],
     )
 
