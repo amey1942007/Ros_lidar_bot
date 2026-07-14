@@ -125,6 +125,7 @@ class LidarNode(Node):
         
         self._running = True
         self._thread = threading.Thread(target=self._scan_loop, daemon=True)
+        self._scan_start_time = None
 
         if not PYRPLIDAR_AVAILABLE:
             self.get_logger().fatal(
@@ -276,6 +277,10 @@ class LidarNode(Node):
                 if measurement.distance == 0:
                     continue
 
+                # Track scan start time for proper timestamping (reduces motion distortion)
+                if not self._pending_scan:
+                    self._scan_start_time = self.get_clock().now()
+
                 # New sweep: publish the accumulated scan, then reset
                 if measurement.start_flag and self._pending_scan:
                     now = time.monotonic()
@@ -283,11 +288,12 @@ class LidarNode(Node):
                         now - self._last_publish_time >= self._min_publish_interval
                     ):
                         msg = self._build_laserscan(self._pending_scan)
-                        msg.header.stamp = self.get_clock().now().to_msg()
+                        msg.header.stamp = self._scan_start_time.to_msg()
                         self.publisher_.publish(msg)
                         self.get_logger().info(f'Published scan with {len(self._pending_scan)} points.')
                         self._last_publish_time = now
                     self._pending_scan = []
+                    self._scan_start_time = None
 
                 self._pending_scan.append(measurement)
 
