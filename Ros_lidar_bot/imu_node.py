@@ -36,7 +36,7 @@ Parameters (override via launch or --ros-args -p):
   baud_rate          (int,    default 115200)          — must match Arduino Serial.begin()
   output_topic       (string, default '/imu')
   frame_id           (string, default 'imu_link')
-  publish_rate       (float,  default 100.0)           — max Hz (throttles if Arduino faster)
+  publish_rate       (float,  default 50.0)           — max Hz (throttles if Arduino faster)
   timeout            (float,  default 0.1)             — serial read timeout (s)
 """
 

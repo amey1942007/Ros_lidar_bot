@@ -3,11 +3,10 @@
 lidar_node.py – ROS 2 node for the RPLidar A1 laser scanner.
 
 Reads raw 360° scan data from the RPLidar A1 over a serial port and
-publishes a sensor_msgs/LaserScan message on the /scan topic, which is
-the standard topic consumed by Nav2, slam_toolbox, etc.
+publishes a sensor_msgs/LaserScan message on the /scan topic.
 
 Dependencies (install once on the robot):
-    pip3 install pyrplidar
+    pip3 install rplidar-roboticia
 
 Parameters (all overridable from a launch file or CLI):
     serial_port      (string,  default '/dev/ttyUSB0')  – serial device
@@ -17,18 +16,15 @@ Parameters (all overridable from a launch file or CLI):
     min_range        (float,   default 0.15  m)           – discard closer hits
     max_range        (float,   default 12.0  m)           – discard farther hits
     publish_rate     (float,   default 10.0  Hz)          – throttle (0 = free-running)
-    motor_pwm        (int,     default 660)               – motor PWM (0–1023)
+    motor_pwm        (int,     default 660)               – motor PWM (0–1023, unused by this driver)
     sensitivity_mode (bool,    default True)              – use Express/Sensitivity
                                                             scan mode (mode id=1).
                                                             Set False for standard scan.
-
-Scan modes (RPLidar A1):
-    Mode 0 – Standard    : lower sample rate, lower power
-    Mode 1 – Sensitivity : Express scan, higher angular density & sensitivity
 """
 
 import math
 import time
+import threading
 from typing import Optional
 
 import rclpy
@@ -36,26 +32,19 @@ from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 
 try:
-    from pyrplidar import PyRPlidar, PyRPlidarConnectionError, PyRPlidarProtocolError
-    PYRPLIDAR_AVAILABLE = True
+    from rplidar import RPLidar, RPLidarException
+    RPLIDAR_AVAILABLE = True
 except ImportError:
-    PYRPLIDAR_AVAILABLE = False
-    PyRPlidar = None
-    PyRPlidarConnectionError = Exception
-    PyRPlidarProtocolError = Exception
-
-# Sensitivity mode ID for RPLidar A1/A2 (Express scan)
-SENSITIVITY_SCAN_MODE_ID = 1
-STANDARD_SCAN_MODE_ID    = 0
+    RPLIDAR_AVAILABLE = False
+    RPLidar = None
+    RPLidarException = Exception
 
 
 class LidarNode(Node):
     """Publishes RPLidar A1 scans as sensor_msgs/LaserScan on /scan.
 
-    Supports both Standard and Sensitivity (Express) scan modes via the
-    `sensitivity_mode` ROS parameter. Sensitivity mode uses the express
-    scan protocol which provides higher angular resolution and detection
-    sensitivity compared to the standard scan mode.
+    Supports both Standard ('normal') and Sensitivity ('express') scan modes via the
+    `sensitivity_mode` ROS parameter.
     """
 
     # The A1 covers a full 360° sweep.
@@ -86,18 +75,19 @@ class LidarNode(Node):
             1.0 / self.publish_rate if self.publish_rate > 0.0 else 0.0
         )
 
-        # ── Scan accumulation state ────────────────────────────────────────
-        # Individual measurements are collected until a new-scan start flag
-        # is seen, then the completed scan is published.
-        self._pending_scan: list = []
+        # ── Connection + Scan Thread State ────────────────────────────────
+        self.lidar: Optional[RPLidar] = None
+        self._running = True
+        self._thread = threading.Thread(target=self._scan_loop, daemon=True)
 
-        # ── Connect to the lidar ───────────────────────────────────────────
-        self.lidar: Optional[PyRPlidar] = None
-        self._scan_generator = None
-        self._connect_lidar()
+        if not RPLIDAR_AVAILABLE:
+            self.get_logger().fatal(
+                'rplidar-roboticia Python library not found. '
+                'Install it system-wide with:  pip3 install rplidar-roboticia'
+            )
+            raise SystemExit(1)
 
-        # ── Timer drives the scan loop ─────────────────────────────────────
-        self.timer = self.create_timer(0.001, self._scan_once)
+        self._thread.start()
 
         mode_name = 'Sensitivity (Express)' if self.sensitivity_mode else 'Standard'
         self.get_logger().info(
@@ -106,102 +96,96 @@ class LidarNode(Node):
             f'scan_mode={mode_name}'
         )
 
-    # ── Private helpers ────────────────────────────────────────────────────
+    def _warn_throttled(self, message: str, interval: float = 5.0):
+        """Log a warning at most once every *interval* seconds."""
+        now = time.monotonic()
+        if now - self._last_warn_time >= interval:
+            self.get_logger().warn(message)
+            self._last_warn_time = now
 
-    def _connect_lidar(self):
-        """Instantiate the PyRPlidar driver and start the appropriate scan mode."""
-        if not PYRPLIDAR_AVAILABLE:
-            self.get_logger().fatal(
-                'pyrplidar Python library not found. '
-                'Install it with:  pip3 install pyrplidar'
-            )
-            raise SystemExit(1)
-
+    def _connect_lidar(self) -> bool:
+        """Attempts to connect to the RPLidar device and start the motor."""
         self.get_logger().info(
-            f'Connecting to RPLidar on {self.serial_port} '
-            f'at {self.serial_baud} baud …'
+            f'Connecting to RPLidar on {self.serial_port} at {self.serial_baud} baud …'
         )
-
-        lidar = PyRPlidar()
-        lidar.connect(port=self.serial_port, baudrate=self.serial_baud, timeout=3)
-
-        info   = lidar.get_info()
-        health = lidar.get_health()
-        self.get_logger().info(f'RPLidar info:   {info}')
-        self.get_logger().info(f'RPLidar health: {health}')
-
-        # ── Set motor PWM ──────────────────────────────────────────────────
-        if 0 <= self.motor_pwm <= 1023:
-            self.get_logger().info(f'Setting RPLidar motor PWM to: {self.motor_pwm}')
-            try:
-                lidar.set_motor_pwm(self.motor_pwm)
-                time.sleep(0.5)          # let motor spin up
-            except Exception as exc:
-                self.get_logger().error(f'Failed to set motor PWM: {exc}')
-
-        # ── Select scan mode ───────────────────────────────────────────────
-        if self.sensitivity_mode:
-            self.get_logger().info(
-                f'Starting Sensitivity (Express) scan mode '
-                f'[mode id={SENSITIVITY_SCAN_MODE_ID}] …'
-            )
-            try:
-                scan_generator_factory = lidar.start_scan_express(
-                    mode=SENSITIVITY_SCAN_MODE_ID
-                )
-                self._scan_generator = scan_generator_factory()
-            except Exception as exc:
-                self.get_logger().warn(
-                    f'Sensitivity mode failed ({exc}); '
-                    'falling back to Standard scan mode.'
-                )
-                scan_generator_factory = lidar.start_scan()
-                self._scan_generator = scan_generator_factory()
-        else:
-            self.get_logger().info('Starting Standard scan mode …')
-            scan_generator_factory = lidar.start_scan()
-            self._scan_generator = scan_generator_factory()
-
-        self.lidar = lidar
-        self._pending_scan = []
-
-    def _scan_once(self):
-        """Fetch the next measurement from the generator; publish on complete scan."""
         try:
-            measurement = next(self._scan_generator)
-        except (PyRPlidarConnectionError, PyRPlidarProtocolError) as exc:
-            self._warn_throttled(f'RPLidar scan error: {exc}')
-            return
-        except StopIteration:
-            self._warn_throttled('RPLidar generator exhausted – reconnecting …')
-            self._reconnect()
-            return
+            # RPLidar constructor opens the serial port connection
+            self.lidar = RPLidar(self.serial_port, baudrate=self.serial_baud, timeout=3)
+            
+            info   = self.lidar.get_info()
+            health = self.lidar.get_health()
+            self.get_logger().info(f'RPLidar info:   {info}')
+            self.get_logger().info(f'RPLidar health: {health}')
+            
+            self.get_logger().info(
+                'Starting lidar motor (note: motor_pwm customization is not supported by rplidar-roboticia).'
+            )
+            self.lidar.start_motor()
+            time.sleep(1.0)  # let motor spin up
+            return True
         except Exception as exc:
-            self._warn_throttled(f'Unexpected lidar error: {exc}')
-            return
+            self.get_logger().error(f'Failed to connect to RPLidar: {exc}')
+            self._disconnect_lidar()
+            return False
 
-        # start_flag marks the beginning of a new 360° sweep.
-        # When we see it, publish the *previous* accumulated sweep first.
-        if measurement.start_flag and self._pending_scan:
-            now = time.monotonic()
-            if self._min_publish_interval == 0.0 or (
-                now - self._last_publish_time >= self._min_publish_interval
-            ):
-                msg = self._build_laserscan(self._pending_scan)
-                self.publisher_.publish(msg)
-                self._last_publish_time = now
-            self._pending_scan = []
+    def _disconnect_lidar(self):
+        """Stops scanning, stops motor, and closes serial port safely."""
+        if self.lidar:
+            try:
+                self.lidar.stop()
+                self.lidar.stop_motor()
+                self.lidar.disconnect()
+            except Exception:
+                pass
+            self.lidar = None
 
-        # Quality == 0 → invalid measurement (e.g. no reflection); skip it.
-        if measurement.distance > 0:
-            self._pending_scan.append(measurement)
+    def _scan_loop(self):
+        """Background thread that block-reads scans from RPLidar and publishes them."""
+        while rclpy.ok() and self._running:
+            if self.lidar is None:
+                if not self._connect_lidar():
+                    time.sleep(2.0)
+                    continue
 
-    def _build_laserscan(self, raw_scan):
-        """Convert a list of PyRPlidarMeasurement objects to LaserScan.
+            try:
+                # Express scan mode maps to rplidar's 'express', Standard maps to 'normal'
+                scan_type = 'express' if self.sensitivity_mode else 'normal'
+                self.get_logger().info(f'Starting scan stream (mode={scan_type}) …')
+                
+                # Retrieve individual sweeps. max_buf_meas=False prevents dropping data.
+                for scan in self.lidar.iter_scans(scan_type=scan_type, max_buf_meas=False):
+                    if not self._running or not rclpy.ok():
+                        break
+
+                    if not scan:
+                        continue
+
+                    now = time.monotonic()
+                    if self._min_publish_interval == 0.0 or (
+                        now - self._last_publish_time >= self._min_publish_interval
+                    ):
+                        msg = self._build_laserscan(scan)
+                        msg.header.stamp = self.get_clock().now().to_msg()
+                        self.publisher_.publish(msg)
+                        self._last_publish_time = now
+
+            except RPLidarException as exc:
+                self._warn_throttled(f'RPLidarException in scan loop: {exc}')
+                self._disconnect_lidar()
+                time.sleep(2.0)
+            except Exception as exc:
+                self._warn_throttled(f'Unexpected error in scan loop: {exc}')
+                self._disconnect_lidar()
+                time.sleep(2.0)
+
+        self._disconnect_lidar()
+
+    def _build_laserscan(self, scan):
+        """Convert a list of (quality, angle, distance) tuples to LaserScan.
 
         Args:
-            raw_scan: list of PyRPlidarMeasurement with attributes
-                      .quality (int), .angle (float, degrees), .distance (float, mm).
+            scan: list of (quality, angle, distance) tuples
+                  quality: int, angle: float (degrees), distance: float (mm)
 
         Returns:
             sensor_msgs.msg.LaserScan populated and ready to publish.
@@ -212,27 +196,26 @@ class LidarNode(Node):
         ranges      = [float('inf')] * num_readings
         intensities = [0.0]          * num_readings
 
-        for m in raw_scan:
-            angle_deg  = m.angle % 360.0
+        for quality, angle, distance in scan:
+            angle_deg  = angle % 360.0
             idx        = int(angle_deg / 360.0 * num_readings) % num_readings
-            distance_m = m.distance / 1000.0       # mm → m
+            distance_m = distance / 1000.0       # mm → m
 
             if distance_m < self.min_range or distance_m > self.max_range:
                 continue
 
-            # Keep the closest measurement when multiple points share a bucket
+            # Keep closest measurement if multiple fall into the same bin
             if distance_m < ranges[idx]:
                 ranges[idx]      = distance_m
-                intensities[idx] = float(m.quality)
+                intensities[idx] = float(quality)
 
         msg = LaserScan()
-        msg.header.stamp    = self.get_clock().now().to_msg()
         msg.header.frame_id = self.frame_id
 
         msg.angle_min       = self.ANGLE_MIN
         msg.angle_max       = self.ANGLE_MAX - angle_increment
         msg.angle_increment = angle_increment
-        msg.time_increment  = 0.0        # unknown per-point time
+        msg.time_increment  = 0.0
         msg.scan_time       = 1.0 / 5.5  # ~5.5 Hz native scan rate of A1
 
         msg.range_min   = self.min_range
@@ -242,35 +225,11 @@ class LidarNode(Node):
 
         return msg
 
-    def _warn_throttled(self, message: str, interval: float = 5.0):
-        """Log a warning at most once every *interval* seconds."""
-        now = time.monotonic()
-        if now - self._last_warn_time >= interval:
-            self.get_logger().warn(message)
-            self._last_warn_time = now
-
-    def _reconnect(self):
-        """Stop the current lidar session and restart it."""
-        try:
-            if self.lidar is not None:
-                self.lidar.stop()
-                self.lidar.set_motor_pwm(0)
-                self.lidar.disconnect()
-        except Exception:
-            pass
-        time.sleep(2.0)
-        self._connect_lidar()
-
     def destroy_node(self):
-        """Clean shutdown: stop motor and close serial port."""
+        """Clean shutdown."""
         self.get_logger().info('Shutting down LidarNode …')
-        try:
-            if self.lidar is not None:
-                self.lidar.stop()
-                self.lidar.set_motor_pwm(0)
-                self.lidar.disconnect()
-        except Exception:
-            pass
+        self._running = False
+        self._disconnect_lidar()
         super().destroy_node()
 
 
@@ -285,7 +244,8 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

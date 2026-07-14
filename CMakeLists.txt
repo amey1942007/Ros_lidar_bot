@@ -3,7 +3,7 @@
 # package.xml declares: <build_type>ament_python</build_type>
 #
 # colcon IGNORES this file entirely — all build configuration lives in:
-#   • setup.py     → entry points, data_files (launch/config/description/meshes)
+#   • setup.py     → entry points, data_files (launch/config/description)
 #   • setup.cfg    → install_scripts path
 #   • package.xml  → dependencies
 #
