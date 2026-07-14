@@ -288,7 +288,9 @@ class LidarNode(Node):
                         now - self._last_publish_time >= self._min_publish_interval
                     ):
                         msg = self._build_laserscan(self._pending_scan)
-                        msg.header.stamp = self._scan_start_time.to_msg()
+                        # Use scan start time if available, else fallback to now
+                        stamp = self._scan_start_time if self._scan_start_time else self.get_clock().now()
+                        msg.header.stamp = stamp.to_msg()
                         self.publisher_.publish(msg)
                         self.get_logger().info(f'Published scan with {len(self._pending_scan)} points.')
                         self._last_publish_time = now

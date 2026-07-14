@@ -174,13 +174,13 @@ def generate_launch_description():
 
     # ── 11. Non-Safety Teleop Node (keyboard, bypasses safety stop) ───────────
     # Publishes directly to /cmd_vel_safe so the safety_stop filter is skipped.
-    # Opens in its own xterm window so key events are captured cleanly.
+    # Uses prefix="xterm -e" only if DISPLAY is set, otherwise runs directly.
     non_safety_teleop = Node(
         package=package_name,
         executable="non_safety_teleop",
         name="non_safety_teleop_node",
         output="screen",
-        prefix="xterm -e",   # separate window — required for keyboard input capture
+        prefix="xterm -e" if os.environ.get("DISPLAY") else "",
     )
 
     # ── [DISABLED] YOLO-World Publisher Node — re-enable when needed ─────────
