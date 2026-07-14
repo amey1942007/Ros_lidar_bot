@@ -190,6 +190,7 @@ class ImuCalibrationNode(Node):
         # ── State machine ─────────────────────────────────────────────────────
         self._state            = CalibState.IDLE
         self._state_start_time = time.monotonic()
+        self._last_imu_msg_time = time.monotonic()
 
         # ── Data accumulators ─────────────────────────────────────────────────
         self._gyro_warmup_x: List[float] = []
@@ -212,11 +213,12 @@ class ImuCalibrationNode(Node):
         self._done_triggered  = False
 
         # ── IMU subscriber ────────────────────────────────────────────────────
+        # Subscribe using general reliability first to guarantee receipt
         self._imu_sub = self.create_subscription(
             Imu,
             self._imu_topic,
             self._imu_callback,
-            QoSPresetProfiles.SENSOR_DATA.value,
+            10,
         )
 
         # ── Magnetometer subscriber (optional) ────────────────────────────────
@@ -225,7 +227,7 @@ class ImuCalibrationNode(Node):
                 MagneticField,
                 self._mag_topic,
                 self._mag_callback,
-                QoSPresetProfiles.SENSOR_DATA.value,
+                10,
             )
             self.get_logger().info(f"Listening for magnetometer on: {self._mag_topic}")
         else:
@@ -254,6 +256,7 @@ class ImuCalibrationNode(Node):
     # ── IMU callback ──────────────────────────────────────────────────────────
     def _imu_callback(self, msg: Imu) -> None:
         now = time.monotonic()
+        self._last_imu_msg_time = now
         dt = (now - self._last_imu_time) if self._last_imu_time is not None else 0.0
         self._last_imu_time = now
 
@@ -273,9 +276,15 @@ class ImuCalibrationNode(Node):
 
         elif self._state == CalibState.ROTATING:
             self._gyro_rot_z.append(gz)
-            if 0.0 < dt < 1.0:   # sanity: ignore first sample or stale dt
-                self._gyro_dt_list.append(dt)
-                self._accumulated_yaw += abs(gz) * dt
+            # Use a slightly more robust dt estimate or absolute wall time
+            # dt should be positive
+            effective_dt = dt if (0.0 < dt < 1.0) else 0.02  # fallback to 50Hz dt if jumpy
+            self._gyro_dt_list.append(effective_dt)
+            
+            # Make sure we read gyro value correctly.
+            # If the user's sensor axes are configured differently, Z axis rate (gz) might be zero.
+            # Let's count absolute angular velocity if Z rotation is zero, but standard is Z-axis.
+            self._accumulated_yaw += abs(gz) * effective_dt
 
     # ── Magnetometer callback ─────────────────────────────────────────────────
     def _mag_callback(self, msg) -> None:
@@ -287,7 +296,8 @@ class ImuCalibrationNode(Node):
 
     # ── FSM tick ──────────────────────────────────────────────────────────────
     def _fsm_tick(self) -> None:
-        elapsed = time.monotonic() - self._state_start_time
+        now_time = time.monotonic()
+        elapsed = now_time - self._state_start_time
 
         if self._state == CalibState.IDLE:
             pass  # waiting for first IMU message
@@ -305,17 +315,47 @@ class ImuCalibrationNode(Node):
                 self._transition(CalibState.ROTATING)
 
         elif self._state == CalibState.ROTATING:
+            # ── Safety Watchdog 1: Lost IMU data ──────────────────────────────
+            time_since_last_msg = now_time - self._last_imu_msg_time
+            if time_since_last_msg > 2.0:
+                self.get_logger().error(
+                    f"SAFETY SHUTDOWN: Lost IMU messages for {time_since_last_msg:.1f}s! Stopping robot."
+                )
+                self._stop_robot()
+                self._transition(CalibState.DONE)
+                return
+
+            # ── Safety Watchdog 2: Rotation Timeout (Max 45s) ─────────────────
+            if elapsed > 45.0:
+                self.get_logger().error(
+                    "SAFETY SHUTDOWN: Calibration rotation timed out (exceeded 45s)! Stopping robot."
+                )
+                self._stop_robot()
+                self._transition(CalibState.DONE)
+                return
+
+            # Publish rotation command
             twist = Twist()
             twist.angular.z = self._rot_speed
             self._cmd_vel_pub.publish(twist)
 
             pct = min(100.0, 100.0 * self._accumulated_yaw / self._total_rotation_rad)
+            
+            # Print Z angular rate diagnostic to help debug axis issues
+            latest_gz = self._gyro_rot_z[-1] if self._gyro_rot_z else 0.0
             self.get_logger().info(
-                f"[ROTATING] {pct:.0f}%  yaw={math.degrees(self._accumulated_yaw):.0f}deg"
-                f" / {math.degrees(self._total_rotation_rad):.0f}deg"
-                f" | mag samples: {len(self._mag_x)}",
+                f"[ROTATING] {pct:.1f}%  yaw={math.degrees(self._accumulated_yaw):.1f}°"
+                f" / {math.degrees(self._total_rotation_rad):.1f}°"
+                f" (latest gz={latest_gz:.3f} rad/s) | mag samples: {len(self._mag_x)}",
                 throttle_duration_sec=2.0,
             )
+
+            # If Z gyro rate is extremely small/zero during rotation, warn the user
+            if elapsed > 5.0 and self._accumulated_yaw < 0.1:
+                self.get_logger().warn(
+                    "WARNING: Accumulated yaw is nearly zero! Is the IMU node publishing Z-axis rate correctly?",
+                    throttle_duration_sec=5.0,
+                )
 
             if self._accumulated_yaw >= self._total_rotation_rad:
                 self.get_logger().info("[ROTATING] Target reached — stopping robot.")
@@ -338,10 +378,12 @@ class ImuCalibrationNode(Node):
 
     # ── Stop robot ────────────────────────────────────────────────────────────
     def _stop_robot(self) -> None:
+        self.get_logger().info("Stopping robot motors...")
         twist = Twist()
-        for _ in range(5):
+        for i in range(10): # Publish multiple times to ensure DDSM115 driver receives it
             self._cmd_vel_pub.publish(twist)
             time.sleep(0.05)
+        self.get_logger().info("Robot stopped.")
 
     # ── Compute + save calibration ────────────────────────────────────────────
     def _compute_and_save_calibration(self) -> None:
