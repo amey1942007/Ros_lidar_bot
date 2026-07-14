@@ -54,9 +54,9 @@ def generate_launch_description():
         description='Baud rate for RPLidar A1 (default 115200)')
 
     sensitivity_arg = DeclareLaunchArgument(
-        'sensitivity_mode', default_value='false',
-        description='Use express/sensitivity scan mode (true) or standard (false). '
-                    'NOTE: RPLidar A1 firmware v1.29 does NOT support express — use false.')
+        'sensitivity_mode', default_value='true',
+        description='Use Express/Sensitivity scan mode (true, mode 1) or Standard (false, mode 0). '
+                    'True enables higher point density on RPLidar A1.')
 
     # ── Robot State Publisher (provides laser_frame TF from URDF) ─────────
     xacro_file = os.path.join(pkg_share, 'description', 'robot.urdf.xacro')
@@ -114,8 +114,8 @@ def generate_launch_description():
             'min_range':        0.15,
             'max_range':        12.0,
             'publish_rate':     10.0,
-            'sensitivity_mode': LaunchConfiguration('sensitivity_mode'),
-            'min_quality':      10,    # filter weak echoes; lower → more points, noisier
+            'sensitivity_mode': LaunchConfiguration('sensitivity_mode'),  # True = Express/Sensitivity (mode 1), False = Standard (mode 0)
+            'motor_pwm':        660,   # Motor PWM value
         }],
     )
 

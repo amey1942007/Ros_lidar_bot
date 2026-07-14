@@ -74,12 +74,10 @@ def generate_launch_description():
             "min_range":        0.15,             # Ignore returns closer than 15 cm
             "max_range":        12.0,             # A1 max range
             "publish_rate":     10.0,             # Hz — publish rate throttle
-            "motor_pwm":        660,              # Motor PWM (informational; ignored by rplidar-roboticia)
-            "sensitivity_mode": False,            # A1 firmware v1.29 does NOT support express scan.
-                                                  # False = Standard (normal) mode — reliable on all A1.
-                                                  # If you upgrade firmware, set to True for higher density.
-            "min_quality":      10,               # Quality threshold 0–15. 10 = good balance.
-                                                  # Lower value → more points but noisier.
+            "motor_pwm":        660,              # Motor PWM value (passed to set_motor_pwm)
+            "sensitivity_mode": True,             # True = Express/Sensitivity (mode 1), False = Standard (mode 0)
+                                                  # Mode 1 gives higher point density on RPLidar A1.
+                                                  # Falls back to Standard automatically if unsupported.
         }],
     )
 
