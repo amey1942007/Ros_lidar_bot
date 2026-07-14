@@ -1,49 +1,36 @@
 #!/usr/bin/env python3
-"""
-YOLO-World webcam object detector — ROS2 Humble (rclpy) version.
-Publishes bounding boxes on the topic /yolo.
+"""\nyolo.py — YOLO-World webcam object detector.
 
-Each detection is encoded as [x, y, w, h] where:
-    x, y  = pixel coordinates of the TOP-LEFT corner of the box
-    w     = width of the box  (pixels)
-    h     = height of the box (pixels)
+================================================================================
+UNDERLYING SYSTEM & DATA FLOW
+================================================================================
+This node handles open-vocabulary object detection using Ultralytics YOLO-World.
+- Subscribes to: Direct OpenCV USB webcam stream capture (e.g. index 0)
+- Publishes to: /yolo (std_msgs/String carrying a JSON payload)
+  Format of published string:
+  {
+    "frame_id": 128,
+    "timestamp": 1731000000.123,
+    "detections": [
+      {"class": "person", "confidence": 0.87, "bbox": [x, y, w, h]}
+    ]
+  }
+  Where x, y = top-left pixel coordinates, w, h = box pixel width & height.
 
-All detections found in a single frame are packed into one JSON object
-and published as a std_msgs/msg/String on /yolo, e.g.:
+================================================================================
+CLASS VOCABULARY & OBJECT CATEGORIES
+================================================================================
+Configures YOLO-World offline open-vocabulary search limits to target a predefined
+list of vocabulary classes including standard industrial and household elements:
+'phone', 'person', 'chair', 'box', 'bottle', 'laptop', 'wrench', 'battery', etc.
 
-{
-  "frame_id": 128,
-  "timestamp": 1731000000.123,
-  "detections": [
-    {"class": "person", "confidence": 0.87, "bbox": [120, 45, 80, 210]},
-    {"class": "bottle", "confidence": 0.63, "bbox": [300, 210, 40, 90]}
-  ]
-}
-
-Why JSON in a String msg instead of XML or a custom .msg:
-  - keeps [x, y, w, h] as a plain 4-element array per your request,
-  - lets multiple detections + class/confidence ride along together,
-  - std_msgs/String is available out of the box — no need to build a
-    custom message package / colcon build just to get this running.
-  (If you want a strongly-typed message instead, e.g. an array of
-  float32[4] per detection with no JSON parsing on the subscriber
-  side, say so and I'll set up a custom .msg + package for it.)
-
-Requirements:
-    pip install ultralytics opencv-python
-    sudo apt install ros-humble-rclpy ros-humble-std-msgs   # if not already present
-    source /opt/ros/humble/setup.bash
-
-Run as a plain script:
-    python3 yolo_world_webcam_ros2.py --show
-    python3 yolo_world_webcam_ros2.py --camera 0 --conf 0.25
-
-Or drop into a ROS2 package's console_scripts entry point and:
-    ros2 run <your_package> yolo_world_webcam_ros2
-
-Subscribe / inspect from another terminal:
-    ros2 topic echo /yolo
-"""
+================================================================================
+TIMER-DRIVEN EXECUTION LOOP
+================================================================================
+To prevent blocking and system latency during heavier inference cycles:
+- Runs in a timer-driven callback thread (`on_timer` at 30 Hz default rate).
+- Captures frames from OpenCV, runs model prediction, formats JSON metadata,
+  publishes String message, and optionally displays debug windows (`--show`).\n"""
 
 import argparse
 import json

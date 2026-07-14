@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Small DDSM115 serial CLI used to test motor feedback outside ROS."""
+"""\ndriver_control.py — Standalone DDSM115 serial motor terminal control developer CLI.
+
+================================================================================
+PHYSICAL ARCHITECTURE & RS485 PROTOCOL
+================================================================================
+Used for direct motor diagnostic verification outside ROS 2 DDS:
+- Connects directly to the DDSM115 wheels via half-duplex RS485 UART converter.
+- Translates user keyboard CLI inputs to raw binary packets (command motors, query feedback).
+- Implements CRC8/MAXIM checks on commands and responses.
+- Allows testing speed modes, brake states, and position reading directly.\n"""
 
 import argparse
 import struct

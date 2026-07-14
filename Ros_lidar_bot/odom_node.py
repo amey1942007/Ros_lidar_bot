@@ -1,46 +1,51 @@
 #!/usr/bin/env python3
-"""
-odom_node.py – Differential-drive odometry node (Jazzy-targeted).
+"""\nodom_node.py – Differential-drive odometry node.
 
-Subscribes : /encoder  (sensor_msgs/JointState)
-               JointState field mapping from ddsm115_driver_node:
-                 name[]     – wheel joint name strings
-                 velocity[] – ⚠ RPM (signed, + = forward)
-                              NOTE: ROS convention is rad/s, but the DDSM115
-                              driver publishes raw RPM here.  This node
-                              performs the RPM → rad/s → m/s conversion
-                              and documents it explicitly.
-                 position[] – raw encoder degrees 0-360 (wrapping, not used
-                              for pose; driver convention, not radians).
-                 effort[]   – phase current in Amperes (not used here).
+================================================================================
+UNDERLYING SYSTEM & DATA FLOW
+================================================================================
+Subscribes to: /encoder (sensor_msgs/JointState)
+- Field: JointState.velocity contains RPM (not rad/s) for left and right wheels
+  as published by `driver_node.py`.
+- Formulates: conversion of RPM -> Wheel Linear Velocity (m/s).
+  v = RPM * (2 * pi * r / 60)
+- Publishes to: /odom_raw (nav_msgs/Odometry)
+  Frame ID: "odom", Child Frame ID: "base_footprint"
+- Map options: Optionally broadcasts the "odom" -> "base_footprint" transform.
 
-Publishes  : /odom_raw (nav_msgs/Odometry)
-               frame_id       = "odom"
-               child_frame_id = "base_footprint"
-             odom → base_footprint TF (optional, param broadcast_tf)
+================================================================================
+KINEMATIC MODEL: RUNGE-KUTTA 2ND ORDER (MIDPOINT) INTEGRATION
+================================================================================
+Traditional Euler Integration integrates states based on velocities at the start
+of the time step (dx = v * cos(theta_k) * dt), which accumulates substantial drift
+on curves because rotation happens continuously.
+This node implements Runge-Kutta 2nd Order (RK2) Midpoint Integration instead:
+  1. Midpoint orientation: theta_mid = theta_k + 0.5 * w * dt
+  2. Planar integration using midpoint heading:
+     x_next = x_k + v * cos(theta_mid) * dt
+     y_next = y_k + v * sin(theta_mid) * dt
+  3. Final orientation update: theta_next = wrap(theta_k + w * dt)
+This reduces approximation error (O(dt³) vs O(dt²)) during rotational trajectories.
 
-Integration: RK2 midpoint method (not Euler) to reduce heading error.
+================================================================================
+COVARIANCE DESIGN (DEAD-RECKONING DRIFT)
+================================================================================
+Unlike static covariances, this node estimates dead-reckoning drift:
+- Linear travel increments linear (x, y) pose variances proportionally.
+- Angular travel increments yaw (theta) pose variance.
+- An additional time-based drift offset is accumulated on yaw variance.
+Twist (velocity) covariance remains constant, representing sensor noise.
 
-Covariance : Pose covariance grows as a function of distance traveled
-             and accumulated angular change (dead-reckoning drift model).
-             Twist covariance is fixed, representing per-cycle velocity noise.
-
-Jazzy notes:
-  • QoS: sensor_data profile (BEST_EFFORT/VOLATILE) is unchanged from Humble.
-  • rclpy.time.Time nanoseconds property is stable across Humble/Iron/Jazzy.
-  • No Jazzy-specific API differences affect this node.
-
-Parameters (override via launch or --ros-args -p):
+Parameters:
   left_wheel_name   (string, default 'left_wheel_joint')
   right_wheel_name  (string, default 'right_wheel_joint')
   wheel_radius      (float,  default 0.05035 m)   half of 100.7 mm diameter
-  wheel_base        (float,  default 0.33    m)   centre-to-centre
+  wheel_base        (float,  default 0.33    m)   centre-to-centre distance
   encoder_topic     (string, default '/encoder')
   odom_topic        (string, default '/odom_raw')
   odom_frame        (string, default 'odom')
   base_frame        (string, default 'base_footprint')
-  broadcast_tf      (bool,   default True)
-"""
+  broadcast_tf      (bool,   default True)\n"""
 
 import math
 

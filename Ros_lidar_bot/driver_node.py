@@ -1,10 +1,52 @@
 #!/usr/bin/env python3
 """
-ROS 2 UART driver for DDSM115 motors.
+driver_node.py — ROS 2 UART hardware driver for DDSM115 Direct Drive Smart Motors.
 
-The DDSM115 does not stream encoder data by itself. This node explicitly sends
-the feedback request command 0x74 for each motor, parses the reply, and
-publishes it on /encoder as sensor_msgs/JointState.
+================================================================================
+PHYSICAL ARCHITECTURE & USART/RS485 COMMUNICATION
+================================================================================
+DDSM115 smart motors communicate via a half-duplex RS485 bus, bridged to the host
+controller (RPi 5) using a USB-to-RS485 serial UART dongle.
+- Port: Typically /dev/ttyACM0 (USB virtual COM port)
+- Default Baud Rate: 115200
+- Protocol: Binary packets (10 bytes each) secured with CRC8/MAXIM.
+
+================================================================================
+DDSM115 BINARY PACKET STRUCTURE
+================================================================================
+Write Packet (Command velocity: 0x64):
+  Byte 0: Motor ID (e.g. 0x01 left, 0x02 right)
+  Byte 1: Command Code (0x64 = drive velocity)
+  Byte 2-3: Velocity value in RPM (16-bit signed integer, Big-Endian)
+  Byte 4-7: Reserved (0x00) or extra flags (0xFF for braking on Byte 7)
+  Byte 8: Acceleration/Deceleration ramp parameter (or 0x00)
+  Byte 9: CRC-8/MAXIM check byte
+
+Read Packet / Feedback Request Query (0x74):
+  Byte 0: Motor ID
+  Byte 1: Query Code (0x74)
+  Byte 2-8: 0x00 dummy values
+  Byte 9: CRC-8/MAXIM check byte
+
+Response Payload Formats:
+  Byte 0: Motor ID
+  Byte 1: Command Response Code
+  Byte 2-3: Motor winding current raw (converts to Amperes via linear scaling)
+  Byte 4-5: Winding rotational speed raw (converts to RPM)
+  Byte 6: Reserved
+  Byte 7: Current position raw (0 to 255 maps to 0 to 360 degrees)
+  Byte 8: Error code byte
+  Byte 9: CRC-8/MAXIM check byte
+
+================================================================================
+ROS 2 NODE DATA-FLOW & TIMING
+================================================================================
+- Subscribes to: /cmd_vel_safe (geometry_msgs/Twist)
+- Converts body velocities (v, w) into left/right wheel RPMs.
+- Publishes to: /encoder (sensor_msgs/JointState) carrying wheel position, velocity, and effort.
+- An internal timer loop runs at the polling rate (10 Hz). To prevent RS485 bus
+  collision during half-duplex transmit-receive sequences, a brief 2ms sleep is
+  enforced between left and right motor transactions.
 """
 
 import math

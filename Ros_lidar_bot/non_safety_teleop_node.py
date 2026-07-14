@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""
-non_safety_teleop_node.py — Keyboard teleop node publishing directly to /cmd_vel_safe
-to bypass safety stop limits in hardware testing.
+"""\nnon_safety_teleop_node.py — Keyboard teleop node that bypasses safety stop limits.
 
-Controls:
-   w / s : increase/decrease linear velocity (forward/back)
-   a / d : increase/decrease angular velocity (turn left/right)
-   q / z : increase/decrease max linear velocity limit by 0.1 m/s (scales step)
-   e / c : increase/decrease max angular velocity limit by 0.2 rad/s (scales step)
-   space / x : break/stop completely
-   Ctrl+C : exit
-"""
+================================================================================
+UNDERLYING SYSTEM & DATA FLOW
+================================================================================
+Publishes to: /cmd_vel_safe (geometry_msgs/Twist)
+- Bypasses `/cmd_vel` filters (like `safety_stop_node.py`) in development.
+- Directly controls the wheels via DDSM115 hardware motor drivers.
+
+================================================================================
+CONTROL KEYS & SPEED SCALING
+================================================================================
+  w / s : increase/decrease linear velocity (forward/back)
+  a / d : increase/decrease angular velocity (turn left/right)
+  q / z : increase/decrease max linear velocity limit by 0.05 m/s
+  e / c : increase/decrease max angular velocity limit by 0.1 rad/s
+  space or x : STOP motion immediately
+  Ctrl+C : exit teleop safely\n"""
 
 import sys
 import termios

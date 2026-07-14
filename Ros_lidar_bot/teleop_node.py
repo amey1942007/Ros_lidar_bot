@@ -1,4 +1,24 @@
 #!/usr/bin/env python3
+"""
+teleop_node.py — Keyboard teleop node publishing standard navigation velocities.
+
+================================================================================
+UNDERLYING SYSTEM & DATA FLOW
+================================================================================
+Publishes to: /cmd_vel (geometry_msgs/Twist)
+- Directly interfaces keyboard inputs with the main robot navigation / safety Stop filter.
+- Linear and angular velocities are incremented/decremented step-by-step and clamped.
+
+================================================================================
+CONTROL KEYS
+================================================================================
+  i      : increase forward linear speed (x)
+  k      : decrease forward linear speed / increase backward speed (x)
+  j      : increase counter-clockwise angular speed (z)
+  l      : decrease counter-clockwise angular speed (z)
+  space  : STOP motion immediately (zeroes linear and angular velocities)
+  Ctrl+C : exit teleop node safely
+"""
 
 import rclpy
 from rclpy.node import Node

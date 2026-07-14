@@ -2,24 +2,55 @@
 """
 lidar_node.py – ROS 2 node for the RPLidar A1 laser scanner.
 
-Reads raw 360° scan data from the RPLidar A1 over a serial port and
-publishes a sensor_msgs/LaserScan message on the /scan topic.
+================================================================================
+PHYSICAL ARCHITECTURE & UART COMMUNICATION
+================================================================================
+The RPLidar A1 laser scanner utilizes a serial UART channel to communicate with
+the host controller (Raspberry Pi 5 running Ubuntu/ROS 2 Jazzy).
+- Physical Hardware Interface: Usually maps to USB serial converter /dev/ttyUSB0
+- Default Baud Rate: 115200
+- Native Scan rate: ~5.5 Hz rotating sweep
+- Motor control: Driven by setting motor state (on/off).
 
-Dependencies (install once on the robot):
+================================================================================
+DESIGN PATHWAY & THREADING MODEL
+================================================================================
+Modern ROS 2 executors spin nodes using single- or multi-threaded executors.
+Because serial read calls to the LiDAR are blocking and depend heavily on
+microsecond-level timing of incoming bytes, running serial iteration in the
+main thread causes executor starvation.
+To prevent this, this node spins a background thread (`_scan_loop` via Python's
+`threading.Thread`) dedicated entirely to reading scans. Scans are formatted
+and published to ROS 2 thread-safely.
+
+================================================================================
+DEPENDENCY DETAIL (JAZZY TARGETED)
+================================================================================
+Under ROS 2 Jazzy, system-wide pip libraries are strongly preferred over
+virtual environments (venv) to prevent setup failures. Since standard 'pyrplidar'
+requires compiler flags and virtual environments, this node uses the pure-Python
+pyserial-based `rplidar-roboticia` library.
+To install system-wide:
     pip3 install rplidar-roboticia
 
-Parameters (all overridable from a launch file or CLI):
-    serial_port      (string,  default '/dev/ttyUSB0')  – serial device
+================================================================================
+SCAN MODES & ROS parameters
+================================================================================
+- Standard (normal) mode (`sensitivity_mode = False`): Uses classic single-point
+  ranging protocols. Good for lower power.
+- Sensitivity (express) mode (`sensitivity_mode = True`): Uses packet-compressed
+  Express Scan protocols to yield higher point density, mapping to sensitivity scan ID=1.
+
+ROS parameters:
+    serial_port      (string,  default '/dev/ttyUSB0')  – serial device port
     serial_baud      (int,     default 115200)           – baud rate
-    scan_topic       (string,  default '/scan')           – publish topic
-    frame_id         (string,  default 'laser_frame')    – LaserScan frame
-    min_range        (float,   default 0.15  m)           – discard closer hits
-    max_range        (float,   default 12.0  m)           – discard farther hits
-    publish_rate     (float,   default 10.0  Hz)          – throttle (0 = free-running)
-    motor_pwm        (int,     default 660)               – motor PWM (0–1023, unused by this driver)
-    sensitivity_mode (bool,    default True)              – use Express/Sensitivity
-                                                            scan mode (mode id=1).
-                                                            Set False for standard scan.
+    scan_topic       (string,  default '/scan')           – topic to publish LaserScan
+    frame_id         (string,  default 'laser_frame')    – LaserScan header frame_id
+    min_range        (float,   default 0.15)             – range filter threshold (meters)
+    max_range        (float,   default 12.0)             – maximum valid range (meters)
+    publish_rate     (float,   default 10.0)             – max throttled publish frequency
+    motor_pwm        (int,     default 660)               – motor PWM (unused by rplidar-roboticia)
+    sensitivity_mode (bool,    default True)              – True = Express Scan mode, False = Standard Scan.
 """
 
 import math

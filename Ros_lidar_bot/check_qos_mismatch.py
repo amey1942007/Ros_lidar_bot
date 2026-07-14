@@ -1,7 +1,16 @@
 #!/usr/bin/env python3
-"""
-check_qos_mismatch.py - Diagnostic script to detect QoS mismatches between active ROS 2 topics.
-"""
+"""\ncheck_qos_mismatch.py — Diagnostic utility to scan ROS 2 network graph QoS compatibility.
+
+================================================================================
+UNDERLYING SYSTEM & DATA FLOW
+================================================================================
+- Scans all active topics on the DDS global network graph.
+- Inspects publisher and subscriber QoS configurations.
+- Focuses on identifying two critical mismatch zones that lead to silently dropped packets:
+  1. Reliability: Sub expects RELIABLE, Pub is BEST_EFFORT.
+  2. Durability: Sub expects TRANSIENT_LOCAL, Pub is VOLATILE.
+- Ignores parameter events and system level rosout logging topics.
+- Shuts down with exit code 1 if a mismatch is found (useful for integration testing).\n"""
 
 import sys
 import time
