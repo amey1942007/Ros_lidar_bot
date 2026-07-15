@@ -41,7 +41,7 @@ ekf_filter_node:
     odom0_config: [false, false, false,   # X, Y, Z position — EKF integrates velocities itself
                    false, false, false,   # Roll, Pitch, Yaw — from IMU gyro
                    true,  false, false,   # vX (use) | vY (ignore, no lateral) | vZ (ignore)
-                   false, false, true,    # vRoll, vPitch (ignore) | vYaw ωz (USE — fused with IMU gyro)
+                   false, false, false,   # vRoll, vPitch, vYaw (ignore — IMU gyro is the sole vYaw source, see imu0_config below)
                    false, false, false]   # aX, aY, aZ — ignore
     odom0_differential: false
 
