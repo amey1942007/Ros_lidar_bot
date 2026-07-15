@@ -84,17 +84,17 @@ def generate_launch_description():
     # ── 5. LiDAR Node (RPLidar A1 via UART — official Slamtec driver) ────────
     lidar_node = Node(
         package="rplidar_ros",
-        executable="rplidar_node",
-        name="rplidar_node",
+        executable="rplidar_composition",   # ← changed from "rplidar_node"
+        name="rplidar_node",                # this can stay whatever you want, it's just the node's name
         output="screen",
         parameters=[{
             "channel_type":      "serial",
-            "serial_port":       "/dev/ttyUSB0",  # adjust if different
-            "serial_baudrate":   115200,           # A1 default baud rate
-            "frame_id":          "laser_frame",   # must match your URDF link name
+            "serial_port":       "/dev/ttyUSB0",
+            "serial_baudrate":   115200,
+            "frame_id":          "laser_frame",
             "inverted":          False,
-            "angle_compensate":  True,             # fills gaps in the angle array — recommended
-            "scan_mode":         "Sensitivity",    # Express/Sensitivity mode for higher point density
+            "angle_compensate":  True,
+            "scan_mode":         "Sensitivity",
         }],
     )
 
