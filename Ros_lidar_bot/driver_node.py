@@ -319,8 +319,8 @@ class DriverNode(Node):
         if fb_l:
             self._fb_rpm_left, self._fb_pos_left, self._fb_cur_left = fb_l
 
-        # Brief delay to prevent RS485 bus collision
-        time.sleep(0.002)
+        # Brief delay to prevent RS485 bus collision (increased to 10ms to fix CRC errors)
+        time.sleep(0.010)
 
         if has_recent_cmd:
             fb_r = self._send_velocity_cmd(self._id_right, -cmd_r)

@@ -55,9 +55,9 @@ ekf_filter_node:
     #   aY, aZ          — lateral/vertical accel not meaningful for flat robot
     imu0: /imu
     imu0_config: [false, false, false,    # X, Y, Z position — from odom
-                  false, false, true,     # Roll, Pitch (ignore) | Yaw (USE — BNO055 fusion)
+                  false, false, false,    # Roll, Pitch, Yaw (IGNORE BNO055 absolute quat due to lag/mag interference)
                   false, false, false,    # vX, vY, vZ — from odom
-                  false, false, true,     # vRoll, vPitch (ignore) | vYaw ωz (USE — gyro)
+                  false, false, true,     # vRoll, vPitch (ignore) | vYaw ωz (USE — gyro is perfectly accurate)
                   false, false, false]    # aX (disabled to prevent drift) | aY, aZ (ignore)
 
     # imu0_differential: false — BNO055 gives absolute orientation — do not diff
