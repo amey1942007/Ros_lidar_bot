@@ -91,6 +91,10 @@ def generate_launch_description():
         executable="rplidar_composition",   # ← changed from "rplidar_node"
         name="rplidar_node",                # this can stay whatever you want, it's just the node's name
         output="screen",
+        # If startup fails (e.g. '80008000' scan-start timeout while the motor
+        # spins up), restart instead of staying dead — no /scan means no /map.
+        respawn=True,
+        respawn_delay=2.0,
         parameters=[{
             "channel_type":      "serial",
             "serial_port":       "/dev/ttyUSB0",
@@ -98,7 +102,10 @@ def generate_launch_description():
             "frame_id":          "laser_frame",
             "inverted":          False,
             "angle_compensate":  True,
-            "scan_mode":         "Sensitivity",
+            # No scan_mode: the A1 does NOT support "Sensitivity" (A3/S-series
+            # only) — requesting it made the driver exit with
+            # "Failed to set scan mode". Unset, the driver uses the device's
+            # own typical mode (Standard/Express on A1).
         }],
     )
 

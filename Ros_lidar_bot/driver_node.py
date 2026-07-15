@@ -140,7 +140,7 @@ class DriverNode(Node):
         self.get_logger().info(
             f"DriverNode ready on {self._port} at {self._baud} baud\n"
             f"  IDs: left={self._id_left}, right={self._id_right}\n"
-            f"  Feedback polling is always active with command 0x74."
+            f"  Feedback via 0x64 velocity-command replies (0 RPM when idle)."
         )
 
     def _connect_serial(self):
