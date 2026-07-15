@@ -233,6 +233,18 @@ class OdomNode(Node):
         rpm_left  = msg.velocity[idx_l]   # RPM, signed
         rpm_right = msg.velocity[idx_r]   # RPM, signed
 
+        # Defense in depth: driver_node already rejects implausible RPM at the
+        # source, but skip integration here too rather than trust any /encoder
+        # publisher blindly (the DDSM115's real range is ~±210 RPM).
+        if abs(rpm_left) > 250 or abs(rpm_right) > 250:
+            self.get_logger().warn(
+                f'odom_node: implausible RPM (left={rpm_left}, right={rpm_right}), '
+                f'skipping this tick',
+                throttle_duration_sec=5.0,
+            )
+            self._last_time_ns = now_ns
+            return
+
         # ── 3. RPM → wheel linear velocity (m/s) ─────────────────────────────
         #   ω  [rad/s] = RPM × 2π / 60
         #   v  [m/s]   = ω × r

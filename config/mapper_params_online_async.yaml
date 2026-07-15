@@ -33,7 +33,11 @@ slam_toolbox:
     max_laser_range: 12.0
     minimum_time_interval: 0.2
     transform_timeout: 0.5
-    minimum_travel_distance: 0.3
+    # Same issue as minimum_travel_heading below, but for translation: at 0.3 m,
+    # map→odom only updates after the bot moves 0.3 m, so the scan visibly rides
+    # along with the bot (frozen in map, but map→odom hasn't caught up) until the
+    # next correction snaps it back.
+    minimum_travel_distance: 0.1
     tf_buffer_duration: 30.
     stack_size_to_use: 40000000 #// program needs a larger stack size to serialize large maps
     enable_interactive_mode: true

@@ -70,8 +70,11 @@ def generate_launch_description():
         description='Specifying whether or not to enable angle_compensate of scan data')
 
     scan_mode_arg = DeclareLaunchArgument(
-        'scan_mode', default_value='Sensitivity',
-        description='Specifying scan mode of lidar (Sensitivity = Express mode for higher point density)')
+        'scan_mode', default_value='',
+        description='Scan mode of lidar. Leave empty (default) on the A1 — it does '
+                     'not support "Sensitivity" (A3/S-series only); requesting it '
+                     'makes the driver exit with "Failed to set scan mode". Empty '
+                     'uses the device\'s own typical mode (Standard/Express on A1).')
 
     # ── Robot State Publisher (provides laser_frame TF from URDF) ─────────
     xacro_file = os.path.join(pkg_share, 'description', 'robot.urdf.xacro')

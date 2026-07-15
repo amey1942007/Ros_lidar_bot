@@ -257,6 +257,19 @@ class DriverNode(Node):
             pos_raw = ring_buffer[7]
             error = ring_buffer[8]
 
+            # CRC-8 is only 8 bits wide, so ~1-in-256 corrupted packets pass the
+            # check by chance. The DDSM115's real range is ~±210 RPM (rated 115,
+            # no-load max 200±10) — reject anything past a generous ±250 RPM
+            # rather than let a garbage value get integrated into odom as a
+            # multi-meter position jump.
+            if abs(rpm_raw) > 250:
+                self.get_logger().warn(
+                    f"DDSM115 ID {expected_id} implausible RPM {rpm_raw}, discarding",
+                    throttle_duration_sec=5.0,
+                )
+                ring_buffer.clear()
+                continue
+
             if error:
                 self.get_logger().warn(
                     f"DDSM115 ID {expected_id} error byte: {error}",
