@@ -194,14 +194,21 @@ def generate_launch_description():
     #     }],
     # )
 
-    # ── 10. IMU Calibration Node — REMOVED from launch ───────────────────────
-    # The YAML it produces (config/imu_calibration.yaml) is not consumed by any
-    # node, so the 35 s spin only delayed EKF/SLAM by 40 s (causing a startup
-    # TF gap) for no benefit. The BNO055 self-calibrates in NDOF mode.
-    # Run manually if you ever want the offsets:
-    #   ros2 run Ros_lidar_bot imu_calibration_node
+    # ── 11. IMU Calibration Node ─────────────────────────────────────────────
+    # Spins the robot ~2 rotations in place at startup to exercise the BNO055's
+    # self-calibration and write offsets to config/imu_calibration.yaml.
+    # NOTE: unlike the old staged design (which delayed EKF/SLAM by 40 s and
+    # caused a startup TF gap), EKF and SLAM still start on their own schedule —
+    # this node just runs alongside them. The robot WILL physically rotate
+    # shortly after launch; make sure it has clearance.
+    imu_calibration = Node(
+        package=package_name,
+        executable="imu_calibration_node",
+        name="imu_calibration_node",
+        output="screen",
+    )
 
-    # ── 11. Non-Safety Teleop Node (keyboard, bypasses safety stop) ───────────
+    # ── 12. Non-Safety Teleop Node (keyboard, bypasses safety stop) ───────────
     # DISABLED in launch: Keyboard teleop requires stdin/tty. It crashes when
     # launched without xterm. Run this manually in a separate terminal:
     # ros2 run Ros_lidar_bot non_safety_teleop
@@ -247,6 +254,11 @@ def generate_launch_description():
 
         # Nav2 starts after SLAM's map and map→odom transform are available.
         TimerAction(period=8.0, actions=[nav2]),
+
+        # ── Stage 3 (T=8s): IMU calibration spin ─────────────────────────────
+        # Starts after IMU/driver/EKF/SLAM are up so the spin is tracked by
+        # odometry and SLAM rather than happening in a TF vacuum.
+        TimerAction(period=8.0, actions=[imu_calibration]),
 
         # ── Teleop: run manually in a separate terminal (needs a tty) ─────────
         # ros2 run Ros_lidar_bot non_safety_teleop
