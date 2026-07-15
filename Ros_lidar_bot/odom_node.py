@@ -150,10 +150,12 @@ class OdomNode(Node):
         self._var_y   = 1e-4   # m²
         self._var_yaw = 1e-4   # rad²
 
-        # ── Previous wheel angular positions (for velocity cross-check) ───────
-        # We rely solely on velocity field (RPM) — position field is degrees
-        # and wraps, so it is NOT used for odometry.
-        self._last_time_ns: int = self.get_clock().now().nanoseconds
+        # ── Previous encoder-message stamp ────────────────────────────────────
+        # dt comes from the DRIVER's header.stamp (when the RPM was sampled),
+        # not from our receipt time: serial transactions add 10-40 ms of
+        # arrival jitter, and jittery dt × velocity = position noise that the
+        # scan matcher then has to snap-correct.
+        self._last_time_ns: int | None = None
 
         # ── Publisher ─────────────────────────────────────────────────────────
         self._odom_pub = self.create_publisher(Odometry, odom_topic, 10)
@@ -197,15 +199,22 @@ class OdomNode(Node):
           Conversion: ω_wheel [rad/s] = RPM × 2π / 60
                       v_wheel [m/s]   = ω_wheel × wheel_radius
         """
-        # ── 1. Single clock read for this entire callback ─────────────────────
-        now      = self.get_clock().now()          # rclpy.time.Time
-        now_ns   = now.nanoseconds                 # int nanoseconds
-        stamp    = now.to_msg()                    # builtin_interfaces/Time
-        dt       = (now_ns - self._last_time_ns) * 1e-9   # seconds
+        # ── 1. Time base: the driver's sample stamp (fall back to our clock) ──
+        stamp  = msg.header.stamp
+        now_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
+        if now_ns == 0:   # unstamped message — fall back to receipt time
+            now    = self.get_clock().now()
+            now_ns = now.nanoseconds
+            stamp  = now.to_msg()
 
-        if dt <= 0.0:
-            return   # clock jump or duplicate message — skip silently
-        self._last_time_ns = now_ns
+        if self._last_time_ns is None:
+            self._last_time_ns = now_ns
+            return   # need two stamps for a dt
+
+        dt = (now_ns - self._last_time_ns) * 1e-9   # seconds
+        if dt <= 0.0 or dt > 1.0:
+            self._last_time_ns = now_ns
+            return   # duplicate, clock jump, or stale gap — skip integration
 
         # ── 2. Extract left / right RPM by joint name ─────────────────────────
         names = list(msg.name)
