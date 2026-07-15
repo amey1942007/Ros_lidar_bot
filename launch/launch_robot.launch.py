@@ -58,14 +58,11 @@ def generate_launch_description():
         name="odom_node",
         output="screen",
         parameters=[{
-            # EKF BYPASSED (see section 7): odom_node is now the sole publisher
-            # of both /odom and the odom→base_footprint TF, to evaluate raw
-            # wheel-odometry quality directly. If the EKF is re-enabled, set
-            # broadcast_tf back to False and odom_topic back to /odom_raw —
-            # two publishers of the same transform fight each other (TF
-            # flickers, LiDAR scan rotates/jumps in RViz).
-            "broadcast_tf": True,
-            "odom_topic": "/odom",
+            # EKF (started at T=0) is the ONLY publisher of odom→base_footprint.
+            # Two publishers of the same transform (odom_node raw pose vs EKF
+            # fused pose) fight each other — TF flickers between two headings,
+            # which showed up as the LiDAR scan rotating/jumping in RViz.
+            "broadcast_tf": False,
         }],
     )
 
@@ -134,22 +131,18 @@ def generate_launch_description():
         }],
     )
 
-    # ── 7. EKF Node — DISABLED to evaluate raw wheel odometry ────────────────
-    # odom_node (section 4) publishes /odom and the odom→base_footprint TF
-    # directly. To re-enable the EKF: uncomment this node, add ekf_node back to
-    # the LaunchDescription below, and in odom_node set broadcast_tf: False and
-    # odom_topic: /odom_raw so the two never publish the same TF/topic at once.
-    # ekf_node = Node(
-    #     package="robot_localization",
-    #     executable="ekf_node",
-    #     name="ekf_filter_node",
-    #     output="screen",
-    #     parameters=[
-    #         os.path.join(pkg_share, "config", "ekf.yaml"),
-    #         {"use_sim_time": False},
-    #     ],
-    #     remappings=[("/odometry/filtered", "/odom")],
-    # )
+    # ── 7. EKF Node (Fuses Odom & IMU) ───────────────────────────────────────
+    ekf_node = Node(
+        package="robot_localization",
+        executable="ekf_node",
+        name="ekf_filter_node",
+        output="screen",
+        parameters=[
+            os.path.join(pkg_share, "config", "ekf.yaml"),
+            {"use_sim_time": False},
+        ],
+        remappings=[("/odometry/filtered", "/odom")],
+    )
 
     # ── 8. SLAM Toolbox ──────────────────────────────────────────────────────
     slam_toolbox = IncludeLaunchDescription(
@@ -242,16 +235,17 @@ def generate_launch_description():
     # )
 
     return LaunchDescription([
-        # ── Stage 1 (T=0s): Hardware ───────────────────────────────────────────
-        # EKF disabled — odom_node publishes /odom and the odom→base_footprint
-        # TF directly (see section 7 to re-enable).
+        # ── Stage 1 (T=0s): Hardware + EKF ─────────────────────────────────────
+        # EKF starts immediately so odom→base_footprint exists as soon as the
+        # first /odom_raw message arrives (~1 s). It is the sole TF publisher
+        # for odom→base_footprint.
         rsp,
         imu_node,
         driver_node,
         odom_node,
         lidar_node,
         safety_stop,
-        # ekf_node,
+        ekf_node,
 
         # ── Stage 2 (T=5s): SLAM ──────────────────────────────────────────────
         # Short delay so the odom→base_footprint TF and /scan are already
