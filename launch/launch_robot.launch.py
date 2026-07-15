@@ -102,10 +102,11 @@ def generate_launch_description():
             "frame_id":          "laser_frame",
             "inverted":          False,
             "angle_compensate":  True,
-            # No scan_mode: the A1 does NOT support "Sensitivity" (A3/S-series
-            # only) — requesting it made the driver exit with
-            # "Failed to set scan mode". Unset, the driver uses the device's
-            # own typical mode (Standard/Express on A1).
+            # Standard (normal) mode — the A1 does NOT support "Sensitivity"
+            # (A3/S-series only); requesting it made the driver exit with
+            # "Failed to set scan mode". Standard skips the driver's mode
+            # auto-negotiation with the device, unlike leaving this unset.
+            "scan_mode":         "Standard",
         }],
     )
 
