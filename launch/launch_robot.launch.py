@@ -97,7 +97,12 @@ def generate_launch_description():
         respawn_delay=2.0,
         parameters=[{
             "channel_type":      "serial",
-            "serial_port":       "/dev/ttyUSB0",
+            # Stable udev symlink (install_rpi5_jazzy.sh matches the CP210x
+            # adapter by USB vendor/product ID 10c4:ea60), not /dev/ttyUSB0 —
+            # the raw ttyUSB index depends on USB enumeration order, so if any
+            # other USB-serial device enumerates first on a given boot,
+            # ttyUSB0 can silently point at the wrong device.
+            "serial_port":       "/dev/rplidar",
             "serial_baudrate":   115200,
             "frame_id":          "laser_frame",
             "inverted":          False,
