@@ -38,6 +38,8 @@ def generate_launch_description():
     )
 
     # ── 3. Motor Driver Node (DDSM115 via UART) ──────────────────────────────
+    # Command path: Nav2 publishes /cmd_vel, safety_stop filters it into
+    # /cmd_vel_safe, and this driver consumes only /cmd_vel_safe.
     driver_node = Node(
         package=package_name,
         executable="driver_node",
@@ -114,6 +116,9 @@ def generate_launch_description():
     )
 
     # ── 6. Safety Stop Node ──────────────────────────────────────────────────
+    # Keep this node in the command path: it subscribes to Nav2's /cmd_vel and
+    # publishes filtered commands to /cmd_vel_safe for driver_node. Do not
+    # remap driver_node to /cmd_vel, which would bypass the safety filter.
     safety_stop = Node(
         package=package_name,
         executable="safety_stop_node",
@@ -156,7 +161,24 @@ def generate_launch_description():
         }.items(),
     )
 
-    # ── 9. Semantic SLAM Node ────────────────────────────────────────────────
+    # ── 9. Nav2 Navigation Stack ────────────────────────────────────────────
+    # Nav2 publishes /cmd_vel. safety_stop below filters that into
+    # /cmd_vel_safe, which is the driver's only velocity-command input.
+    nav2 = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory("nav2_bringup"),
+                "launch",
+                "navigation_launch.py",
+            )
+        ),
+        launch_arguments={
+            "use_sim_time": "false",
+            "params_file": os.path.join(pkg_share, "config", "nav2_params.yaml"),
+        }.items(),
+    )
+
+    # ── 10. Semantic SLAM Node ───────────────────────────────────────────────
     # DISABLED: Missing model file "Vision Model/best.pt"
     # semantic_slam = Node(
     #     package=package_name,
@@ -223,6 +245,9 @@ def generate_launch_description():
         # flowing when SLAM Toolbox processes its first scan.
         TimerAction(period=5.0, actions=[slam_toolbox]),
 
+        # Nav2 starts after SLAM's map and map→odom transform are available.
+        TimerAction(period=8.0, actions=[nav2]),
+
         # ── Teleop: run manually in a separate terminal (needs a tty) ─────────
         # ros2 run Ros_lidar_bot non_safety_teleop
 
@@ -232,4 +257,3 @@ def generate_launch_description():
         # ── [DISABLED] YOLO-World — re-enable when needed ─────────────────────
         # TimerAction(period=50.0, actions=[yolo_node]),
     ])
-
