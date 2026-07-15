@@ -196,15 +196,16 @@ def generate_launch_description():
     )
 
     # ── 11. Non-Safety Teleop Node (keyboard, bypasses safety stop) ───────────
-    # Publishes directly to /cmd_vel_safe so the safety_stop filter is skipped.
-    # Uses prefix="xterm -e" only if DISPLAY is set, otherwise runs directly.
-    non_safety_teleop = Node(
-        package=package_name,
-        executable="non_safety_teleop",
-        name="non_safety_teleop_node",
-        output="screen",
-        prefix="xterm -e" if os.environ.get("DISPLAY") else "",
-    )
+    # DISABLED in launch: Keyboard teleop requires stdin/tty. It crashes when
+    # launched without xterm. Run this manually in a separate terminal:
+    # ros2 run Ros_lidar_bot non_safety_teleop
+    #
+    # non_safety_teleop = Node(
+    #     package=package_name,
+    #     executable="non_safety_teleop",
+    #     name="non_safety_teleop_node",
+    #     output="screen",
+    # )
 
     # ── [DISABLED] YOLO-World Publisher Node — re-enable when needed ─────────
     # yolo_node = Node(
@@ -242,8 +243,8 @@ def generate_launch_description():
         TimerAction(period=40.0, actions=[ekf_node, slam_toolbox]),
 
         # ── Stage 4 (T=45s): Non-safety teleop for manual mapping drive ───────
-        # 5s after EKF/SLAM so the filter has time to initialise before driving.
-        TimerAction(period=45.0, actions=[non_safety_teleop]),
+        # DISABLED: Run manually in separate terminal.
+        # TimerAction(period=45.0, actions=[non_safety_teleop]),
 
         # ── [DISABLED] Semantic SLAM — re-enable when model is ready ──────────
         # TimerAction(period=50.0, actions=[semantic_slam]),

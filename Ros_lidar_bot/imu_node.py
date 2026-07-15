@@ -161,6 +161,12 @@ class ImuNode(Node):
                         continue
                     self._parse_line(line)
             except serial.SerialException as exc:
+                if "device reports readiness to read but returned no data" in str(exc):
+                    # This is a known Linux/pyserial quirk under high CPU load.
+                    # The OS said data was ready, but it was dropped/stolen.
+                    # Ignore and try again instead of reconnecting (which takes 2s).
+                    time.sleep(0.005)
+                    continue
                 self.get_logger().error(f"Serial error: {exc}. Reconnecting...")
                 time.sleep(1.0)
                 self._serial = self._connect_serial()

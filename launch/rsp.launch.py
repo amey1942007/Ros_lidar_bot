@@ -33,9 +33,6 @@ def generate_launch_description():
     )
 
     # Create a joint_state_publisher node that subscribes to the real /encoder topic.
-    # ⚠ driver_node publishes /encoder with BEST_EFFORT (SENSOR_DATA QoS preset).
-    #   joint_state_publisher defaults to RELIABLE → QoS mismatch → no data received.
-    #   Fix: override /encoder subscription QoS to BEST_EFFORT to match the publisher.
     node_joint_state_publisher = Node(
         package='joint_state_publisher',
         executable='joint_state_publisher',
@@ -44,10 +41,6 @@ def generate_launch_description():
             'use_sim_time': use_sim_time,
             'source_list': ['/encoder']
         }],
-        remappings=[],
-        arguments=['--ros-args',
-                   '--qos-profile', 'sensor_data',
-                   '-r', '__node:=joint_state_publisher'],
     )
 
     # Launch

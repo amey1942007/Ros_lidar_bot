@@ -133,7 +133,7 @@ class DriverNode(Node):
         self._enc_pub = self.create_publisher(
             JointState,
             "/encoder",
-            QoSPresetProfiles.SENSOR_DATA.value,
+            10,
         )
         self._timer = self.create_timer(1.0 / self._poll_rate, self._control_loop)
 
@@ -206,7 +206,7 @@ class DriverNode(Node):
             return self._read_reply(motor_id)
         return None
 
-    def _read_reply(self, expected_id: int, timeout: float = 0.01):
+    def _read_reply(self, expected_id: int, timeout: float = 0.04):
         if not self._serial or not self._serial.is_open:
             return None
 
@@ -217,6 +217,10 @@ class DriverNode(Node):
             try:
                 data = self._serial.read(1)
             except serial.SerialException as exc:
+                if "device reports readiness to read but returned no data" in str(exc):
+                    # Benign Linux pyserial glitch under high load. Sleep 1ms to yield.
+                    time.sleep(0.001)
+                    continue
                 self.get_logger().error(f"UART read failed: {exc}", throttle_duration_sec=5.0)
                 return None
 
