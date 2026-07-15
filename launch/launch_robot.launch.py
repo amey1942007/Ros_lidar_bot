@@ -61,23 +61,40 @@ def generate_launch_description():
     )
 
     # ── 5. LiDAR Node (RPLidar A1 via UART) ──────────────────────────────────
+    # lidar_node = Node(
+    #     package=package_name,
+    #     executable="lidar_node",
+    #     name="lidar_node",
+    #     output="screen",
+    #     parameters=[{
+    #         "serial_port":      "/dev/ttyUSB0",  # RPLidar A1 USB-serial (CP2102). Adjust if different.
+    #         "serial_baud":      115200,           # A1 default baud rate
+    #         "scan_topic":       "/scan",
+    #         "frame_id":         "laser_frame",   # Must match URDF link name
+    #         "min_range":        0.15,             # Ignore returns closer than 15 cm
+    #         "max_range":        12.0,             # A1 max range
+    #         "publish_rate":     10.0,             # Hz — publish rate throttle
+    #         "motor_pwm":        660,              # Motor PWM value (passed to set_motor_pwm)
+    #         "sensitivity_mode": True,             # True = Express/Sensitivity (mode 1), False = Standard (mode 0)
+    #                                               # Mode 1 gives higher point density on RPLidar A1.
+    #                                               # Falls back to Standard automatically if unsupported.
+    #     }],
+    # )
+
+    # ── 5. LiDAR Node (RPLidar A1 via UART — official Slamtec driver) ────────
     lidar_node = Node(
-        package=package_name,
-        executable="lidar_node",
-        name="lidar_node",
+        package="rplidar_ros",
+        executable="rplidar_node",
+        name="rplidar_node",
         output="screen",
         parameters=[{
-            "serial_port":      "/dev/ttyUSB0",  # RPLidar A1 USB-serial (CP2102). Adjust if different.
-            "serial_baud":      115200,           # A1 default baud rate
-            "scan_topic":       "/scan",
-            "frame_id":         "laser_frame",   # Must match URDF link name
-            "min_range":        0.15,             # Ignore returns closer than 15 cm
-            "max_range":        12.0,             # A1 max range
-            "publish_rate":     10.0,             # Hz — publish rate throttle
-            "motor_pwm":        660,              # Motor PWM value (passed to set_motor_pwm)
-            "sensitivity_mode": True,             # True = Express/Sensitivity (mode 1), False = Standard (mode 0)
-                                                  # Mode 1 gives higher point density on RPLidar A1.
-                                                  # Falls back to Standard automatically if unsupported.
+            "channel_type":      "serial",
+            "serial_port":       "/dev/ttyUSB0",  # adjust if different
+            "serial_baudrate":   115200,           # A1 default baud rate
+            "frame_id":          "laser_frame",   # must match your URDF link name
+            "inverted":          False,
+            "angle_compensate":  True,             # fills gaps in the angle array — recommended
+            "scan_mode":         "Sensitivity",    # Express/Sensitivity mode for higher point density
         }],
     )
 

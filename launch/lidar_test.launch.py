@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-lidar_test.launch.py  –  Standalone LiDAR test launch for RPLidar A1.
+lidar_test.launch.py  –  Standalone LiDAR test launch for RPLidar A1 using official Slamtec rplidar_ros package.
 
 Launches only:
   1. robot_state_publisher  (provides laser_frame TF from URDF)
   2. Static TF: map → odom (identity, for RViz2 fixed-frame compatibility)
   3. Static TF: odom → base_footprint (identity, robot parked at origin)
-  4. lidar_node             (reads /dev/ttyUSB0, publishes /scan)
+  4. rplidar_ros rplidar_node (reads /dev/ttyUSB0, publishes /scan)
 
 Usage (on RPi or desktop with lidar plugged in via USB):
     # Build first:
@@ -18,7 +18,7 @@ Usage (on RPi or desktop with lidar plugged in via USB):
     ros2 launch Ros_lidar_bot lidar_test.launch.py
 
     # Override port/baud if needed:
-    ros2 launch Ros_lidar_bot lidar_test.launch.py serial_port:=/dev/ttyUSB0 serial_baud:=115200
+    ros2 launch Ros_lidar_bot lidar_test.launch.py serial_port:=/dev/ttyUSB0 serial_baudrate:=115200
 
     # In RViz2:
     #   Fixed Frame: map   (or laser_frame if you want minimal setup)
@@ -45,18 +45,33 @@ def generate_launch_description():
     pkg_share    = get_package_share_directory(package_name)
 
     # ── Launch Arguments ─────────────────────────────────────────────────
+    channel_type_arg = DeclareLaunchArgument(
+        'channel_type', default_value='serial',
+        description='Specifying channel type of lidar')
+
     serial_port_arg = DeclareLaunchArgument(
         'serial_port', default_value='/dev/ttyUSB0',
         description='Serial port for RPLidar A1 (e.g. /dev/ttyUSB0 or /dev/rplidar)')
 
-    serial_baud_arg = DeclareLaunchArgument(
-        'serial_baud', default_value='115200',
+    serial_baudrate_arg = DeclareLaunchArgument(
+        'serial_baudrate', default_value='115200',
         description='Baud rate for RPLidar A1 (default 115200)')
 
-    sensitivity_arg = DeclareLaunchArgument(
-        'sensitivity_mode', default_value='true',
-        description='Use Express/Sensitivity scan mode (true, mode 1) or Standard (false, mode 0). '
-                    'True enables higher point density on RPLidar A1.')
+    frame_id_arg = DeclareLaunchArgument(
+        'frame_id', default_value='laser_frame',
+        description='Specifying frame_id of lidar (must match URDF link name)')
+
+    inverted_arg = DeclareLaunchArgument(
+        'inverted', default_value='false',
+        description='Specifying whether or not to invert scan data')
+
+    angle_compensate_arg = DeclareLaunchArgument(
+        'angle_compensate', default_value='true',
+        description='Specifying whether or not to enable angle_compensate of scan data')
+
+    scan_mode_arg = DeclareLaunchArgument(
+        'scan_mode', default_value='Sensitivity',
+        description='Specifying scan mode of lidar (Sensitivity = Express mode for higher point density)')
 
     # ── Robot State Publisher (provides laser_frame TF from URDF) ─────────
     xacro_file = os.path.join(pkg_share, 'description', 'robot.urdf.xacro')
@@ -100,29 +115,31 @@ def generate_launch_description():
         output='screen',
     )
 
-    # ── LiDAR Node ────────────────────────────────────────────────────────
+    # ── LiDAR Node (official Slamtec rplidar_ros package) ─────────────────
     lidar_node = Node(
-        package=package_name,
-        executable='lidar_node',
-        name='lidar_node',
+        package='rplidar_ros',
+        executable='rplidar_node',
+        name='rplidar_node',
         output='screen',
         parameters=[{
-            'serial_port':      LaunchConfiguration('serial_port'),
-            'serial_baud':      LaunchConfiguration('serial_baud'),
-            'scan_topic':       '/scan',
-            'frame_id':         'laser_frame',
-            'min_range':        0.15,
-            'max_range':        12.0,
-            'publish_rate':     10.0,
-            'sensitivity_mode': LaunchConfiguration('sensitivity_mode'),  # True = Express/Sensitivity (mode 1), False = Standard (mode 0)
-            'motor_pwm':        660,   # Motor PWM value
+            'channel_type': LaunchConfiguration('channel_type'),
+            'serial_port': LaunchConfiguration('serial_port'),
+            'serial_baudrate': LaunchConfiguration('serial_baudrate'),
+            'frame_id': LaunchConfiguration('frame_id'),
+            'inverted': LaunchConfiguration('inverted'),
+            'angle_compensate': LaunchConfiguration('angle_compensate'),
+            'scan_mode': LaunchConfiguration('scan_mode'),
         }],
     )
 
     return LaunchDescription([
+        channel_type_arg,
         serial_port_arg,
-        serial_baud_arg,
-        sensitivity_arg,
+        serial_baudrate_arg,
+        frame_id_arg,
+        inverted_arg,
+        angle_compensate_arg,
+        scan_mode_arg,
         rsp_node,
         jsp_node,
         static_tf_map_odom,

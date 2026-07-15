@@ -13,7 +13,9 @@ setup(
         ('share/' + package_name + '/launch', glob('launch/*.py')),
         ('share/' + package_name + '/config', glob('config/*.yaml')),
         ('share/' + package_name + '/description', glob('description/*.xacro')),
+        ('share/ament_index/resource_index/packages',['resource/' + package_name]),
     ],
+
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='Amey Chaudhari',
@@ -26,7 +28,6 @@ setup(
             'driver_node = Ros_lidar_bot.driver_node:main',
             'driver_control = Ros_lidar_bot.driver_control:main',
             'odom_node = Ros_lidar_bot.odom_node:main',
-            'lidar_node = Ros_lidar_bot.lidar_node:main',
             'safety_stop_node = Ros_lidar_bot.safety_stop_node:main',
             'semantic_slam_node = Ros_lidar_bot.semantic_slam_node:main',
             'frontier_explorer_node = Ros_lidar_bot.frontier_explorer_node:main',
