@@ -211,21 +211,34 @@ class ImuNode(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = self._frame_id
 
-        # Correct for upside-down mounting (180° roll about X-axis).
+        # Correct for upside-down mounting: 180° roll about X-axis.
         #
-        # q_rot_x_180 = (x=1, y=0, z=0, w=0)
+        # Physical mounting:
+        #   Sensor X = Body X  (same direction)
+        #   Sensor Y = -Body Y (flipped)
+        #   Sensor Z = -Body Z (flipped)
         #
-        # The sensor reports q_world→sensor.  We need q_world→body.
-        # Since body = rot_x_180 · sensor, the corrected quaternion is:
+        # BNO055 reports q_raw = q_{World→Sensor}.
+        # We need          q_body = q_{World→Body}.
         #
-        #   q_corrected = q_rot · q_raw        (extrinsic / body-frame correction)
+        # Derivation:
+        #   q_{World→Sensor} = q_{World→Body} · q_{Body→Sensor}
+        #   q_raw            = q_body         · q_mount
+        #   q_body           = q_raw          · q_mount⁻¹    (post-multiply)
         #
-        # Hamilton product q_rot(1,0,0,0) · q_raw(x,y,z,w):
-        #   w' = -x,  x' = w,  y' = -z,  z' = y
+        # q_mount     = 180° about X = (x=1, y=0, z=0, w=0)
+        # q_mount_inv = conjugate    = (x=-1, y=0, z=0, w=0)
         #
-        # ⚠ Previous code used q_raw · q_rot (intrinsic) which INVERTS the yaw sign,
-        #   causing the EKF to see orientation opposite to angular velocity → yaw freeze.
-        qx_c, qy_c, qz_c, qw_c = qw, -qz, qy, -qx
+        # Hamilton product q_raw(qw,qx,qy,qz) · q_mount_inv(-i):
+        #   (qw + qx·i + qy·j + qz·k) · (-i)
+        #   = qx·(-i²) + (-qw)·i + (-qz)·j + qy·k
+        #   = qx  +  (-qw)·i  +  (-qz)·j  +  qy·k
+        #   In ROS (x,y,z,w): qx_c=-qw, qy_c=-qz, qz_c=qy, qw_c=qx
+        #
+        # ⚠ Previous code used q_rot · q_raw (pre-multiply) which gave INVERTED yaw
+        #   (CCW rotation produced -90° instead of +90°), causing the LiDAR scan to
+        #   rotate in the OPPOSITE direction to the robot's true heading in the map.
+        qx_c, qy_c, qz_c, qw_c = -qw, -qz, qy, qx
         norm = (qx_c**2 + qy_c**2 + qz_c**2 + qw_c**2)**0.5
         if norm > 1e-6:
             qx_c /= norm

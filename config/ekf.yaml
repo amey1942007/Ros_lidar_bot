@@ -60,6 +60,16 @@ ekf_filter_node:
                   false, false, true,     # vRoll, vPitch (ignore) | vYaw ωz (USE — gyro)
                   false, false, false]    # aX (disabled to prevent drift) | aY, aZ (ignore)
 
-    imu0_differential: false              # BNO055 gives absolute orientation — do not diff
-    imu0_relative: true                   # Zero heading at startup (ignore absolute mag north)
+    # imu0_differential: false — BNO055 gives absolute orientation — do not diff
+    #
+    # imu0_relative: false — BNO055 NDOF gives a FUSED ABSOLUTE orientation (quaternion).
+    # Setting this to true makes robot_localization subtract the first received quaternion
+    # at startup. The problem: if the calibration node is spinning the robot when the EKF
+    # starts (T=40s), the "first" orientation is mid-rotation → wrong zero → the EKF yaw
+    # is permanently offset, causing the LiDAR scan to appear rotated in the map frame.
+    # Leave as false; the EKF will use the BNO055 absolute heading directly.
+    # The heading at startup will be wherever the robot is facing — SLAM Toolbox will
+    # compensate via map→odom and set the map frame correctly from the first scan.
+    imu0_differential: false
+    imu0_relative: false
     imu0_remove_gravity: true             # Subtract 9.81 m/s² from aZ before fusion

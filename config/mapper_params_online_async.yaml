@@ -41,7 +41,10 @@ slam_toolbox:
     # General Parameters
     use_scan_matching: true
     use_scan_barycenter: true
-    minimum_travel_heading: 0.5
+    # minimum_travel_heading reduced from 0.5 rad (28°) to 0.1 rad (6°).
+    # With 0.5 rad, SLAM only updates the map→odom TF after 28° of rotation—
+    # visible as the LiDAR scan rotating with the bot in RViz before correction.
+    minimum_travel_heading: 0.1
     scan_buffer_size: 10
     scan_buffer_maximum_scan_distance: 10.0
     link_match_minimum_response_fine: 0.1  

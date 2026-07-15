@@ -56,7 +56,13 @@ def generate_launch_description():
         name="odom_node",
         output="screen",
         parameters=[{
-            "broadcast_tf": False,   # EKF publishes odom→base_footprint — don't double-publish
+            # broadcast_tf=True so odom→base_footprint exists from T=0.
+            # EKF starts at T=40s and publishes the same transform at 30 Hz;
+            # robot_localization simply takes over — no TF conflict occurs.
+            # Without this, there is NO odom→base_footprint TF for the first
+            # 40 s, which causes the LiDAR scan and map to follow/rotate with
+            # the robot in RViz (broken TF chain: map→odom→??→laser_frame).
+            "broadcast_tf": True,
         }],
     )
 

@@ -112,7 +112,7 @@ class DriverNode(Node):
         self._r = self.declare_parameter("wheel_radius", 0.05035).value  # m  (dia=100.7 mm)
         self._b = self.declare_parameter("wheel_base", 0.33).value        # m  (centre-to-centre)
         self._poll_rate = self.declare_parameter("poll_rate", 10.0).value
-        self._cmd_timeout = self.declare_parameter("command_timeout", 0.5).value
+        self._cmd_timeout = self.declare_parameter("command_timeout", 1.0).value  # 1 s — tolerates publish jitter
 
         self._cmd_rpm_left = 0.0
         self._cmd_rpm_right = 0.0
@@ -149,7 +149,10 @@ class DriverNode(Node):
             raise SystemExit(1)
 
         try:
-            self._serial = serial.Serial(self._port, self._baud, timeout=0.01)
+            # timeout=0.005 (5 ms) per-byte: prevents each serial.read(1) call
+            # from blocking up to 10 ms, which was causing cumulative timer
+            # starvation (stutter) after 1–2 min of operation on a loaded RPi.
+            self._serial = serial.Serial(self._port, self._baud, timeout=0.005)
             self.get_logger().info("UART connection established.")
         except serial.SerialException as exc:
             self.get_logger().fatal(f"Failed to open {self._port}: {exc}")

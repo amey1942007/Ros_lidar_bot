@@ -33,7 +33,9 @@ from geometry_msgs.msg import Twist
 from rclpy.node import Node
 
 # ── Tunables ───────────────────────────────────────────────────────────────────
-KEY_TIMEOUT   = 0.12   # seconds — if no movement key within this window → stop
+KEY_TIMEOUT   = 0.20   # seconds — if no movement key within this window → stop
+                        # (0.20 s tolerates xterm/system jitter; was 0.12 which caused
+                        #  spurious auto-stops during held-key teleop on a loaded RPi)
 PUBLISH_HZ    = 20.0   # publish rate for velocity commands
 LIN_STEP      = 0.05   # m/s per arrow-key press
 ANG_STEP      = 0.1    # rad/s per arrow-key press
