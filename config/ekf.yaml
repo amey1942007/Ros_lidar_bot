@@ -32,13 +32,18 @@ ekf_filter_node:
     # We do NOT use:
     #   Yaw from odom  — IMU (BNO055 fusion) is far better for heading
     #   vY             — differential drive has no lateral velocity
+    # Velocity-only fusion (standard for diff-drive + robot_localization):
+    # the EKF integrates vX/vYaw itself, so its X/Y stays consistent with its
+    # own heading. Fusing absolute X/Y here (integrated by odom_node with
+    # WHEEL heading) while yaw comes from the GYRO made the filter fight
+    # itself — pose jumps that showed up as the scan rotating in RViz.
     odom0: /odom_raw
-    odom0_config: [true,  true,  false,   # X, Y position (use)  | Z (ignore)
-                   false, false, false,   # Roll, Pitch, Yaw — all from IMU
+    odom0_config: [false, false, false,   # X, Y, Z position — EKF integrates velocities itself
+                   false, false, false,   # Roll, Pitch, Yaw — from IMU gyro
                    true,  false, false,   # vX (use) | vY (ignore, no lateral) | vZ (ignore)
-                   false, false, true,    # vRoll, vPitch (ignore) | vYaw ωz (USE — backup/fuse with IMU)
-                   false, false, false]   # aX, aY, aZ — from IMU
-    odom0_differential: false             # odom_node gives absolute integrated pose
+                   false, false, true,    # vRoll, vPitch (ignore) | vYaw ωz (USE — fused with IMU gyro)
+                   false, false, false]   # aX, aY, aZ — ignore
+    odom0_differential: false
 
     # ── Source 1: IMU (/imu from imu_node / BNO055 via Arduino) ──────────────
     # BNO055 in NDOF mode provides fused absolute orientation (quaternion)

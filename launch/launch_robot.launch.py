@@ -56,13 +56,11 @@ def generate_launch_description():
         name="odom_node",
         output="screen",
         parameters=[{
-            # broadcast_tf=True so odom→base_footprint exists from T=0.
-            # EKF starts at T=40s and publishes the same transform at 30 Hz;
-            # robot_localization simply takes over — no TF conflict occurs.
-            # Without this, there is NO odom→base_footprint TF for the first
-            # 40 s, which causes the LiDAR scan and map to follow/rotate with
-            # the robot in RViz (broken TF chain: map→odom→??→laser_frame).
-            "broadcast_tf": True,
+            # EKF (started at T=0) is the ONLY publisher of odom→base_footprint.
+            # Two publishers of the same transform (odom_node raw pose vs EKF
+            # fused pose) fight each other — TF flickers between two headings,
+            # which showed up as the LiDAR scan rotating/jumping in RViz.
+            "broadcast_tf": False,
         }],
     )
 
@@ -163,37 +161,12 @@ def generate_launch_description():
     #     }],
     # )
 
-    # ── 10. IMU Calibration Node ─────────────────────────────────────────────
-    # Runs ONCE at startup: warmup (3s still) → rotate in-place (2×360°, ~25s)
-    # → saves config/imu_calibration.yaml → shuts itself down automatically.
-    #
-    # Timing budget:
-    #   warmup_duration  =  3 s
-    #   rotation_count=2 at rotation_speed=0.5 rad/s → 2×2π/0.5 ≈ 25 s
-    #   extra buffer                                            ≈  7 s
-    #   ──────────────────────────────────────────────────────────────
-    #   Total from node start                                  ≈ 35 s
-    #
-    # EKF + SLAM are therefore delayed to T=40s to guarantee calibration
-    # is complete before the filter and mapper initialise.
-    #
-    # ⚠ IMPORTANT: Keep the robot STILL for the first 3 seconds after launch.
-    #   Clear ~1 m of space around the robot before launching.
-    imu_calibration_node = Node(
-        package=package_name,
-        executable="imu_calibration_node",
-        name="imu_calibration_node",
-        output="screen",
-        parameters=[{
-            "imu_topic":          "/imu",
-            "cmd_vel_topic":      "/cmd_vel",    # bypasses safety stop during calib spin
-            "rotation_speed":     0.5,           # rad/s — gentle spin
-            "rotation_count":     2.0,           # 2 full rotations = 720°
-            "warmup_duration":    3.0,           # seconds stationary at start
-            "min_mag_samples":    200,           # minimum mag samples for hard-iron fit
-            "output_yaml_path":   os.path.join(pkg_share, "config", "imu_calibration.yaml"),
-        }],
-    )
+    # ── 10. IMU Calibration Node — REMOVED from launch ───────────────────────
+    # The YAML it produces (config/imu_calibration.yaml) is not consumed by any
+    # node, so the 35 s spin only delayed EKF/SLAM by 40 s (causing a startup
+    # TF gap) for no benefit. The BNO055 self-calibrates in NDOF mode.
+    # Run manually if you ever want the offsets:
+    #   ros2 run Ros_lidar_bot imu_calibration_node
 
     # ── 11. Non-Safety Teleop Node (keyboard, bypasses safety stop) ───────────
     # DISABLED in launch: Keyboard teleop requires stdin/tty. It crashes when
@@ -222,29 +195,25 @@ def generate_launch_description():
     # )
 
     return LaunchDescription([
-        # ── Stage 1 (T=0s): Hardware — sensors + drivers come up first ─────────
+        # ── Stage 1 (T=0s): Hardware + EKF ─────────────────────────────────────
+        # EKF starts immediately so odom→base_footprint exists as soon as the
+        # first /odom_raw message arrives (~1 s). It is the sole TF publisher
+        # for odom→base_footprint.
         rsp,
         imu_node,
         driver_node,
         odom_node,
         lidar_node,
         safety_stop,
+        ekf_node,
 
-        # ── Stage 2 (T=2s): IMU Calibration ───────────────────────────────────
-        # Starts 2s after hardware to let serial connections settle.
-        # Warmup 3s (KEEP BOT STILL) → rotates 720° → saves YAML → auto-exits.
-        # Total duration ≈ 35s. EKF/SLAM start at T=40s to wait for it.
-        TimerAction(period=2.0, actions=[imu_calibration_node]),
+        # ── Stage 2 (T=5s): SLAM ──────────────────────────────────────────────
+        # Short delay so the odom→base_footprint TF and /scan are already
+        # flowing when SLAM Toolbox processes its first scan.
+        TimerAction(period=5.0, actions=[slam_toolbox]),
 
-        # ── Stage 3 (T=40s): Localization + SLAM ─────────────────────────────
-        # Starts after calibration is guaranteed complete (~35s after T=2s).
-        # EKF fuses /odom_raw + /imu → publishes /odom.
-        # SLAM Toolbox reads /scan + /odom TF → builds /map.
-        TimerAction(period=40.0, actions=[ekf_node, slam_toolbox]),
-
-        # ── Stage 4 (T=45s): Non-safety teleop for manual mapping drive ───────
-        # DISABLED: Run manually in separate terminal.
-        # TimerAction(period=45.0, actions=[non_safety_teleop]),
+        # ── Teleop: run manually in a separate terminal (needs a tty) ─────────
+        # ros2 run Ros_lidar_bot non_safety_teleop
 
         # ── [DISABLED] Semantic SLAM — re-enable when model is ready ──────────
         # TimerAction(period=50.0, actions=[semantic_slam]),

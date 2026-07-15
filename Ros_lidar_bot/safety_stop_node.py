@@ -43,6 +43,7 @@ class SafetyStop(Node):
         self._blocked_fwd = False
         self._blocked_bwd = False
         self._last_cmd = Twist()
+        self._last_cmd_time: float = 0.0   # monotonic time of last /cmd_vel received
         self._blocked_since: float = 0.0   # wall-clock time when blocking started (0 = not blocked)
 
         # Sensor-data QoS: best-effort, keep only last scan
@@ -93,11 +94,16 @@ class SafetyStop(Node):
         # Publish blocked state so the frontier explorer can react immediately
         self._blocked_pub.publish(Bool(data=bool(self._blocked_fwd)))
 
-        # Immediately republish with current safety state applied
-        self._publish_safe(self._last_cmd)
+        # Immediately republish with current safety state applied — but only if
+        # the source is still alive. Replaying a stale command forever would
+        # keep refreshing the driver's command timeout and defeat its failsafe
+        # stop if teleop/Nav2 dies mid-motion.
+        if time.monotonic() - self._last_cmd_time < 0.5:
+            self._publish_safe(self._last_cmd)
 
     def _cmd_cb(self, msg: Twist) -> None:
         self._last_cmd = msg
+        self._last_cmd_time = time.monotonic()
         self._publish_safe(msg)
 
     # ── core logic ─────────────────────────────────────────────────────────────

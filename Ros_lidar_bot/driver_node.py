@@ -275,31 +275,6 @@ class DriverNode(Node):
         )
         return None
 
-    def _read_feedback(self, motor_id: int):
-        """Send a passive 0x74 poll and read back the feedback reply.
-        Uses a longer timeout (30 ms) than velocity commands because the
-        DDSM115 at idle/rest takes slightly longer to respond.
-        """
-        packet = make_packet([
-            motor_id & 0xFF,
-            0x74,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-        ])
-        if self._serial and self._serial.is_open:
-            try:
-                self._serial.reset_input_buffer()
-            except Exception:
-                pass
-        if self._write_packet(packet):
-            return self._read_reply(motor_id, timeout=0.03)  # 30 ms — motor at rest responds slower
-        return None
-
     def _control_loop(self):
         with self._lock:
             cmd_l = self._cmd_rpm_left
@@ -311,21 +286,22 @@ class DriverNode(Node):
             and (time.monotonic() - last_cmd_time) <= self._cmd_timeout
         )
 
-        if has_recent_cmd:
-            fb_l = self._send_velocity_cmd(self._id_left, cmd_l)
-        else:
-            fb_l = self._read_feedback(self._id_left)
+        # Always send a velocity command — 0 RPM when the last /cmd_vel_safe is
+        # stale. The 0x64 reply carries the same feedback payload as a 0x74
+        # poll, and the passive 0x74 poll was unreliable with the motor at rest
+        # ("No DDSM115 feedback reply" warnings). Commanding 0 RPM on timeout
+        # also acts as a failsafe stop if the teleop/planner dies mid-motion.
+        if not has_recent_cmd:
+            cmd_l = cmd_r = 0.0
 
+        fb_l = self._send_velocity_cmd(self._id_left, cmd_l)
         if fb_l:
             self._fb_rpm_left, self._fb_pos_left, self._fb_cur_left = fb_l
 
         # Brief delay to prevent RS485 bus collision (increased to 10ms to fix CRC errors)
         time.sleep(0.010)
 
-        if has_recent_cmd:
-            fb_r = self._send_velocity_cmd(self._id_right, -cmd_r)
-        else:
-            fb_r = self._read_feedback(self._id_right)
+        fb_r = self._send_velocity_cmd(self._id_right, -cmd_r)
 
         if fb_r:
             rpm_r_raw, self._fb_pos_right, self._fb_cur_right = fb_r
@@ -338,7 +314,9 @@ class DriverNode(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = [self._left_name, self._right_name]
         msg.velocity = [self._fb_rpm_left, self._fb_rpm_right]
-        msg.position = [self._fb_pos_left, self._fb_pos_right]
+        # JointState.position is radians — joint_state_publisher feeds this
+        # straight to the URDF wheel joints for RViz.
+        msg.position = [math.radians(self._fb_pos_left), math.radians(self._fb_pos_right)]
         msg.effort = [self._fb_cur_left, self._fb_cur_right]
         self._enc_pub.publish(msg)
 
