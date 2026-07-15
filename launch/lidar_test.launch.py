@@ -6,7 +6,7 @@ Launches only:
   1. robot_state_publisher  (provides laser_frame TF from URDF)
   2. Static TF: map → odom (identity, for RViz2 fixed-frame compatibility)
   3. Static TF: odom → base_footprint (identity, robot parked at origin)
-  4. rplidar_ros rplidar_node (reads /dev/ttyUSB0, publishes /scan)
+  4. rplidar_ros rplidar_composition (reads /dev/ttyUSB0, publishes /scan)
 
 Usage (on RPi or desktop with lidar plugged in via USB):
     # Build first:
@@ -121,7 +121,7 @@ def generate_launch_description():
     # ── LiDAR Node (official Slamtec rplidar_ros package) ─────────────────
     lidar_node = Node(
         package='rplidar_ros',
-        executable='rplidar_node',
+        executable='rplidar_composition',
         name='rplidar_node',
         output='screen',
         parameters=[{
