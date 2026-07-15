@@ -93,8 +93,11 @@ def generate_launch_description():
         output="screen",
         # If startup fails (e.g. '80008000' scan-start timeout while the motor
         # spins up), restart instead of staying dead — no /scan means no /map.
+        # 2s wasn't enough headroom: the motor has real mechanical spin-down
+        # time, so a retry that fires before it's actually stopped just hits
+        # the same failure again. 8s gives it room to settle first.
         respawn=True,
-        respawn_delay=2.0,
+        respawn_delay=8.0,
         parameters=[{
             "channel_type":      "serial",
             "serial_port":       "/dev/ttyUSB0",
