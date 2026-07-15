@@ -116,7 +116,7 @@ planner_server:
     expected_planner_frequency: 5.0
     planner_plugins: ["GridBased"]
     GridBased:
-      plugin: "nav2_navfn_planner/NavfnPlanner"
+      plugin: "nav2_navfn_planner::NavfnPlanner"
       tolerance: 0.5        # accept goal if within 0.5 m (useful for frontier targets)
       use_astar: true        # A* is more direct than Dijkstra for point-to-point goals
       allow_unknown: true    # must be true — frontiers are at the edge of unknown space
@@ -131,16 +131,16 @@ behavior_server:
     cycle_frequency: 10.0
     behavior_plugins: ["spin", "backup", "wait"]
     spin:
-      plugin: "nav2_behaviors/Spin"
+      plugin: "nav2_behaviors::Spin"
       max_rotational_vel: 1.0
       min_rotational_vel: 0.4
       rotational_acc_lim: 3.2
     backup:
-      plugin: "nav2_behaviors/BackUp"
+      plugin: "nav2_behaviors::BackUp"
       speed: -0.15      # reverse speed (negative = backward)
       time_allowance: 6.0   # 0.15 × 6 = 0.9 m max backup — enough to clear furniture zones
     wait:
-      plugin: "nav2_behaviors/Wait"
+      plugin: "nav2_behaviors::Wait"
 
 local_costmap:
   local_costmap:
