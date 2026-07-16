@@ -248,7 +248,7 @@ class BringupStatusNode(Node):
                 sensor_qos,
             ),
             TopicSpec(
-                "/map", OccupancyGrid, 0.2, 5.0, 10.0,
+                "/map", OccupancyGrid, 0.0, 90.0, 12.0,
                 "no /map — SLAM not publishing (need /scan + odom TF)",
                 QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL),
             ),
@@ -510,7 +510,11 @@ class BringupStatusNode(Node):
                 continue
 
             detail = f"{hz:.1f} Hz  age={age:.2f}s"
-            if hz + 1e-6 < spec.min_hz:
+            # /map is latched / infrequently republished — do not rate-alarm it.
+            if spec.name == "/map":
+                rows.append((spec.name, "HEALTHY", f"latched  age={age:.1f}s"))
+                continue
+            if hz + 1e-6 < spec.min_hz and spec.min_hz > 0.0:
                 rows.append((spec.name, "STALE", f"{detail} (min {spec.min_hz:.1f})"))
                 self._add_issue(
                     "WARN",

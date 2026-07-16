@@ -103,7 +103,7 @@ def _launch_setup(context, *args, **kwargs):
             "poll_rate": 20.0,
             # True: ROS +X / Nav2 goals match physical forward (fixes
             # "goal ahead → drives backward"). Set false if teleop W reverses.
-            "invert_drive": True,
+            "invert_drive": False,
         }],
     )
 
@@ -176,9 +176,12 @@ def _launch_setup(context, *args, **kwargs):
         output=out,
         arguments=log_args,
         parameters=[{
-            "min_safe_distance": 0.25,    # stop if obstacle within 25 cm
-            "front_opening_deg": 180.0,
-            "rear_opening_deg": 60.0,
+            "min_safe_distance": 0.40,
+            # Chassis / mast returns are ~0.1–0.25 m — ignore those or Nav2
+            # plans forever while linear.x is held at 0.
+            "ignore_below": 0.28,
+            "front_opening_deg": 90.0,
+            "rear_opening_deg": 50.0,
         }],
     )
 

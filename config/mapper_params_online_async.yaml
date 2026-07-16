@@ -29,7 +29,7 @@ slam_toolbox:
     # Publish map→odom as fast as practical so the live scan stays locked while
     # driving (not only after the robot stops).
     transform_publish_period: 0.02
-    map_update_frequency: 5.0
+    map_update_frequency: 2.0
     resolution: 0.05
     # RPLidar S2E: spec range 0.05–30 m. Keep min at 0.2 m so returns off the
     # robot's own chassis/cables never enter the map. Max capped at 20 m —
@@ -37,9 +37,9 @@ slam_toolbox:
     # the scan matcher; raise toward 30.0 for large open halls.
     min_laser_range: 0.2
     max_laser_range: 20.0
-    # Process a new scan as often as ~20 Hz. Non-zero travel thresholds were
-    # delaying map→odom until the robot paused — scan rode with the bot.
-    minimum_time_interval: 0.05
+    # Process scans often enough for smooth map→odom, but not so hard that the
+    # RPi 5 starves Nav2 (which showed up as stuttery driving).
+    minimum_time_interval: 0.08
     transform_timeout: 0.5
     minimum_travel_distance: 0.0
     tf_buffer_duration: 30.

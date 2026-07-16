@@ -2,15 +2,19 @@
 """
 Scan-based safety stop — hardware-critical velocity filter.
 
-Sits between Nav2/teleop and the Gazebo bridge (or real robot driver):
+Sits between Nav2/teleop and the real robot driver:
 
   Nav2 / teleop  →  /cmd_vel
-  safety_stop    →  /cmd_vel_safe  →  bridge / driver  →  robot
+  safety_stop    →  /cmd_vel_safe  →  driver  →  robot
 
 When any laser reading in the forward arc falls below min_safe_distance the
 node zeroes linear.x (forward motion) while preserving angular.z so Nav2's
 recovery behaviours (spin in place) can still operate.
 Same logic applies to the rear arc for reverse motion.
+
+Ranges closer than ignore_below are treated as the robot's own body and
+ignored — otherwise the chassis always trips a forward block and Nav2
+"plans but never drives".
 """
 
 import math
@@ -28,11 +32,13 @@ class SafetyStop(Node):
     def __init__(self) -> None:
         super().__init__("safety_stop")
 
-        self.declare_parameter("min_safe_distance", 0.25)  # metres
-        self.declare_parameter("front_opening_deg", 120.0)  # total forward arc
-        self.declare_parameter("rear_opening_deg", 60.0)   # total rear arc
+        self.declare_parameter("min_safe_distance", 0.40)  # metres
+        self.declare_parameter("ignore_below", 0.28)       # ignore self-hits
+        self.declare_parameter("front_opening_deg", 90.0)  # total forward arc
+        self.declare_parameter("rear_opening_deg", 50.0)   # total rear arc
 
         self._min_dist = float(self.get_parameter("min_safe_distance").value)
+        self._ignore_below = float(self.get_parameter("ignore_below").value)
         self._front_half = math.radians(
             float(self.get_parameter("front_opening_deg").value) / 2.0
         )
@@ -43,10 +49,9 @@ class SafetyStop(Node):
         self._blocked_fwd = False
         self._blocked_bwd = False
         self._last_cmd = Twist()
-        self._last_cmd_time: float = 0.0   # monotonic time of last /cmd_vel received
-        self._blocked_since: float = 0.0   # wall-clock time when blocking started (0 = not blocked)
+        self._last_cmd_time: float = 0.0
+        self._blocked_since: float = 0.0
 
-        # Sensor-data QoS: best-effort, keep only last scan
         scan_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
@@ -54,20 +59,23 @@ class SafetyStop(Node):
         )
         self.create_subscription(LaserScan, "/scan", self._scan_cb, scan_qos)
         self.create_subscription(Twist, "/cmd_vel", self._cmd_cb, 10)
-        self._pub          = self.create_publisher(Twist, "/cmd_vel_safe", 10)
-        # Publish True while forward motion is blocked — frontier explorer uses this
-        # to switch to the next queued frontier instead of waiting the full progress timeout.
-        self._blocked_pub  = self.create_publisher(Bool, "/safety_blocked", 1)
+        self._pub = self.create_publisher(Twist, "/cmd_vel_safe", 10)
+        self._blocked_pub = self.create_publisher(Bool, "/safety_blocked", 1)
 
-    # ── callbacks ─────────────────────────────────────────────────────────────
+        self.get_logger().info(
+            f"SafetyStop ready: stop<{self._min_dist:.2f} m, "
+            f"ignore_self<{self._ignore_below:.2f} m, "
+            f"front±{math.degrees(self._front_half):.0f}°"
+        )
 
     def _scan_cb(self, msg: LaserScan) -> None:
         min_front = min_rear = float("inf")
         angle = msg.angle_min
+        # Ignore returns on/inside the chassis so we do not permanently block.
+        lo = max(float(msg.range_min), self._ignore_below)
 
         for r in msg.ranges:
-            if msg.range_min < r < msg.range_max:
-                # Normalise to [-pi, pi]
+            if lo < r < msg.range_max:
                 a = (angle + math.pi) % (2.0 * math.pi) - math.pi
                 if abs(a) <= self._front_half:
                     if r < min_front:
@@ -91,13 +99,8 @@ class SafetyStop(Node):
             self._blocked_since = 0.0
             self.get_logger().info("Safety stop cleared — path is open")
 
-        # Publish blocked state so the frontier explorer can react immediately
         self._blocked_pub.publish(Bool(data=bool(self._blocked_fwd)))
 
-        # Immediately republish with current safety state applied — but only if
-        # the source is still alive. Replaying a stale command forever would
-        # keep refreshing the driver's command timeout and defeat its failsafe
-        # stop if teleop/Nav2 dies mid-motion.
         if time.monotonic() - self._last_cmd_time < 0.5:
             self._publish_safe(self._last_cmd)
 
@@ -106,19 +109,16 @@ class SafetyStop(Node):
         self._last_cmd_time = time.monotonic()
         self._publish_safe(msg)
 
-    # ── core logic ─────────────────────────────────────────────────────────────
-
     def _publish_safe(self, cmd: Twist) -> None:
         out = Twist()
 
         if self._blocked_fwd and cmd.linear.x > 0.0:
-            out.linear.x = 0.0          # block forward into obstacle
+            out.linear.x = 0.0
         elif self._blocked_bwd and cmd.linear.x < 0.0:
-            out.linear.x = 0.0          # block reversing into obstacle
+            out.linear.x = 0.0
         else:
             out.linear.x = cmd.linear.x
 
-        # Always pass through rotation — required for Nav2 spin recovery
         out.angular.z = cmd.angular.z
         self._pub.publish(out)
 
@@ -128,9 +128,12 @@ def main(args=None) -> None:
     node = SafetyStop()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

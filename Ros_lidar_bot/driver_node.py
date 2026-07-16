@@ -118,10 +118,9 @@ class DriverNode(Node):
         # timeouts ≈ 52 ms — the timer then simply runs back-to-back.
         self._poll_rate = self.declare_parameter("poll_rate", 20.0).value
         self._cmd_timeout = self.declare_parameter("command_timeout", 1.0).value  # 1 s — tolerates publish jitter
-        # If Nav2/teleop +X drives the robot physically backward (and odom agrees
-        # with the wrong direction), set invert_drive true so commands and
-        # published encoder velocities stay consistent with ROS base_link +X.
-        self._invert_drive = bool(self.declare_parameter("invert_drive", True).value)
+        # If Nav2/teleop +X drives the robot physically backward, set
+        # invert_drive true. Default false (user preference).
+        self._invert_drive = bool(self.declare_parameter("invert_drive", False).value)
         self._drive_sign = -1.0 if self._invert_drive else 1.0
 
         self._cmd_rpm_left = 0.0

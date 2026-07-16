@@ -20,18 +20,18 @@ bt_navigator:
 controller_server:
   ros__parameters:
     use_sim_time: false
-    controller_frequency: 10.0
+    controller_frequency: 20.0
     min_x_velocity_threshold: 0.001
     min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.3
+    failure_tolerance: 0.5
     progress_checker_plugin: "progress_checker"
     goal_checker_plugins: ["goal_checker"]
     controller_plugins: ["FollowPath"]
 
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.15   # must move 15 cm within allowance window
-      movement_time_allowance: 8.0    # faster recovery when stuck
+      required_movement_radius: 0.08
+      movement_time_allowance: 15.0
 
     goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
@@ -41,30 +41,28 @@ controller_server:
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.45
-      min_approach_linear_velocity: 0.05
-      max_angular_accel: 2.5
+      desired_linear_vel: 0.35
+      min_approach_linear_velocity: 0.08
+      max_angular_accel: 2.0
       max_robot_pose_search_dist: 10.0
 
       # Lookahead
-      lookahead_dist: 0.6
+      lookahead_dist: 0.5
       min_lookahead_dist: 0.30
-      max_lookahead_dist: 1.0
-      lookahead_time: 1.5
-      use_velocity_scaled_lookahead_dist: false
+      max_lookahead_dist: 0.9
+      lookahead_time: 1.2
+      use_velocity_scaled_lookahead_dist: true
 
-      # Rotate-to-heading: spin in place before moving when angle error is large.
-      # This is critical for exploration where goals are often in new directions.
-      use_rotate_to_heading: true
-      rotate_to_heading_min_angle: 0.40   # ~23 deg — rotate if error exceeds this
-      rotate_to_heading_angular_vel: 1.5  # rad/s — faster turns
+      # Drive along the path instead of stop-spin-go (felt like "won't move").
+      use_rotate_to_heading: false
+      rotate_to_heading_min_angle: 0.70
+      rotate_to_heading_angular_vel: 1.2
 
       transform_tolerance: 0.3
 
-      # Slow down near obstacles and tight turns — critical for hardware safety
       use_regulated_linear_velocity_scaling: true
-      regulated_linear_scaling_min_radius: 0.4  # slow down sooner in tight spaces
-      regulated_linear_scaling_min_speed: 0.05
+      regulated_linear_scaling_min_radius: 0.35
+      regulated_linear_scaling_min_speed: 0.08
 
       use_collision_detection: false
       max_allowed_time_to_collision_up_to_carrot: 0.5
@@ -210,26 +208,22 @@ collision_monitor:
     cmd_vel_out_topic: "cmd_vel"
     state_topic: "collision_monitor_state"
     transform_tolerance: 0.2
-    source_timeout: 1.0
+    source_timeout: 2.0
     base_shift_correction: true
     stop_pub_timeout: 2.0
-    # Approach-only slowdown using the published footprint; hard stops at
-    # close range are already handled by our own safety_stop node downstream.
-    polygons: ["FootprintApproach"]
-    FootprintApproach:
+    enable_stamped_cmd_vel: false
+    # Pass-through: polygon never triggers (min_points impossibly high).
+    # Real stopping is done by costmaps + safety_stop.
+    polygons: ["PassThrough"]
+    PassThrough:
       type: "polygon"
-      action_type: "approach"
-      footprint_topic: "/local_costmap/published_footprint"
-      time_before_collision: 0.6
-      simulation_time_step: 0.05
-      min_points: 6
+      points: "[[0.35, 0.25], [0.35, -0.25], [-0.25, -0.25], [-0.25, 0.25]]"
+      action_type: "stop"
+      min_points: 9999
+      enabled: true
       visualize: false
-      enabled: true
-    observation_sources: ["scan"]
-    scan:
-      type: "scan"
-      topic: "/scan"
-      enabled: true
+      polygon_pub_topic: "polygon_passthrough"
+    observation_sources: []
 
 route_server:
   ros__parameters:
