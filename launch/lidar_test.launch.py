@@ -33,49 +33,30 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 import xacro
 
 
-def generate_launch_description():
+def _launch_setup(context, *args, **kwargs):
     package_name = 'Ros_lidar_bot'
-    pkg_share    = get_package_share_directory(package_name)
+    pkg_share = get_package_share_directory(package_name)
 
-    # ── Launch Arguments (defaults = RPLidar S2E over Ethernet/UDP) ────────
-    channel_type_arg = DeclareLaunchArgument(
-        'channel_type', default_value='udp',
-        description='Lidar channel: "udp" for S2E Ethernet, "serial" for USB lidars')
+    # Resolve launch args here so rplidar gets real typed params.
+    # Putting LaunchConfiguration() directly in a parameters dict is ignored
+    # by many rplidar_ros builds → it falls back to serial /dev/ttyUSB0.
+    channel_type = LaunchConfiguration('channel_type').perform(context)
+    udp_ip = LaunchConfiguration('udp_ip').perform(context)
+    udp_port = int(LaunchConfiguration('udp_port').perform(context))
+    frame_id = LaunchConfiguration('frame_id').perform(context)
+    inverted = LaunchConfiguration('inverted').perform(context).lower() in (
+        '1', 'true', 'yes')
+    angle_compensate = LaunchConfiguration('angle_compensate').perform(
+        context).lower() in ('1', 'true', 'yes')
+    scan_mode = LaunchConfiguration('scan_mode').perform(context)
 
-    udp_ip_arg = DeclareLaunchArgument(
-        'udp_ip', default_value='192.168.11.2',
-        description='S2E IP address (factory default 192.168.11.2; RPi eth0 '
-                    'must be static on the same subnet, e.g. 192.168.11.1/24)')
-
-    udp_port_arg = DeclareLaunchArgument(
-        'udp_port', default_value='8089',
-        description='S2E UDP port (factory default 8089)')
-
-    frame_id_arg = DeclareLaunchArgument(
-        'frame_id', default_value='laser_frame',
-        description='Specifying frame_id of lidar (must match URDF link name)')
-
-    inverted_arg = DeclareLaunchArgument(
-        'inverted', default_value='false',
-        description='Specifying whether or not to invert scan data')
-
-    angle_compensate_arg = DeclareLaunchArgument(
-        'angle_compensate', default_value='true',
-        description='Specifying whether or not to enable angle_compensate of scan data')
-
-    scan_mode_arg = DeclareLaunchArgument(
-        'scan_mode', default_value='DenseBoost',
-        description='Scan mode. "DenseBoost" = S2E full 32 kHz sample rate. '
-                    'Use "Standard" if the driver logs "Failed to set scan mode".')
-
-    # ── Robot State Publisher (provides laser_frame TF from URDF) ─────────
     xacro_file = os.path.join(pkg_share, 'description', 'robot.urdf.xacro')
     robot_description_config = xacro.process_file(xacro_file).toxml()
 
@@ -90,7 +71,6 @@ def generate_launch_description():
         }]
     )
 
-    # Joint state publisher (needed for continuous wheel joints in URDF)
     jsp_node = Node(
         package='joint_state_publisher',
         executable='joint_state_publisher',
@@ -98,9 +78,6 @@ def generate_launch_description():
         parameters=[{'use_sim_time': False}]
     )
 
-    # ── Static TFs: map → odom → base_footprint ───────────────────────────
-    # These place the robot at the world origin so RViz2 can display the scan
-    # without needing the full EKF/SLAM stack.
     static_tf_map_odom = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
@@ -117,34 +94,55 @@ def generate_launch_description():
         output='screen',
     )
 
-    # ── LiDAR Node (official Slamtec rplidar_ros package) ─────────────────
     lidar_node = Node(
         package='rplidar_ros',
         executable='rplidar_composition',
         name='rplidar_node',
         output='screen',
         parameters=[{
-            'channel_type': LaunchConfiguration('channel_type'),
-            'udp_ip': LaunchConfiguration('udp_ip'),
-            'udp_port': LaunchConfiguration('udp_port'),
-            'frame_id': LaunchConfiguration('frame_id'),
-            'inverted': LaunchConfiguration('inverted'),
-            'angle_compensate': LaunchConfiguration('angle_compensate'),
-            'scan_mode': LaunchConfiguration('scan_mode'),
+            'channel_type': channel_type,
+            'udp_ip': udp_ip,
+            'udp_port': udp_port,
+            'frame_id': frame_id,
+            'inverted': inverted,
+            'angle_compensate': angle_compensate,
+            'scan_mode': scan_mode,
+            # Avoid any leftover serial default if channel_type is ignored.
+            'serial_port': '',
         }],
     )
 
-    return LaunchDescription([
-        channel_type_arg,
-        udp_ip_arg,
-        udp_port_arg,
-        frame_id_arg,
-        inverted_arg,
-        angle_compensate_arg,
-        scan_mode_arg,
+    return [
         rsp_node,
         jsp_node,
         static_tf_map_odom,
         static_tf_odom_base,
         lidar_node,
+    ]
+
+
+def generate_launch_description():
+    return LaunchDescription([
+        DeclareLaunchArgument(
+            'channel_type', default_value='udp',
+            description='Lidar channel: "udp" for S2E Ethernet, "serial" for USB lidars'),
+        DeclareLaunchArgument(
+            'udp_ip', default_value='192.168.11.2',
+            description='S2E IP address (factory default 192.168.11.2)'),
+        DeclareLaunchArgument(
+            'udp_port', default_value='8089',
+            description='S2E UDP port (factory default 8089)'),
+        DeclareLaunchArgument(
+            'frame_id', default_value='laser_frame',
+            description='Specifying frame_id of lidar (must match URDF link name)'),
+        DeclareLaunchArgument(
+            'inverted', default_value='false',
+            description='Specifying whether or not to invert scan data'),
+        DeclareLaunchArgument(
+            'angle_compensate', default_value='true',
+            description='Specifying whether or not to enable angle_compensate'),
+        DeclareLaunchArgument(
+            'scan_mode', default_value='DenseBoost',
+            description='DenseBoost = S2E full rate; use Standard if mode fails'),
+        OpaqueFunction(function=_launch_setup),
     ])
