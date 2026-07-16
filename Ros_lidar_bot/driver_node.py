@@ -118,6 +118,11 @@ class DriverNode(Node):
         # timeouts ≈ 52 ms — the timer then simply runs back-to-back.
         self._poll_rate = self.declare_parameter("poll_rate", 20.0).value
         self._cmd_timeout = self.declare_parameter("command_timeout", 1.0).value  # 1 s — tolerates publish jitter
+        # If Nav2/teleop +X drives the robot physically backward (and odom agrees
+        # with the wrong direction), set invert_drive true so commands and
+        # published encoder velocities stay consistent with ROS base_link +X.
+        self._invert_drive = bool(self.declare_parameter("invert_drive", True).value)
+        self._drive_sign = -1.0 if self._invert_drive else 1.0
 
         self._cmd_rpm_left = 0.0
         self._cmd_rpm_right = 0.0
@@ -145,6 +150,7 @@ class DriverNode(Node):
         self.get_logger().info(
             f"DriverNode ready on {self._port} at {self._baud} baud\n"
             f"  IDs: left={self._id_left}, right={self._id_right}\n"
+            f"  invert_drive={self._invert_drive} (ROS +X → physical forward)\n"
             f"  Feedback via 0x64 velocity-command replies (0 RPM when idle)."
         )
 
@@ -165,8 +171,8 @@ class DriverNode(Node):
             raise SystemExit(1)
 
     def _cmd_vel_cb(self, msg: Twist) -> None:
-        v = msg.linear.x
-        w = msg.angular.z
+        v = msg.linear.x * self._drive_sign
+        w = msg.angular.z * self._drive_sign
 
         v_left = v - (w * self._b / 2.0)
         v_right = v + (w * self._b / 2.0)
@@ -334,7 +340,9 @@ class DriverNode(Node):
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = [self._left_name, self._right_name]
-        msg.velocity = [self._fb_rpm_left, self._fb_rpm_right]
+        # Keep encoder signs consistent with invert_drive so odom matches physical motion.
+        s = self._drive_sign
+        msg.velocity = [self._fb_rpm_left * s, self._fb_rpm_right * s]
         # JointState.position is radians — joint_state_publisher feeds this
         # straight to the URDF wheel joints for RViz.
         msg.position = [math.radians(self._fb_pos_left), math.radians(self._fb_pos_right)]

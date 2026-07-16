@@ -101,6 +101,9 @@ def _launch_setup(context, *args, **kwargs):
             "baud_rate": 115200,
             # 20 Hz encoder feedback → denser wheel odometry for the EKF.
             "poll_rate": 20.0,
+            # True: ROS +X / Nav2 goals match physical forward (fixes
+            # "goal ahead → drives backward"). Set false if teleop W reverses.
+            "invert_drive": True,
         }],
     )
 

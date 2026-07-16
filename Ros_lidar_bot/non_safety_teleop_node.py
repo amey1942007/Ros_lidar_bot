@@ -19,6 +19,8 @@ Behaviour:
 
 Publishes: /cmd_vel_safe (geometry_msgs/Twist)
   Bypasses safety_stop_node — robot will move even near obstacles.
+  When idle (no key held), teleop publishes one zero then stops publishing
+  so Nav2 goals on /cmd_vel can drive the robot at the same time.
 """
 
 import select
@@ -123,6 +125,9 @@ class NonSafetyTeleop(Node):
         # Timestamp of last movement key press
         self._last_move_time = 0.0
         self._stopped        = True
+        # After releasing keys, publish one zero then stay silent so Nav2
+        # /cmd_vel → safety_stop → /cmd_vel_safe is not stomped by teleop.
+        self._yielded_to_nav = False
 
         # Publisher timer
         self._timer = self.create_timer(1.0 / PUBLISH_HZ, self._publish_cb)
@@ -133,6 +138,16 @@ class NonSafetyTeleop(Node):
             lin = self._cmd_linear
             ang = self._cmd_angular
 
+        moving = abs(lin) > 1e-6 or abs(ang) > 1e-6
+        if not moving:
+            if not self._yielded_to_nav:
+                msg = Twist()
+                self._pub.publish(msg)  # one stop pulse, then yield
+                self._yielded_to_nav = True
+                self._print_status(0.0, 0.0)
+            return
+
+        self._yielded_to_nav = False
         msg = Twist()
         msg.linear.x  = lin
         msg.angular.z = ang
@@ -146,12 +161,14 @@ class NonSafetyTeleop(Node):
             self._cmd_angular = angular
             self._last_move_time = time.monotonic()
             self._stopped = False
+            self._yielded_to_nav = False
 
     def stop(self):
         with self._lock:
             self._cmd_linear  = 0.0
             self._cmd_angular = 0.0
             self._stopped = True
+            self._yielded_to_nav = False  # allow one zero publish
 
     def adjust_linear(self, delta: float):
         self._lin_speed = round(
