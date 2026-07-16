@@ -53,6 +53,10 @@ GREEN = "\033[32m"
 YELLOW = "\033[33m"
 CYAN = "\033[36m"
 CLEAR = "\033[2J\033[H"
+ALT_SCREEN_ON = "\033[?1049h"
+ALT_SCREEN_OFF = "\033[?1049l"
+HIDE_CURSOR = "\033[?25l"
+SHOW_CURSOR = "\033[?25h"
 
 STATE_COLORS = {
     "HEALTHY": GREEN,
@@ -135,11 +139,14 @@ class BringupStatusNode(Node):
         super().__init__("bringup_status")
 
         self._expect_frontier = bool(self.declare_parameter("expect_frontier", False).value)
-        self._update_hz = float(self.declare_parameter("update_hz", 1.0).value)
+        self._update_hz = float(self.declare_parameter("update_hz", 2.0).value)
         self._verbose_issues = bool(self.declare_parameter("verbose_issues", True).value)
         self._clear_screen = bool(self.declare_parameter("clear_screen", True).value)
         self._qos_period = float(self.declare_parameter("qos_check_period_sec", 5.0).value)
         self._max_issues = int(self.declare_parameter("max_issues", 12).value)
+        self._expected_scan_frame = str(
+            self.declare_parameter("expected_scan_frame", "laser_frame").value
+        )
 
         self._t0 = time.monotonic()
         self._last_qos_check = 0.0
@@ -148,6 +155,9 @@ class BringupStatusNode(Node):
         self._lifecycle_clients: Dict[str, any] = {}
         self._lifecycle_cache: Dict[str, Tuple[str, float]] = {}
         self._lifecycle_futures: Dict[str, any] = {}
+        self._scan_frame_id: Optional[str] = None
+        self._last_board: str = ""
+        self._out = None  # set in _open_tty
 
         # TF motion tracking: child -> (x, y, yaw_approx, last_change_wall)
         self._tf_pose: Dict[str, Tuple[float, float, float]] = {}
@@ -160,6 +170,7 @@ class BringupStatusNode(Node):
             t.name: TopicStats() for t in self._topic_specs
         }
 
+        self._open_tty()
         self._subscribe_topics()
         if TF_OK:
             self._tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=30.0))
@@ -171,11 +182,11 @@ class BringupStatusNode(Node):
         period = 1.0 / max(self._update_hz, 0.2)
         self.create_timer(period, self._tick)
 
-        # One-line logger so rosout still shows we started (board uses print).
-        self.get_logger().info(
-            f"bringup_status started (expect_frontier={self._expect_frontier}). "
-            f"Board prints to stdout; full node logs under ~/.ros/log/"
-        )
+        # Own logger stays quiet so it cannot pollute the board.
+        self.get_logger().set_level(rclpy.logging.LoggingSeverity.FATAL)
+        if self._out is not None and self._clear_screen and self._out.isatty():
+            self._out.write(ALT_SCREEN_ON + HIDE_CURSOR)
+            self._out.flush()
 
     # ── specs ────────────────────────────────────────────────────────────────
 
@@ -273,16 +284,66 @@ class BringupStatusNode(Node):
         for spec in self._topic_specs:
             qos = spec.qos if spec.qos is not None else 10
 
-            def _cb(_msg, name=spec.name):
-                self._topic_stats[name].on_msg()
+            if spec.name == "/scan":
+                def _scan_cb(msg: LaserScan, name=spec.name):
+                    self._topic_stats[name].on_msg()
+                    self._scan_frame_id = msg.header.frame_id
+                    if (
+                        self._expected_scan_frame
+                        and msg.header.frame_id
+                        and msg.header.frame_id != self._expected_scan_frame
+                    ):
+                        self._add_issue(
+                            "ERROR",
+                            f"/scan frame_id='{msg.header.frame_id}' but URDF/TF "
+                            f"expects '{self._expected_scan_frame}' — RViz scan will "
+                            f"detach/rotate with the robot. Set frame_id:=laser_frame "
+                            f"(do not use official sllidar_s2e_launch alone).",
+                        )
 
-            self.create_subscription(spec.msg_type, spec.name, _cb, qos)
+                self.create_subscription(spec.msg_type, spec.name, _scan_cb, qos)
+            else:
+                def _cb(_msg, name=spec.name):
+                    self._topic_stats[name].on_msg()
+
+                self.create_subscription(spec.msg_type, spec.name, _cb, qos)
 
         # Optional cmd pipeline — only used for presence/QoS, not rate alarms while idle.
         self.create_subscription(Twist, "/cmd_vel", lambda _m: None, 10)
         self.create_subscription(Twist, "/cmd_vel_safe", lambda _m: None, 10)
 
     # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _open_tty(self) -> None:
+        """Prefer /dev/tty so launch-multiplexed stdout from other nodes cannot
+        permanently corrupt the board (we redraw on the real terminal)."""
+        try:
+            self._out = open("/dev/tty", "w", encoding="utf-8", buffering=1)
+        except OSError:
+            self._out = sys.stdout
+
+    def _write_board(self, text: str) -> None:
+        out = self._out or sys.stdout
+        if self._clear_screen and out.isatty():
+            out.write(CLEAR + text + "\n")
+        else:
+            if text != self._last_board:
+                out.write("\n" + text + "\n")
+        out.flush()
+        self._last_board = text
+
+    def destroy_node(self) -> bool:
+        out = self._out
+        if out is not None and out is not sys.stdout:
+            try:
+                if self._clear_screen and out.isatty():
+                    out.write(SHOW_CURSOR + ALT_SCREEN_OFF)
+                    out.flush()
+                out.close()
+            except Exception:
+                pass
+            self._out = None
+        return super().destroy_node()
 
     def _elapsed(self) -> float:
         return time.monotonic() - self._t0
@@ -528,7 +589,37 @@ class BringupStatusNode(Node):
                 pass
 
             kind = "updating" if edge.dynamic else "static"
-            rows.append((label, "HEALTHY", f"age={age:.2f}s  {kind}"))
+            frame_note = ""
+            if edge.child == "laser_frame" or edge.parent == "laser_frame":
+                pass
+            rows.append((label, "HEALTHY", f"age={age:.2f}s  {kind}{frame_note}"))
+
+        # If the robot pose in odom is moving but map→odom is frozen, SLAM is
+        # lagging and the scan appears to ride/rotate with the bot in Fixed=map.
+        odom_key = "odom -> base_footprint"
+        map_key = "map -> odom"
+        odom_chg = self._tf_last_change.get(odom_key)
+        map_chg = self._tf_last_change.get(map_key)
+        if odom_chg and map_chg and self._elapsed() > 15.0:
+            now = time.monotonic()
+            if (now - odom_chg) < 1.0 and (now - map_chg) > 3.0:
+                self._add_issue(
+                    "WARN",
+                    "map→odom frozen while odom→base_footprint is moving — "
+                    "SLAM correction lag; scan may rotate with the robot in RViz",
+                )
+
+        if self._scan_frame_id:
+            rows.append(
+                (
+                    f"/scan.frame_id",
+                    "HEALTHY"
+                    if self._scan_frame_id == self._expected_scan_frame
+                    else "FAILED",
+                    f"'{self._scan_frame_id}' "
+                    f"(expect '{self._expected_scan_frame}')",
+                )
+            )
 
         return rows
 
@@ -640,7 +731,8 @@ class BringupStatusNode(Node):
 
         lines.append(f"{DIM}Full logs: {self._latest_log_dir()}{RESET}")
         lines.append(
-            f"{DIM}Tip: ros2 launch Ros_lidar_bot launch_robot.launch.py verbose:=true{RESET}"
+            f"{DIM}RViz Fixed Frame MUST be 'map' (not laser_frame). "
+            f"verbose:=true for full spam.{RESET}"
         )
         return "\n".join(lines)
 
@@ -652,12 +744,7 @@ class BringupStatusNode(Node):
         self._eval_qos()
         overall = self._overall(node_rows, topic_rows, tf_rows)
         board = self._render(node_rows, topic_rows, tf_rows, overall)
-
-        if self._clear_screen and sys.stdout.isatty():
-            sys.stdout.write(CLEAR + board + "\n")
-        else:
-            sys.stdout.write("\n" + board + "\n")
-        sys.stdout.flush()
+        self._write_board(board)
 
 
 def main(args=None) -> None:
@@ -668,7 +755,10 @@ def main(args=None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        node.destroy_node()
+        try:
+            node.destroy_node()
+        except Exception:
+            pass
         if rclpy.ok():
             rclpy.shutdown()
 

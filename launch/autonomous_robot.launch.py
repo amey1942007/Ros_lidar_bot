@@ -35,7 +35,7 @@ def _launch_setup(context, *args, **kwargs):
         "yes",
     )
     out = "screen" if verbose else "log"
-    log_args = [] if verbose else ["--ros-args", "--log-level", "warn"]
+    log_args = [] if verbose else ["--ros-args", "--log-level", "fatal"]
 
     hardware_and_mapping = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(

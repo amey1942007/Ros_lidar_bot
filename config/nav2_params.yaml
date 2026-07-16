@@ -193,12 +193,13 @@ velocity_smoother:
     # [x, y, theta] — match RPP: desired_linear_vel 0.45, rotate_to_heading 1.5
     max_velocity: [0.5, 0.0, 2.0]
     min_velocity: [-0.5, 0.0, -2.0]
-    max_accel: [2.5, 0.0, 3.2]
-    max_decel: [-2.5, 0.0, -3.2]
+    # Snappier accel so teleop/Nav2 does not feel laggy on hardware.
+    max_accel: [3.5, 0.0, 4.0]
+    max_decel: [-3.5, 0.0, -4.0]
     odom_topic: "/odom"
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]
-    velocity_timeout: 1.0
+    velocity_timeout: 0.5
 
 collision_monitor:
   ros__parameters:
@@ -219,8 +220,8 @@ collision_monitor:
       type: "polygon"
       action_type: "approach"
       footprint_topic: "/local_costmap/published_footprint"
-      time_before_collision: 1.2
-      simulation_time_step: 0.1
+      time_before_collision: 0.6
+      simulation_time_step: 0.05
       min_points: 6
       visualize: false
       enabled: true

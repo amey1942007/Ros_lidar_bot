@@ -32,13 +32,16 @@ def _launch_setup(context, *args, **kwargs):
     )
 
     out = "screen" if verbose else "log"
-    log_args = [] if verbose else ["--ros-args", "--log-level", "warn"]
-    nav2_log_level = "info" if verbose else "warn"
+    # FATAL = only crashes; keeps bringup_status board alone on the TTY.
+    log_args = [] if verbose else ["--ros-args", "--log-level", "fatal"]
+    nav2_log_level = "info" if verbose else "fatal"
 
     actions = []
     if not verbose:
-        # Quiet third-party / included launch INFO spam; status board uses print().
-        actions.append(SetEnvironmentVariable("RCUTILS_LOGGING_MIN_SEVERITY", "WARN"))
+        # Kill ROS logger spam from included launches (slam/nav2/rsp) too.
+        actions.append(SetEnvironmentVariable("RCUTILS_LOGGING_MIN_SEVERITY", "FATAL"))
+        # Soften CycloneDDS discovery chatter when RViz joins from another host.
+        actions.append(SetEnvironmentVariable("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] [{name}]: {message}"))
 
     # ── Bringup status board (always on screen) ──────────────────────────────
     bringup_status = Node(
@@ -46,11 +49,13 @@ def _launch_setup(context, *args, **kwargs):
         executable="bringup_status",
         name="bringup_status",
         output="screen",
+        emulate_tty=True,
         parameters=[{
             "expect_frontier": expect_frontier,
-            "update_hz": 1.0,
+            "update_hz": 2.0,
             "verbose_issues": True,
             "clear_screen": True,
+            "expected_scan_frame": "laser_frame",
         }],
     )
 
@@ -59,7 +64,10 @@ def _launch_setup(context, *args, **kwargs):
         PythonLaunchDescriptionSource(
             os.path.join(pkg_share, "launch", "rsp.launch.py")
         ),
-        launch_arguments={"use_sim_time": "false"}.items(),
+        launch_arguments={
+            "use_sim_time": "false",
+            "output": out,
+        }.items(),
     )
 
     # ── 2. IMU Node (BNO055 via Arduino Mega UART) ─────────────────────────────
