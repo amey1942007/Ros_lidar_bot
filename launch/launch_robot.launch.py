@@ -126,10 +126,12 @@ def _launch_setup(context, *args, **kwargs):
     #          ipv4.method manual ipv4.addresses 192.168.11.1/24
     #   Verify with:  ping 192.168.11.2
     #
-    # Requires ros-jazzy-rplidar-ros >= 2.1 (has udp/tcp channel support).
+    # Slamtec sllidar_ros2 (UDP). Do NOT use apt ros-jazzy-rplidar-ros SDK
+    # 1.12 — that build is serial-only and ignores channel_type:=udp.
+    # Install: git clone https://github.com/Slamtec/sllidar_ros2.git into src/
     lidar_node = Node(
-        package="rplidar_ros",
-        executable="rplidar_composition",
+        package="sllidar_ros2",
+        executable="sllidar_node",
         name="rplidar_node",
         output=out,
         arguments=log_args,
@@ -146,7 +148,8 @@ def _launch_setup(context, *args, **kwargs):
             "angle_compensate":  True,
             # DenseBoost = the S2E's full 32 kHz sample rate (~3200 pts/rev
             # at 10 Hz) — the "full power" mode. Falls back is NOT automatic:
-            # if the driver logs "Failed to set scan mode", set "Standard".
+            # if the driver logs "Failed to set scan mode", set "Standard"
+            # or "Sensitivity".
             "scan_mode":         "DenseBoost",
         }],
     )

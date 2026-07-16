@@ -149,15 +149,21 @@ sudo apt-get install -y \
 log "SLAM Toolbox installed."
 
 # ---------------------------------------------------------------------------
-# 5b. RPLidar driver (official Slamtec ROS 2 package)
+# 5b. RPLidar S2E driver (Slamtec sllidar_ros2 — UDP/Ethernet)
 # ---------------------------------------------------------------------------
-section "5b. RPLidar ROS driver"
+section "5b. RPLidar S2E driver (sllidar_ros2)"
 
-# rplidar_ros >= 2.1 supports the S2E's Ethernet channel (channel_type: udp).
-sudo apt-get install -y \
-    ros-jazzy-rplidar-ros
-
-log "rplidar_ros installed."
+# apt ros-jazzy-rplidar-ros often ships SDK 1.12 (serial-only) and will ignore
+# channel_type:=udp, failing with "cannot bind to ... /dev/ttyUSB0".
+# Build Slamtec's official sllidar_ros2 from source instead.
+SLLIDAR_SRC="$HOME/Desktop/ros2_ws/src/sllidar_ros2"
+if [[ ! -d "$SLLIDAR_SRC" ]]; then
+    log "Cloning Slamtec sllidar_ros2..."
+    git clone https://github.com/Slamtec/sllidar_ros2.git "$SLLIDAR_SRC"
+else
+    log "sllidar_ros2 already present at $SLLIDAR_SRC"
+fi
+log "sllidar_ros2 will be built with the workspace in section 15."
 
 # Static IP on eth0 for the RPLidar S2E (factory IP 192.168.11.2, UDP :8089).
 # The RPi must sit on the same subnet for the driver to reach it.

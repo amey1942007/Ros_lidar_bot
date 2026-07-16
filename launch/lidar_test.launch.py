@@ -1,32 +1,20 @@
 #!/usr/bin/env python3
 """
-lidar_test.launch.py  –  Standalone LiDAR test launch for RPLidar S2E (Ethernet/UDP) using official Slamtec rplidar_ros package.
+lidar_test.launch.py  –  Standalone LiDAR test for RPLidar S2E (Ethernet/UDP).
 
-Launches only:
-  1. robot_state_publisher  (provides laser_frame TF from URDF)
-  2. Static TF: map → odom (identity, for RViz2 fixed-frame compatibility)
-  3. Static TF: odom → base_footprint (identity, robot parked at origin)
-  4. rplidar_ros rplidar_composition (UDP to 192.168.11.2:8089, publishes /scan)
+Uses Slamtec sllidar_ros2 (NOT the apt rplidar_ros with SDK 1.12, which is
+serial-only and will try /dev/ttyUSB0 even when channel_type:=udp is set).
 
-Usage (RPi eth0 must have a static IP on the lidar subnet, e.g. 192.168.11.1/24):
-    # Build first:
+Install once:
+    cd ~/Desktop/ros2_ws/src
+    git clone https://github.com/Slamtec/sllidar_ros2.git
     cd ~/Desktop/ros2_ws
-    colcon build --symlink-install --packages-select Ros_lidar_bot
+    colcon build --symlink-install --packages-select sllidar_ros2 Ros_lidar_bot
     source install/setup.bash
 
-    # Launch:
+Usage (RPi eth0 must be 192.168.11.1/24; lidar at 192.168.11.2):
+    ping -c 4 192.168.11.2
     ros2 launch Ros_lidar_bot lidar_test.launch.py
-
-    # Override lidar IP / scan mode if needed:
-    ros2 launch Ros_lidar_bot lidar_test.launch.py udp_ip:=192.168.11.2 scan_mode:=Standard
-
-    # In RViz2:
-    #   Fixed Frame: map   (or laser_frame if you want minimal setup)
-    #   Add → LaserScan → Topic: /scan
-    #   Add → TF
-
-TF tree published by this launch:
-    map → odom → base_footprint → base_link → laser_frame
 """
 
 import os
@@ -44,9 +32,6 @@ def _launch_setup(context, *args, **kwargs):
     package_name = 'Ros_lidar_bot'
     pkg_share = get_package_share_directory(package_name)
 
-    # Resolve launch args here so rplidar gets real typed params.
-    # Putting LaunchConfiguration() directly in a parameters dict is ignored
-    # by many rplidar_ros builds → it falls back to serial /dev/ttyUSB0.
     channel_type = LaunchConfiguration('channel_type').perform(context)
     udp_ip = LaunchConfiguration('udp_ip').perform(context)
     udp_port = int(LaunchConfiguration('udp_port').perform(context))
@@ -82,7 +67,9 @@ def _launch_setup(context, *args, **kwargs):
         package='tf2_ros',
         executable='static_transform_publisher',
         name='static_tf_map_odom',
-        arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom'],
+        arguments=['--x', '0', '--y', '0', '--z', '0',
+                    '--qx', '0', '--qy', '0', '--qz', '0', '--qw', '1',
+                    '--frame-id', 'map', '--child-frame-id', 'odom'],
         output='screen',
     )
 
@@ -90,13 +77,17 @@ def _launch_setup(context, *args, **kwargs):
         package='tf2_ros',
         executable='static_transform_publisher',
         name='static_tf_odom_base_footprint',
-        arguments=['0', '0', '0', '0', '0', '0', 'odom', 'base_footprint'],
+        arguments=['--x', '0', '--y', '0', '--z', '0',
+                    '--qx', '0', '--qy', '0', '--qz', '0', '--qw', '1',
+                    '--frame-id', 'odom', '--child-frame-id', 'base_footprint'],
         output='screen',
     )
 
+    # Official Slamtec S2E driver (UDP). Keep node name rplidar_node so
+    # bringup_status / other tooling still find it.
     lidar_node = Node(
-        package='rplidar_ros',
-        executable='rplidar_composition',
+        package='sllidar_ros2',
+        executable='sllidar_node',
         name='rplidar_node',
         output='screen',
         parameters=[{
@@ -107,8 +98,6 @@ def _launch_setup(context, *args, **kwargs):
             'inverted': inverted,
             'angle_compensate': angle_compensate,
             'scan_mode': scan_mode,
-            # Avoid any leftover serial default if channel_type is ignored.
-            'serial_port': '',
         }],
     )
 
@@ -125,24 +114,24 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'channel_type', default_value='udp',
-            description='Lidar channel: "udp" for S2E Ethernet, "serial" for USB lidars'),
+            description='Must be "udp" for S2E Ethernet'),
         DeclareLaunchArgument(
             'udp_ip', default_value='192.168.11.2',
-            description='S2E IP address (factory default 192.168.11.2)'),
+            description='S2E factory IP'),
         DeclareLaunchArgument(
             'udp_port', default_value='8089',
-            description='S2E UDP port (factory default 8089)'),
+            description='S2E factory UDP port'),
         DeclareLaunchArgument(
             'frame_id', default_value='laser_frame',
-            description='Specifying frame_id of lidar (must match URDF link name)'),
+            description='Must match URDF laser link'),
         DeclareLaunchArgument(
             'inverted', default_value='false',
-            description='Specifying whether or not to invert scan data'),
+            description='Invert scan data'),
         DeclareLaunchArgument(
             'angle_compensate', default_value='true',
-            description='Specifying whether or not to enable angle_compensate'),
+            description='Enable angle compensation'),
         DeclareLaunchArgument(
             'scan_mode', default_value='DenseBoost',
-            description='DenseBoost = S2E full rate; use Standard if mode fails'),
+            description='DenseBoost = full rate; try Standard or Sensitivity if needed'),
         OpaqueFunction(function=_launch_setup),
     ])
