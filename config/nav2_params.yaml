@@ -53,10 +53,10 @@ controller_server:
       lookahead_time: 1.2
       use_velocity_scaled_lookahead_dist: true
 
-      # Drive along the path instead of stop-spin-go (felt like "won't move").
-      use_rotate_to_heading: false
-      rotate_to_heading_min_angle: 0.70
-      rotate_to_heading_angular_vel: 1.2
+      # Align roughly, then drive (needs correct invert_drive / TF front).
+      use_rotate_to_heading: true
+      rotate_to_heading_min_angle: 0.5
+      rotate_to_heading_angular_vel: 1.0
 
       transform_tolerance: 0.3
 
