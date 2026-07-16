@@ -101,10 +101,8 @@ def _launch_setup(context, *args, **kwargs):
             "baud_rate": 115200,
             # 20 Hz encoder feedback → denser wheel odometry for the EKF.
             "poll_rate": 20.0,
-            # MUST be true on this chassis: without it ROS +X = physical REAR,
-            # so RViz "front" flips, Nav2 only spins to face goals, then never
-            # drives. Set false only if teleop W then goes backward.
-            "invert_drive": True,
+            # False: teleop W / ROS +X = physical forward on this chassis.
+            "invert_drive": False,
         }],
     )
 

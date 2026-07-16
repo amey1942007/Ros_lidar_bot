@@ -118,9 +118,8 @@ class DriverNode(Node):
         # timeouts ≈ 52 ms — the timer then simply runs back-to-back.
         self._poll_rate = self.declare_parameter("poll_rate", 20.0).value
         self._cmd_timeout = self.declare_parameter("command_timeout", 1.0).value  # 1 s — tolerates publish jitter
-        # True = ROS base_link +X matches physical forward (and odom/TF).
-        # False on this bot makes RViz front = physical back and Nav2 only spins.
-        self._invert_drive = bool(self.declare_parameter("invert_drive", True).value)
+        # False = ROS +X / teleop W matches physical forward on this bot.
+        self._invert_drive = bool(self.declare_parameter("invert_drive", False).value)
         self._drive_sign = -1.0 if self._invert_drive else 1.0
 
         self._cmd_rpm_left = 0.0
