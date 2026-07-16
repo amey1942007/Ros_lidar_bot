@@ -17,8 +17,8 @@ Behaviour:
   - Arrow keys adjust the speed setpoint without affecting current motion.
   - Space zeroes velocity regardless of what is held.
 
-Publishes: /cmd_vel_safe (geometry_msgs/Twist)
-  Bypasses safety_stop_node — robot will move even near obstacles.
+Publishes: /cmd_vel (geometry_msgs/Twist)
+  Goes straight to driver_node (safety_stop is disabled).
   When idle (no key held), teleop publishes one zero then stops publishing
   so Nav2 goals on /cmd_vel can drive the robot at the same time.
 """
@@ -111,7 +111,7 @@ def _read_key_raw(fd, timeout=KEY_TIMEOUT):
 class NonSafetyTeleop(Node):
     def __init__(self):
         super().__init__('non_safety_teleop')
-        self._pub = self.create_publisher(Twist, '/cmd_vel_safe', 10)
+        self._pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
         # Speed setpoints (what we drive at when a key is held)
         self._lin_speed  = LIN_DEFAULT   # m/s
@@ -126,7 +126,7 @@ class NonSafetyTeleop(Node):
         self._last_move_time = 0.0
         self._stopped        = True
         # After releasing keys, publish one zero then stay silent so Nav2
-        # /cmd_vel → safety_stop → /cmd_vel_safe is not stomped by teleop.
+        # /cmd_vel is not stomped by teleop.
         self._yielded_to_nav = False
 
         # Publisher timer

@@ -198,7 +198,6 @@ class BringupStatusNode(Node):
             NodeSpec("driver_node", 0.0, "check /dev/ttyACM0 and DDSM115"),
             NodeSpec("odom_node", 0.0, "odom_node not running"),
             NodeSpec("rplidar_node", 0.0, "check eth0 / ping 192.168.11.2 / lidar power"),
-            NodeSpec("safety_stop", 0.0, "safety_stop_node not running"),
             NodeSpec("ekf_filter_node", 0.0, "robot_localization EKF not running"),
             NodeSpec("slam_toolbox", 5.0, "SLAM Toolbox failed to start (due T+5s)"),
             NodeSpec("bt_navigator", 8.0, "Nav2 bt_navigator not up", lifecycle=True),
@@ -310,7 +309,6 @@ class BringupStatusNode(Node):
 
         # Optional cmd pipeline — only used for presence/QoS, not rate alarms while idle.
         self.create_subscription(Twist, "/cmd_vel", lambda _m: None, 10)
-        self.create_subscription(Twist, "/cmd_vel_safe", lambda _m: None, 10)
 
     # ── helpers ──────────────────────────────────────────────────────────────
 

@@ -22,7 +22,7 @@ class DriveDistance(Node):
         self.declare_parameter("max_vel", 0.4)        # Maximum linear velocity (m/s)
         self.declare_parameter("accel", 0.2)          # Acceleration (m/s^2)
         self.declare_parameter("decel", 0.2)          # Deceleration (m/s^2)
-        self.declare_parameter("topic", "/cmd_vel_safe") # Publish topic
+        self.declare_parameter("topic", "/cmd_vel") # Publish topic
         self.declare_parameter("rate", 50.0)          # Publishing rate (Hz)
 
         self.distance = float(self.get_parameter("distance").value)
@@ -176,7 +176,7 @@ def main(args=None) -> None:
         try:
             # Create a temporary node to publish final zeros in case drive node failed
             temp_node = rclpy.create_node("drive_distance_cleanup")
-            temp_pub = temp_node.create_publisher(Twist, "/cmd_vel_safe", 10)
+            temp_pub = temp_node.create_publisher(Twist, "/cmd_vel", 10)
             for _ in range(3):
                 temp_pub.publish(Twist())
                 time.sleep(0.02)

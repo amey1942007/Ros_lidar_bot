@@ -41,7 +41,8 @@ Response Payload Formats:
 ================================================================================
 ROS 2 NODE DATA-FLOW & TIMING
 ================================================================================
-- Subscribes to: /cmd_vel_safe (geometry_msgs/Twist)
+- Subscribes to: /cmd_vel (geometry_msgs/Twist) — direct from Nav2 / teleop
+  (override with parameter cmd_vel_topic if needed)
 - Converts body velocities (v, w) into left/right wheel RPMs.
 - Publishes to: /encoder (sensor_msgs/JointState) carrying wheel position, velocity, and effort.
 - An internal timer loop runs at the polling rate (10 Hz). To prevent RS485 bus
@@ -121,6 +122,9 @@ class DriverNode(Node):
         # False = ROS +X / teleop W matches physical forward on this bot.
         self._invert_drive = bool(self.declare_parameter("invert_drive", False).value)
         self._drive_sign = -1.0 if self._invert_drive else 1.0
+        self._cmd_vel_topic = str(
+            self.declare_parameter("cmd_vel_topic", "/cmd_vel").value
+        )
 
         self._cmd_rpm_left = 0.0
         self._cmd_rpm_right = 0.0
@@ -137,7 +141,7 @@ class DriverNode(Node):
         self._serial = None
         self._connect_serial()
 
-        self.create_subscription(Twist, "/cmd_vel_safe", self._cmd_vel_cb, 10)
+        self.create_subscription(Twist, self._cmd_vel_topic, self._cmd_vel_cb, 10)
         self._enc_pub = self.create_publisher(
             JointState,
             "/encoder",
@@ -148,6 +152,7 @@ class DriverNode(Node):
         self.get_logger().info(
             f"DriverNode ready on {self._port} at {self._baud} baud\n"
             f"  IDs: left={self._id_left}, right={self._id_right}\n"
+            f"  cmd_vel_topic={self._cmd_vel_topic}\n"
             f"  invert_drive={self._invert_drive} (ROS +X → physical forward)\n"
             f"  Feedback via 0x64 velocity-command replies (0 RPM when idle)."
         )
@@ -311,7 +316,7 @@ class DriverNode(Node):
             and (time.monotonic() - last_cmd_time) <= self._cmd_timeout
         )
 
-        # Always send a velocity command — 0 RPM when the last /cmd_vel_safe is
+        # Always send a velocity command — 0 RPM when the last /cmd_vel is
         # stale. The 0x64 reply carries the same feedback payload as a 0x74
         # poll, and the passive 0x74 poll was unreliable with the motor at rest
         # ("No DDSM115 feedback reply" warnings). Commanding 0 RPM on timeout

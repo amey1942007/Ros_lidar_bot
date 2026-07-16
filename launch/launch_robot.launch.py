@@ -88,8 +88,7 @@ def _launch_setup(context, *args, **kwargs):
     )
 
     # ── 3. Motor Driver Node (DDSM115 via UART) ──────────────────────────────
-    # Command path: Nav2 publishes /cmd_vel, safety_stop filters it into
-    # /cmd_vel_safe, and this driver consumes only /cmd_vel_safe.
+    # Direct path: Nav2 / teleop → /cmd_vel → driver (safety_stop disabled).
     driver_node = Node(
         package=package_name,
         executable="driver_node",
@@ -103,6 +102,7 @@ def _launch_setup(context, *args, **kwargs):
             "poll_rate": 20.0,
             # False: teleop W / ROS +X = physical forward on this chassis.
             "invert_drive": False,
+            "cmd_vel_topic": "/cmd_vel",
         }],
     )
 
@@ -164,25 +164,23 @@ def _launch_setup(context, *args, **kwargs):
         }],
     )
 
-    # ── 6. Safety Stop Node ──────────────────────────────────────────────────
-    # Keep this node in the command path: it subscribes to Nav2's /cmd_vel and
-    # publishes filtered commands to /cmd_vel_safe for driver_node. Do not
-    # remap driver_node to /cmd_vel, which would bypass the safety filter.
-    safety_stop = Node(
-        package=package_name,
-        executable="safety_stop_node",
-        name="safety_stop",
-        output=out,
-        arguments=log_args,
-        parameters=[{
-            "min_safe_distance": 0.40,
-            # Chassis / mast returns are ~0.1–0.25 m — ignore those or Nav2
-            # plans forever while linear.x is held at 0.
-            "ignore_below": 0.28,
-            "front_opening_deg": 90.0,
-            "rear_opening_deg": 50.0,
-        }],
-    )
+    # ── 6. Safety Stop Node — DISABLED ───────────────────────────────────────
+    # User requested: driver takes /cmd_vel directly from Nav2 (no filter).
+    # Re-enable by uncommenting the Node below and adding safety_stop to
+    # actions.extend([...]), and set driver cmd_vel_topic back to /cmd_vel_safe.
+    # safety_stop = Node(
+    #     package=package_name,
+    #     executable="safety_stop_node",
+    #     name="safety_stop",
+    #     output=out,
+    #     arguments=log_args,
+    #     parameters=[{
+    #         "min_safe_distance": 0.40,
+    #         "ignore_below": 0.28,
+    #         "front_opening_deg": 90.0,
+    #         "rear_opening_deg": 50.0,
+    #     }],
+    # )
 
     # ── 7. EKF Node (Fuses Odom & IMU) ───────────────────────────────────────
     ekf_node = Node(
@@ -216,8 +214,7 @@ def _launch_setup(context, *args, **kwargs):
     )
 
     # ── 9. Nav2 Navigation Stack ────────────────────────────────────────────
-    # Nav2 publishes /cmd_vel. safety_stop below filters that into
-    # /cmd_vel_safe, which is the driver's only velocity-command input.
+    # Nav2 publishes /cmd_vel → driver_node (safety_stop bypassed).
     nav2 = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
@@ -241,7 +238,6 @@ def _launch_setup(context, *args, **kwargs):
         driver_node,
         odom_node,
         lidar_node,
-        safety_stop,
         ekf_node,
         # ── Stage 2 (T=5s): SLAM ──────────────────────────────────────────────
         TimerAction(period=5.0, actions=[slam_toolbox]),
