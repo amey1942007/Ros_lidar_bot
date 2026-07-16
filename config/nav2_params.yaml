@@ -202,28 +202,35 @@ velocity_smoother:
 collision_monitor:
   ros__parameters:
     use_sim_time: false
+    enabled: true
     base_frame_id: "base_footprint"
     odom_frame_id: "odom"
     cmd_vel_in_topic: "cmd_vel_smoothed"
     cmd_vel_out_topic: "cmd_vel"
     state_topic: "collision_monitor_state"
-    transform_tolerance: 0.2
-    source_timeout: 2.0
+    transform_tolerance: 0.5
+    source_timeout: 5.0
     base_shift_correction: true
     stop_pub_timeout: 2.0
+    # Jazzy uses unstamped Twist on this stack.
     enable_stamped_cmd_vel: false
-    # Pass-through: polygon never triggers (min_points impossibly high).
-    # Real stopping is done by costmaps + safety_stop.
-    polygons: ["PassThrough"]
-    PassThrough:
+    # Must have >=1 polygon AND >=1 observation source or the node fails
+    # configure / dies → lifecycle leaves bt_navigator "unconfigured".
+    # Front-only box starts at 0.30 m so chassis self-hits do not stop Nav2.
+    polygons: ["PolygonStop"]
+    PolygonStop:
       type: "polygon"
-      points: "[[0.35, 0.25], [0.35, -0.25], [-0.25, -0.25], [-0.25, 0.25]]"
+      points: "[[0.55, 0.22], [0.55, -0.22], [0.30, -0.22], [0.30, 0.22]]"
       action_type: "stop"
-      min_points: 9999
-      enabled: true
+      min_points: 4
       visualize: false
-      polygon_pub_topic: "polygon_passthrough"
-    observation_sources: []
+      polygon_pub_topic: "polygon_stop"
+      enabled: true
+    observation_sources: ["scan"]
+    scan:
+      type: "scan"
+      topic: "scan"
+      enabled: true
 
 route_server:
   ros__parameters:
