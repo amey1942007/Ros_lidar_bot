@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-lidar_test.launch.py  –  Standalone LiDAR test launch for RPLidar A1 using official Slamtec rplidar_ros package.
+lidar_test.launch.py  –  Standalone LiDAR test launch for RPLidar S2E (Ethernet/UDP) using official Slamtec rplidar_ros package.
 
 Launches only:
   1. robot_state_publisher  (provides laser_frame TF from URDF)
   2. Static TF: map → odom (identity, for RViz2 fixed-frame compatibility)
   3. Static TF: odom → base_footprint (identity, robot parked at origin)
-  4. rplidar_ros rplidar_composition (reads /dev/ttyUSB0, publishes /scan)
+  4. rplidar_ros rplidar_composition (UDP to 192.168.11.2:8089, publishes /scan)
 
-Usage (on RPi or desktop with lidar plugged in via USB):
+Usage (RPi eth0 must have a static IP on the lidar subnet, e.g. 192.168.11.1/24):
     # Build first:
     cd ~/Desktop/ros2_ws
     colcon build --symlink-install --packages-select Ros_lidar_bot
@@ -17,8 +17,8 @@ Usage (on RPi or desktop with lidar plugged in via USB):
     # Launch:
     ros2 launch Ros_lidar_bot lidar_test.launch.py
 
-    # Override port/baud if needed:
-    ros2 launch Ros_lidar_bot lidar_test.launch.py serial_port:=/dev/ttyUSB0 serial_baudrate:=115200
+    # Override lidar IP / scan mode if needed:
+    ros2 launch Ros_lidar_bot lidar_test.launch.py udp_ip:=192.168.11.2 scan_mode:=Standard
 
     # In RViz2:
     #   Fixed Frame: map   (or laser_frame if you want minimal setup)
@@ -44,18 +44,19 @@ def generate_launch_description():
     package_name = 'Ros_lidar_bot'
     pkg_share    = get_package_share_directory(package_name)
 
-    # ── Launch Arguments ─────────────────────────────────────────────────
+    # ── Launch Arguments (defaults = RPLidar S2E over Ethernet/UDP) ────────
     channel_type_arg = DeclareLaunchArgument(
-        'channel_type', default_value='serial',
-        description='Specifying channel type of lidar')
+        'channel_type', default_value='udp',
+        description='Lidar channel: "udp" for S2E Ethernet, "serial" for USB lidars')
 
-    serial_port_arg = DeclareLaunchArgument(
-        'serial_port', default_value='/dev/ttyUSB0',
-        description='Serial port for RPLidar A1 (e.g. /dev/ttyUSB0 or /dev/rplidar)')
+    udp_ip_arg = DeclareLaunchArgument(
+        'udp_ip', default_value='192.168.11.2',
+        description='S2E IP address (factory default 192.168.11.2; RPi eth0 '
+                    'must be static on the same subnet, e.g. 192.168.11.1/24)')
 
-    serial_baudrate_arg = DeclareLaunchArgument(
-        'serial_baudrate', default_value='115200',
-        description='Baud rate for RPLidar A1 (default 115200)')
+    udp_port_arg = DeclareLaunchArgument(
+        'udp_port', default_value='8089',
+        description='S2E UDP port (factory default 8089)')
 
     frame_id_arg = DeclareLaunchArgument(
         'frame_id', default_value='laser_frame',
@@ -70,11 +71,9 @@ def generate_launch_description():
         description='Specifying whether or not to enable angle_compensate of scan data')
 
     scan_mode_arg = DeclareLaunchArgument(
-        'scan_mode', default_value='',
-        description='Scan mode of lidar. Leave empty (default) on the A1 — it does '
-                     'not support "Sensitivity" (A3/S-series only); requesting it '
-                     'makes the driver exit with "Failed to set scan mode". Empty '
-                     'uses the device\'s own typical mode (Standard/Express on A1).')
+        'scan_mode', default_value='DenseBoost',
+        description='Scan mode. "DenseBoost" = S2E full 32 kHz sample rate. '
+                    'Use "Standard" if the driver logs "Failed to set scan mode".')
 
     # ── Robot State Publisher (provides laser_frame TF from URDF) ─────────
     xacro_file = os.path.join(pkg_share, 'description', 'robot.urdf.xacro')
@@ -126,8 +125,8 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'channel_type': LaunchConfiguration('channel_type'),
-            'serial_port': LaunchConfiguration('serial_port'),
-            'serial_baudrate': LaunchConfiguration('serial_baudrate'),
+            'udp_ip': LaunchConfiguration('udp_ip'),
+            'udp_port': LaunchConfiguration('udp_port'),
             'frame_id': LaunchConfiguration('frame_id'),
             'inverted': LaunchConfiguration('inverted'),
             'angle_compensate': LaunchConfiguration('angle_compensate'),
@@ -137,8 +136,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         channel_type_arg,
-        serial_port_arg,
-        serial_baudrate_arg,
+        udp_ip_arg,
+        udp_port_arg,
         frame_id_arg,
         inverted_arg,
         angle_compensate_arg,

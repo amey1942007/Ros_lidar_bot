@@ -84,10 +84,15 @@ K_ANGULAR_YAW = 1e-2  # var_yaw increase per radian of angular travel  [rad²/ra
 K_DRIFT_YAW  = 1e-6   # var_yaw time-based drift                       [rad²/s]
 
 # Twist (velocity) covariance — fixed, represents per-cycle RPM noise.
-# σ_vx ≈ 0.05 m/s (≈1 RPM noise on A1 motor at typical speeds)
-# σ_wz ≈ 0.10 rad/s
-VAR_VX  = 0.0025   # 0.05²
-VAR_WZ  = 0.0100   # 0.10²
+# The DDSM115 runs its own internal closed-loop velocity control and its RPM
+# feedback has been bench-verified against measured distance — trust it.
+#   σ_vx ≈ 0.02 m/s   (sub-RPM feedback resolution at these speeds)
+#   σ_wz ≈ 0.05 rad/s (differential of two precise wheels across 0.33 m base;
+#                      kept above the gyro's σ≈0.01 rad/s so the EKF lets the
+#                      gyro lead during turns, while the exact-zero wheel
+#                      reading still pins yaw rate when parked)
+VAR_VX  = 4.0e-4   # 0.02²
+VAR_WZ  = 2.5e-3   # 0.05²
 LARGE   = 1.0e6    # unmeasured / not applicable DOF
 
 

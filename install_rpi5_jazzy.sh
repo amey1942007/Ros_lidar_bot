@@ -149,6 +149,33 @@ sudo apt-get install -y \
 log "SLAM Toolbox installed."
 
 # ---------------------------------------------------------------------------
+# 5b. RPLidar driver (official Slamtec ROS 2 package)
+# ---------------------------------------------------------------------------
+section "5b. RPLidar ROS driver"
+
+# rplidar_ros >= 2.1 supports the S2E's Ethernet channel (channel_type: udp).
+sudo apt-get install -y \
+    ros-jazzy-rplidar-ros
+
+log "rplidar_ros installed."
+
+# Static IP on eth0 for the RPLidar S2E (factory IP 192.168.11.2, UDP :8089).
+# The RPi must sit on the same subnet for the driver to reach it.
+if command -v nmcli >/dev/null 2>&1; then
+    if ! nmcli -g NAME con show | grep -qx "lidar-s2e"; then
+        log "Configuring eth0 static IP 192.168.11.1/24 for RPLidar S2E..."
+        sudo nmcli con add type ethernet ifname eth0 con-name lidar-s2e \
+            ipv4.method manual ipv4.addresses 192.168.11.1/24 || \
+            log "WARNING: nmcli config failed — set eth0 to 192.168.11.1/24 manually."
+    else
+        log "NetworkManager connection 'lidar-s2e' already exists — skipping."
+    fi
+else
+    log "WARNING: nmcli not found. Give eth0 a static IP 192.168.11.1/24 manually"
+    log "         (S2E lidar is at 192.168.11.2, UDP port 8089). Verify: ping 192.168.11.2"
+fi
+
+# ---------------------------------------------------------------------------
 # 6. Robot Localization (EKF)
 # ---------------------------------------------------------------------------
 section "6. Robot Localization (EKF)"

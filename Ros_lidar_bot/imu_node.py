@@ -107,12 +107,28 @@ class ImuNode(Node):
         self._rate_hz     = self.declare_parameter("publish_rate", 50.0).value
         self._timeout     = self.declare_parameter("timeout", 0.1).value
 
+        # ── Gyro bias estimation ─────────────────────────────────────────────
+        # The BNO055 gyro has a small static bias. With the EKF integrating
+        # gyro vYaw, an uncorrected bias makes the odom→base_footprint TF
+        # rotate slowly forever even while the robot is parked (this was the
+        # "TF drifts independent of the robot" map-smearing bug).
+        # The robot is stationary for the first seconds after launch, so
+        # average the gyro there and subtract that bias from every sample.
+        self._bias_window = self.declare_parameter("gyro_bias_window", 2.0).value  # s
+        self._bias_motion_thresh = 0.05   # rad/s — samples above this = robot moving
+        self._gyro_bias = (0.0, 0.0, 0.0)
+        self._bias_samples: list[tuple[float, float, float]] = []
+        self._bias_start: float | None = None
+        self._bias_done = False
+
         # ── Serial connection ────────────────────────────────────────────────
         self._serial = self._connect_serial()
 
         # ── Latest parsed IMU data (thread-safe) ─────────────────────────────
         self._latest_msg: Imu | None = None
         self._last_data_time = time.monotonic()
+        self._seq = 0             # incremented per parsed sample
+        self._published_seq = 0   # last sample actually published
         self._lock = threading.Lock()
         self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
         self._reader_thread.start()
@@ -260,9 +276,45 @@ class ImuNode(Node):
         msg.orientation.w = qw_c
         msg.orientation_covariance = [float(v) for v in ori_cov]
 
-        msg.angular_velocity.x = gx
-        msg.angular_velocity.y = -gy
-        msg.angular_velocity.z = -gz
+        # Body-frame rates after the 180° roll mount correction.
+        bgx, bgy, bgz = gx, -gy, -gz
+
+        # ── Startup gyro bias estimation (robot assumed stationary) ──────────
+        if not self._bias_done:
+            now_mono = time.monotonic()
+            if self._bias_start is None:
+                self._bias_start = now_mono
+            if max(abs(bgx), abs(bgy), abs(bgz)) > self._bias_motion_thresh:
+                # Robot moving during the window — restart collection.
+                self._bias_samples.clear()
+                self._bias_start = now_mono
+            else:
+                self._bias_samples.append((bgx, bgy, bgz))
+            if now_mono - self._bias_start >= self._bias_window:
+                if len(self._bias_samples) >= 20:
+                    n = len(self._bias_samples)
+                    self._gyro_bias = (
+                        sum(s[0] for s in self._bias_samples) / n,
+                        sum(s[1] for s in self._bias_samples) / n,
+                        sum(s[2] for s in self._bias_samples) / n,
+                    )
+                    self.get_logger().info(
+                        f"Gyro bias estimated over {n} samples: "
+                        f"({self._gyro_bias[0]:+.5f}, {self._gyro_bias[1]:+.5f}, "
+                        f"{self._gyro_bias[2]:+.5f}) rad/s — subtracting from here on."
+                    )
+                else:
+                    self.get_logger().warn(
+                        "Gyro bias window elapsed with too few stationary samples — "
+                        "bias left at zero. Keep the robot still for the first "
+                        f"{self._bias_window:.0f}s after launch for best results."
+                    )
+                self._bias_done = True
+                self._bias_samples.clear()
+
+        msg.angular_velocity.x = bgx - self._gyro_bias[0]
+        msg.angular_velocity.y = bgy - self._gyro_bias[1]
+        msg.angular_velocity.z = bgz - self._gyro_bias[2]
         msg.angular_velocity_covariance = [float(v) for v in gyr_cov]
 
         msg.linear_acceleration.x = ax
@@ -273,12 +325,14 @@ class ImuNode(Node):
         with self._lock:
             self._latest_msg = msg
             self._last_data_time = time.monotonic()
+            self._seq += 1
 
     # ── Timer callback: publish latest at configured rate ─────────────────────
     def _publish_latest(self):
         with self._lock:
             msg = self._latest_msg
             last_data = self._last_data_time
+            seq = self._seq
 
         # Watchdog: Warn in red if no new data received from the serial port for 2.0s
         if time.monotonic() - last_data > 2.0:
@@ -290,10 +344,14 @@ class ImuNode(Node):
             )
             return
 
-        if msg is not None:
-            # Update timestamp to now (Rule 4: stamp at publish time)
-            msg.header.stamp = self.get_clock().now().to_msg()
+        # Publish only FRESH samples, keeping the stamp from when the sample
+        # was parsed off the wire. Re-stamping a cached message to "now" (the
+        # old behaviour) fed the EKF the same stale gyro reading over and over
+        # during serial hiccups, as if it were new data — a direct cause of
+        # phantom yaw drift in the fused odometry.
+        if msg is not None and seq != self._published_seq:
             self._pub.publish(msg)
+            self._published_seq = seq
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
     def destroy_node(self):

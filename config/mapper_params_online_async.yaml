@@ -29,8 +29,12 @@ slam_toolbox:
     transform_publish_period: 0.05
     map_update_frequency: 1.0
     resolution: 0.05
-    min_laser_range: 0.3
-    max_laser_range: 12.0
+    # RPLidar S2E: spec range 0.05–30 m. Keep min at 0.2 m so returns off the
+    # robot's own chassis/cables never enter the map. Max capped at 20 m —
+    # beyond that indoor returns are sparse/glancing and mostly add noise to
+    # the scan matcher; raise toward 30.0 for large open halls.
+    min_laser_range: 0.2
+    max_laser_range: 20.0
     minimum_time_interval: 0.2
     transform_timeout: 0.5
     # Same issue as minimum_travel_heading below, but for translation: at 0.3 m,

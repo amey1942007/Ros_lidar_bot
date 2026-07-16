@@ -111,7 +111,12 @@ class DriverNode(Node):
         self._id_right = self.declare_parameter("right_wheel_id", 2).value
         self._r = self.declare_parameter("wheel_radius", 0.05035).value  # m  (dia=100.7 mm)
         self._b = self.declare_parameter("wheel_base", 0.33).value        # m  (centre-to-centre)
-        self._poll_rate = self.declare_parameter("poll_rate", 10.0).value
+        # 20 Hz: doubles wheel-odometry density for the EKF (was 10 Hz — the
+        # sparse, jittery updates showed up as steppy robot motion in RViz).
+        # Loop budget at 20 Hz = 50 ms; typical cycle is ~2×(1 ms write +
+        # ~4 ms reply) + 10 ms bus gap ≈ 20 ms, worst case with both reply
+        # timeouts ≈ 52 ms — the timer then simply runs back-to-back.
+        self._poll_rate = self.declare_parameter("poll_rate", 20.0).value
         self._cmd_timeout = self.declare_parameter("command_timeout", 1.0).value  # 1 s — tolerates publish jitter
 
         self._cmd_rpm_left = 0.0
@@ -206,7 +211,10 @@ class DriverNode(Node):
             return self._read_reply(motor_id)
         return None
 
-    def _read_reply(self, expected_id: int, timeout: float = 0.04):
+    # timeout 0.02 s: a 10-byte DDSM115 reply at 115200 baud lands in ~1 ms +
+    # a few ms of turnaround, so 20 ms is generous while keeping the worst-case
+    # control-loop time inside the 20 Hz poll period.
+    def _read_reply(self, expected_id: int, timeout: float = 0.02):
         if not self._serial or not self._serial.is_open:
             return None
 

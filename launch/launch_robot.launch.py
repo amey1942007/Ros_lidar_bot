@@ -48,6 +48,8 @@ def generate_launch_description():
         parameters=[{
             "serial_port": "/dev/ttyACM0",
             "baud_rate": 115200,
+            # 20 Hz encoder feedback → denser wheel odometry for the EKF.
+            "poll_rate": 20.0,
         }],
     )
 
@@ -66,52 +68,41 @@ def generate_launch_description():
         }],
     )
 
-    # ── 5. LiDAR Node (RPLidar A1 via UART) ──────────────────────────────────
-    # lidar_node = Node(
-    #     package=package_name,
-    #     executable="lidar_node",
-    #     name="lidar_node",
-    #     output="screen",
-    #     parameters=[{
-    #         "serial_port":      "/dev/ttyUSB0",  # RPLidar A1 USB-serial (CP2102). Adjust if different.
-    #         "serial_baud":      115200,           # A1 default baud rate
-    #         "scan_topic":       "/scan",
-    #         "frame_id":         "laser_frame",   # Must match URDF link name
-    #         "min_range":        0.15,             # Ignore returns closer than 15 cm
-    #         "max_range":        12.0,             # A1 max range
-    #         "publish_rate":     10.0,             # Hz — publish rate throttle
-    #         "motor_pwm":        660,              # Motor PWM value (passed to set_motor_pwm)
-    #         "sensitivity_mode": True,             # True = Express/Sensitivity (mode 1), False = Standard (mode 0)
-    #                                               # Mode 1 gives higher point density on RPLidar A1.
-    #                                               # Falls back to Standard automatically if unsupported.
-    #     }],
-    # )
-
-    # ── 5. LiDAR Node (RPLidar A1 via UART — official Slamtec driver) ────────
+    # ── 5. LiDAR Node (RPLidar S2E via Ethernet/UDP — official Slamtec driver)
+    #
+    # The S2E streams over Ethernet (UDP), NOT USB-serial. This removes the
+    # whole class of A1 failures we fought before (CP2102 dropouts, motor
+    # spin-up '80008000' scan-start timeouts, USB bus contention with the two
+    # Arduino/RS485 serial links).
+    #
+    # NETWORK SETUP REQUIRED on the RPi 5 (one-time):
+    #   The S2E has a fixed default IP of 192.168.11.2 and talks UDP :8089.
+    #   Give eth0 a static address on the same subnet, e.g. with nmcli:
+    #     sudo nmcli con add type ethernet ifname eth0 con-name lidar \
+    #          ipv4.method manual ipv4.addresses 192.168.11.1/24
+    #   Verify with:  ping 192.168.11.2
+    #
+    # Requires ros-jazzy-rplidar-ros >= 2.1 (has udp/tcp channel support).
     lidar_node = Node(
         package="rplidar_ros",
-        executable="rplidar_composition",   # ← changed from "rplidar_node"
-        name="rplidar_node",                # this can stay whatever you want, it's just the node's name
+        executable="rplidar_composition",
+        name="rplidar_node",
         output="screen",
-        # If startup fails (e.g. '80008000' scan-start timeout while the motor
-        # spins up), restart instead of staying dead — no /scan means no /map.
-        # 2s wasn't enough headroom: the motor has real mechanical spin-down
-        # time, so a retry that fires before it's actually stopped just hits
-        # the same failure again. 8s gives it room to settle first.
+        # Respawn if the driver ever exits (cable yank, power dip). UDP needs
+        # no motor spin-down grace period like the A1 did, so 5 s is plenty.
         respawn=True,
-        respawn_delay=8.0,
+        respawn_delay=5.0,
         parameters=[{
-            "channel_type":      "serial",
-            "serial_port":       "/dev/ttyUSB0",
-            "serial_baudrate":   115200,
+            "channel_type":      "udp",
+            "udp_ip":            "192.168.11.2",   # S2E factory default
+            "udp_port":          8089,             # S2E factory default
             "frame_id":          "laser_frame",
             "inverted":          False,
             "angle_compensate":  True,
-            # Standard (normal) mode — the A1 does NOT support "Sensitivity"
-            # (A3/S-series only); requesting it made the driver exit with
-            # "Failed to set scan mode". Standard skips the driver's mode
-            # auto-negotiation with the device, unlike leaving this unset.
-            "scan_mode":         "Standard",
+            # DenseBoost = the S2E's full 32 kHz sample rate (~3200 pts/rev
+            # at 10 Hz) — the "full power" mode. Falls back is NOT automatic:
+            # if the driver logs "Failed to set scan mode", set "Standard".
+            "scan_mode":         "DenseBoost",
         }],
     )
 
@@ -194,19 +185,20 @@ def generate_launch_description():
     #     }],
     # )
 
-    # ── 11. IMU Calibration Node ─────────────────────────────────────────────
-    # Spins the robot ~2 rotations in place at startup to exercise the BNO055's
-    # self-calibration and write offsets to config/imu_calibration.yaml.
-    # NOTE: unlike the old staged design (which delayed EKF/SLAM by 40 s and
-    # caused a startup TF gap), EKF and SLAM still start on their own schedule —
-    # this node just runs alongside them. The robot WILL physically rotate
-    # shortly after launch; make sure it has clearance.
-    imu_calibration = Node(
-        package=package_name,
-        executable="imu_calibration_node",
-        name="imu_calibration_node",
-        output="screen",
-    )
+    # ── 11. IMU Calibration Node — DISABLED for mapping runs ─────────────────
+    # It spun the robot ~2 rotations right as SLAM was ingesting its first
+    # scans, corrupting the start of every map. It is also no longer needed:
+    #  * the EKF fuses only the gyro RATE (not the BNO055 absolute heading),
+    #  * imu_node now estimates and removes the static gyro bias itself during
+    #    the first ~2 s after launch (robot just has to sit still),
+    #  * the BNO055 continues its own background self-calibration regardless.
+    # Re-enable manually only if you start fusing absolute orientation again:
+    # imu_calibration = Node(
+    #     package=package_name,
+    #     executable="imu_calibration_node",
+    #     name="imu_calibration_node",
+    #     output="screen",
+    # )
 
     # ── 12. Non-Safety Teleop Node (keyboard, bypasses safety stop) ───────────
     # DISABLED in launch: Keyboard teleop requires stdin/tty. It crashes when
@@ -255,10 +247,8 @@ def generate_launch_description():
         # Nav2 starts after SLAM's map and map→odom transform are available.
         TimerAction(period=8.0, actions=[nav2]),
 
-        # ── Stage 3 (T=8s): IMU calibration spin ─────────────────────────────
-        # Starts after IMU/driver/EKF/SLAM are up so the spin is tracked by
-        # odometry and SLAM rather than happening in a TF vacuum.
-        TimerAction(period=8.0, actions=[imu_calibration]),
+        # ── [DISABLED] IMU calibration spin — see section 11 above ───────────
+        # TimerAction(period=8.0, actions=[imu_calibration]),
 
         # ── Teleop: run manually in a separate terminal (needs a tty) ─────────
         # ros2 run Ros_lidar_bot non_safety_teleop

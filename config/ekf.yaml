@@ -1,17 +1,54 @@
 ekf_filter_node:
   ros__parameters:
+    # ══════════════════════════════════════════════════════════════════════════
+    # FUSION PHILOSOPHY (hardware-driven)
+    #
+    # The DDSM115 hub motors have their own internal closed-loop velocity
+    # control and their RPM feedback has been bench-verified against measured
+    # distance to be highly accurate.  Wheel odometry is therefore the PRIMARY
+    # sensor: it provides vX and vYaw.
+    #
+    # The BNO055 gyro complements the wheels with the ONE thing they cannot
+    # see: true rotation during wheel slip / skid-steer scrub.  It contributes
+    # vYaw only.  Its absolute (magnetometer-fused) heading is NOT used —
+    # indoor magnetic interference makes it worse than integrated gyro+wheels.
+    #
+    # Why BOTH sources publish vYaw:
+    #   - Stationary: wheels report exactly 0 RPM → the wheel measurement pins
+    #     yaw rate to zero and cancels residual gyro bias → no more odom TF
+    #     creeping while the robot sits still (the drift seen in earlier maps).
+    #   - Rotating:  the gyro (lower covariance) dominates and catches any
+    #     wheel scrub, so heading stays true during turns.
+    #   The EKF blends them by covariance — this is the standard diff-drive +
+    #   robot_localization setup and it is what keeps the LiDAR scan locked to
+    #   the world while the robot spins.
+    # ══════════════════════════════════════════════════════════════════════════
+
     # ── Timing ────────────────────────────────────────────────────────────────
-    # Run EKF at 30 Hz — fast enough to track 50 Hz IMU, low enough for RPi.
+    # 30 Hz output: smooth TF for RViz/SLAM, light enough for the RPi 5.
     frequency: 30.0
-    sensor_timeout: 1.5       # seconds before a sensor is considered stale
+    sensor_timeout: 0.5       # 0.5 s: encoder arrives at 20 Hz, IMU at 50 Hz —
+                              # if either is silent this long something is wrong
+                              # and predicting further only bakes in error.
     two_d_mode: true          # flat ground robot — ignore Z, roll, pitch
     use_sim_time: false
 
+    # Do NOT extrapolate the state to "now" on every output cycle; publish the
+    # filtered state at the time of the last measurement instead. With good
+    # 20 Hz wheel data this removes prediction jitter (micro-teleporting).
+    predict_to_current_time: false
+
+    # Scale process noise with the current velocity: when the robot is
+    # stationary the model uncertainty collapses, so the pose estimate freezes
+    # solid instead of wandering on integrated sensor noise.
+    dynamic_process_noise_covariance: true
+
     # ── TF output ─────────────────────────────────────────────────────────────
-    # EKF publishes odom -> base_footprint transform.
-    # odom_node also broadcasts this TF — set broadcast_tf:=false in odom_node
-    # launch args so only EKF owns this transform (avoids TF conflicts).
+    # EKF is the ONLY publisher of odom -> base_footprint (odom_node runs with
+    # broadcast_tf:=false). Two publishers of one TF = flicker/teleport.
     publish_tf: true
+    transform_time_offset: 0.0
+    transform_timeout: 0.0
 
     # ── Frame names ───────────────────────────────────────────────────────────
     map_frame:       map
@@ -20,61 +57,76 @@ ekf_filter_node:
     world_frame:     odom
 
     # ── Source 0: Wheel odometry (/odom_raw from odom_node) ───────────────────
-    # odom_node uses RPM from DDSM115 motors via driver_node.
+    # DDSM115 closed-loop RPM feedback → body vX, vYaw (computed in odom_node).
+    # Velocity-only fusion: the EKF integrates pose itself, so its X/Y always
+    # stays consistent with its own fused heading (fusing odom_node's absolute
+    # X/Y, which was integrated with a DIFFERENT heading, made the filter fight
+    # itself — pose jumps / scan rotation in RViz).
     # Config vector: [X, Y, Z, Roll, Pitch, Yaw, vX, vY, vZ, vRoll, vPitch, vYaw, aX, aY, aZ]
-    #
-    # We use:
-    #   X, Y position  — dead-reckoning absolute position
-    #   vX velocity     — forward wheel speed
-    #   vYaw            — REMOVED: IMU is more accurate for angular velocity
-    #                     (having both causes EKF to fight between sources)
-    #
-    # We do NOT use:
-    #   Yaw from odom  — IMU (BNO055 fusion) is far better for heading
-    #   vY             — differential drive has no lateral velocity
-    # Velocity-only fusion (standard for diff-drive + robot_localization):
-    # the EKF integrates vX/vYaw itself, so its X/Y stays consistent with its
-    # own heading. Fusing absolute X/Y here (integrated by odom_node with
-    # WHEEL heading) while yaw comes from the GYRO made the filter fight
-    # itself — pose jumps that showed up as the scan rotating in RViz.
     odom0: /odom_raw
     odom0_config: [false, false, false,   # X, Y, Z position — EKF integrates velocities itself
-                   false, false, false,   # Roll, Pitch, Yaw — from IMU gyro
-                   true,  false, false,   # vX (use) | vY (ignore, no lateral) | vZ (ignore)
-                   false, false, false,   # vRoll, vPitch, vYaw (ignore — IMU gyro is the sole vYaw source, see imu0_config below)
+                   false, false, false,   # Roll, Pitch, Yaw — integrated from fused vYaw
+                   true,  false, false,   # vX (USE — precise wheel feedback) | vY, vZ (no lateral motion)
+                   false, false, true,    # vRoll, vPitch (ignore) | vYaw (USE — pins yaw rate to 0 when parked, bounds gyro bias)
                    false, false, false]   # aX, aY, aZ — ignore
     odom0_differential: false
+    odom0_queue_size: 10
+    odom0_nodelay: true
 
     # ── Source 1: IMU (/imu from imu_node / BNO055 via Arduino) ──────────────
-    # BNO055 in NDOF mode provides fused absolute orientation (quaternion)
-    # + raw angular velocity + raw linear acceleration.
-    # Config vector: [X, Y, Z, Roll, Pitch, Yaw, vX, vY, vZ, vRoll, vPitch, vYaw, aX, aY, aZ]
-    #
-    # We use:
-    #   Yaw             — absolute heading from BNO055 fusion (best source)
-    #   vYaw (ωz)       — gyro angular rate (faster than derived from odometry)
-    #   aX              — forward acceleration for velocity estimation
-    #
-    # We do NOT use:
-    #   Roll, Pitch     — two_d_mode ignores them anyway
-    #   aY, aZ          — lateral/vertical accel not meaningful for flat robot
+    # Gyro Z rate only. imu_node estimates and removes the static gyro bias at
+    # startup, so what arrives here is already near-zero-mean when stationary.
+    # Absolute orientation (magnetometer fusion) intentionally unused indoors.
     imu0: /imu
-    imu0_config: [false, false, false,    # X, Y, Z position — from odom
-                  false, false, false,    # Roll, Pitch, Yaw (IGNORE BNO055 absolute quat due to lag/mag interference)
-                  false, false, false,    # vX, vY, vZ — from odom
-                  false, false, true,     # vRoll, vPitch (ignore) | vYaw ωz (USE — gyro is perfectly accurate)
-                  false, false, false]    # aX (disabled to prevent drift) | aY, aZ (ignore)
-
-    # imu0_differential: false — BNO055 gives absolute orientation — do not diff
-    #
-    # imu0_relative: false — BNO055 NDOF gives a FUSED ABSOLUTE orientation (quaternion).
-    # Setting this to true makes robot_localization subtract the first received quaternion
-    # at startup. The problem: if the calibration node is spinning the robot when the EKF
-    # starts (T=40s), the "first" orientation is mid-rotation → wrong zero → the EKF yaw
-    # is permanently offset, causing the LiDAR scan to appear rotated in the map frame.
-    # Leave as false; the EKF will use the BNO055 absolute heading directly.
-    # The heading at startup will be wherever the robot is facing — SLAM Toolbox will
-    # compensate via map→odom and set the map frame correctly from the first scan.
+    imu0_config: [false, false, false,    # X, Y, Z position
+                  false, false, false,    # Roll, Pitch, Yaw — BNO055 absolute quat unused (mag interference indoors)
+                  false, false, false,    # vX, vY, vZ — from wheels
+                  false, false, true,     # vRoll, vPitch (ignore) | vYaw ωz (USE — catches wheel slip during turns)
+                  false, false, false]    # aX, aY, aZ — accelerometer too noisy on this chassis, drifts vX
     imu0_differential: false
     imu0_relative: false
-    imu0_remove_gravity: true             # Subtract 9.81 m/s² from aZ before fusion
+    imu0_queue_size: 50
+    imu0_nodelay: true
+    imu0_remove_gravity: true
+
+    # ── Process noise ─────────────────────────────────────────────────────────
+    # 15x15 diagonal [x y z roll pitch yaw vx vy vz vroll vpitch vyaw ax ay az].
+    # Smaller than robot_localization defaults for the fused states: with
+    # trusted 20 Hz wheel feedback the model should not be allowed to wander
+    # far between measurements (default values let the pose "breathe", which
+    # showed up as shimmer in the map). Unfused states keep defaults.
+    process_noise_covariance: [0.02, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,   0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,
+                               0.0,  0.02, 0.0,  0.0,  0.0,  0.0,  0.0,   0.0,   0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.06, 0.0,  0.0,  0.0,  0.0,   0.0,   0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.03, 0.0,  0.0,  0.0,   0.0,   0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.03, 0.0,  0.0,   0.0,   0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,   0.0,   0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.015, 0.0,   0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.015, 0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,   0.04, 0.0,  0.0,  0.0,   0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,   0.0,  0.01, 0.0,  0.0,   0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,   0.0,  0.0,  0.01, 0.0,   0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,   0.0,  0.0,  0.0,  0.015, 0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,   0.0,  0.0,  0.0,  0.0,   0.01, 0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,   0.0,  0.0,  0.0,  0.0,   0.0,  0.01, 0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,   0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.015]
+
+    # ── Initial estimate covariance ───────────────────────────────────────────
+    # Start confident in the fused states (they begin at exactly 0 by
+    # definition of the odom frame) so the filter converges instantly instead
+    # of chasing the first few noisy measurements. Diagonal, same order.
+    initial_estimate_covariance: [1e-4, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                                  0.0,  1e-4, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                                  0.0,  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                                  0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                                  0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                                  0.0,  0.0,  0.0,  0.0,  0.0,  1e-4, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                                  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-4, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                                  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                                  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                                  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,  0.0,
+                                  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,
+                                  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-4, 0.0,  0.0,  0.0,
+                                  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,
+                                  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,
+                                  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9]
