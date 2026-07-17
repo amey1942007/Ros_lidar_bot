@@ -125,6 +125,12 @@ class DriverNode(Node):
         self._cmd_vel_topic = str(
             self.declare_parameter("cmd_vel_topic", "/cmd_vel").value
         )
+        # DDSM115 hub motors stall silently below ~5 RPM under load. Nav2's
+        # RPP ramps rotate-to-heading from (measured speed + accel*dt) — from
+        # standstill that's ~4 RPM here, so a robot that can't start rotating
+        # never receives a larger command and the goal dies with zero motion.
+        # Any nonzero command below this floor is bumped up to it.
+        self._min_rpm = self.declare_parameter("min_wheel_rpm", 6.0).value
 
         self._cmd_rpm_left = 0.0
         self._cmd_rpm_right = 0.0
@@ -181,9 +187,16 @@ class DriverNode(Node):
         v_right = v + (w * self._b / 2.0)
         mps_to_rpm = 60.0 / (2.0 * math.pi * self._r)
 
+        rpm_left = v_left * mps_to_rpm
+        rpm_right = v_right * mps_to_rpm
+        if 0.0 < abs(rpm_left) < self._min_rpm:
+            rpm_left = math.copysign(self._min_rpm, rpm_left)
+        if 0.0 < abs(rpm_right) < self._min_rpm:
+            rpm_right = math.copysign(self._min_rpm, rpm_right)
+
         with self._lock:
-            self._cmd_rpm_left = v_left * mps_to_rpm
-            self._cmd_rpm_right = v_right * mps_to_rpm
+            self._cmd_rpm_left = rpm_left
+            self._cmd_rpm_right = rpm_right
             self._last_cmd_time = time.monotonic()
 
     def _write_packet(self, packet: bytes) -> bool:
@@ -199,7 +212,9 @@ class DriverNode(Node):
             return False
 
     def _send_velocity_cmd(self, motor_id: int, rpm: float):
-        rpm_hi, rpm_lo = int16_to_bytes(int(rpm))
+        # round(), not int(): truncation was shaving up to 1 RPM off the
+        # already-tiny low-speed commands.
+        rpm_hi, rpm_lo = int16_to_bytes(round(rpm))
         packet = make_packet([
             motor_id & 0xFF,
             0x64,
@@ -324,6 +339,13 @@ class DriverNode(Node):
         if not has_recent_cmd:
             cmd_l = cmd_r = 0.0
 
+        # Stamp = midpoint of the two wheel reads. Stamping AFTER both reads
+        # (the old behaviour) dated every RPM sample ~15-20 ms late — the two
+        # serial transactions plus the 10 ms bus gap sit between the left
+        # wheel's actual sample and now(). The EKF integrates velocity at the
+        # stamp time, so a late stamp shifts every pose update and the scan
+        # matcher has to snap-correct the difference (map smear while moving).
+        t_start_ns = self.get_clock().now().nanoseconds
         fb_l = self._send_velocity_cmd(self._id_left, cmd_l)
         if fb_l:
             self._fb_rpm_left, self._fb_pos_left, self._fb_cur_left = fb_l
@@ -337,11 +359,13 @@ class DriverNode(Node):
             rpm_r_raw, self._fb_pos_right, self._fb_cur_right = fb_r
             self._fb_rpm_right = -rpm_r_raw
 
-        self._publish_encoder()
+        t_end_ns = self.get_clock().now().nanoseconds
+        self._publish_encoder((t_start_ns + t_end_ns) // 2)
 
-    def _publish_encoder(self):
+    def _publish_encoder(self, stamp_ns: int):
         msg = JointState()
-        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.stamp.sec = stamp_ns // 1_000_000_000
+        msg.header.stamp.nanosec = stamp_ns % 1_000_000_000
         msg.name = [self._left_name, self._right_name]
         # Keep encoder signs consistent with invert_drive so odom matches physical motion.
         s = self._drive_sign

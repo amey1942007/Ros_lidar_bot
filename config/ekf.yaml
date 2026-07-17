@@ -1,6 +1,25 @@
 ekf_filter_node:
   ros__parameters:
     # ══════════════════════════════════════════════════════════════════════════
+    # TIMESTAMP PIPELINE (audited 2026-07-17 — who stamps what, and when)
+    #
+    #   DDSM115 → driver_node /encoder : stamped at the MIDPOINT of the two
+    #     wheel serial reads (was end-of-loop = 15-20 ms late; fixed).
+    #   odom_node /odom_raw            : reuses the driver stamp; dt between
+    #     driver stamps, immune to DDS arrival jitter.
+    #   BNO055 → imu_node /imu         : stamped at UART parse time, fresh
+    #     samples only (~5 ms wire latency, acceptable; not fused yet).
+    #   S2E → sllidar /scan            : stamped at revolution start; points
+    #     span the next ~100 ms (10 Hz spin). Uncorrected skew ⇒ keep rotation
+    #     speeds moderate (RPP rotate vel 1.0) or map edges blur during spins.
+    #   EKF odom→base TF               : predict_to_current_time extrapolates
+    #     to now() — keeps TF aligned with scan stamps while moving.
+    #   slam_toolbox map→odom          : stamped scan_time + transform_timeout
+    #     (1.0 s) to future-date past the scan-match latency; Nav2 consumers
+    #     all run transform_tolerance 1.0 to match (see nav2_params.yaml).
+    #   Scan-match latency is CPU-bound: lidar Standard mode (not DenseBoost)
+    #   is what keeps map→odom fresh on the RPi5.
+    # ══════════════════════════════════════════════════════════════════════════
     # FUSION PHILOSOPHY (hardware-driven)
     #
     # The DDSM115 hub motors have their own internal closed-loop velocity

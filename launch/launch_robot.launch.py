@@ -156,11 +156,14 @@ def _launch_setup(context, *args, **kwargs):
             "frame_id":          "laser_frame",
             "inverted":          False,
             "angle_compensate":  True,
-            # DenseBoost = the S2E's full 32 kHz sample rate (~3200 pts/rev
-            # at 10 Hz) — the "full power" mode. Falls back is NOT automatic:
-            # if the driver logs "Failed to set scan mode", set "Standard"
-            # or "Sensitivity".
-            "scan_mode":         "DenseBoost",
+            # Standard (was DenseBoost): DenseBoost's ~3200 pts/rev cost the
+            # RPi5 so much scan-match/raytrace CPU that map→odom ran ~0.6 s
+            # stale (measured 2026-07-17) — Nav2 TF failures, map smear from
+            # late corrections, and general stutter all traced back to it.
+            # Standard still gives ~1000+ pts/rev at 10 Hz, plenty for indoor
+            # SLAM, and the whole pipeline runs fresher. If the driver logs
+            # "Failed to set scan mode", try "Sensitivity".
+            "scan_mode":         "Standard",
         }],
     )
 

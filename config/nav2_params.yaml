@@ -39,8 +39,12 @@ controller_server:
     controller_plugins: ["FollowPath"]
 
     progress_checker:
-      plugin: "nav2_controller::SimpleProgressChecker"
+      # Pose (not Simple) checker: Simple only counts TRANSLATION, so a goal
+      # spent rotating in place (rotate-to-heading from a big heading error)
+      # read as "no progress" and aborted at 15 s with the robot never moving.
+      plugin: "nav2_controller::PoseProgressChecker"
       required_movement_radius: 0.08
+      required_movement_angle: 0.3
       movement_time_allowance: 15.0
 
     goal_checker:
@@ -53,7 +57,11 @@ controller_server:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.35
       min_approach_linear_velocity: 0.08
-      max_angular_accel: 2.0
+      # 3.2 (was 2.0): RPP limits rotate-to-heading to measured speed +
+      # accel/cycle, so from standstill the first commands scale with this.
+      # 2.0 gave ~4 wheel RPM — inside the DDSM115 stall zone (see
+      # driver_node min_wheel_rpm). Matches the spin behavior's accel.
+      max_angular_accel: 3.2
       max_robot_pose_search_dist: 10.0
 
       # Lookahead — min raised 0.30 → 0.35: a too-short lookahead makes RPP
