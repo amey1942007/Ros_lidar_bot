@@ -82,7 +82,11 @@ ekf_filter_node:
     imu0_config: [false, false, false,    # X, Y, Z position
                   false, false, false,    # Roll, Pitch, Yaw — BNO055 absolute quat unused (mag interference indoors)
                   false, false, false,    # vX, vY, vZ — from wheels
-                  false, false, true,     # vRoll, vPitch (ignore) | vYaw ωz (USE — catches wheel slip during turns)
+                  # vYaw OFF for now: a flipped gyro sign fights wheel ωz, freezes
+                  # SLAM map→odom while moving (scan rides robot), then snaps when
+                  # stopped. Re-enable true after a rotate-in-place check: physical
+                  # CCW must make /imu angular_velocity.z positive AND match /odom_raw.
+                  false, false, false,
                   false, false, false]    # aX, aY, aZ — accelerometer too noisy on this chassis, drifts vX
     imu0_differential: false
     imu0_relative: false

@@ -13,6 +13,11 @@
   <xacro:property name="laser_x"      value="0.0"/>  <!-- forward/back  -->
   <xacro:property name="laser_y"      value="0.0"/>  <!-- left/right    -->
   <xacro:property name="laser_z"      value="0.129"/>  <!-- height above base_link (e.g. 2nd floor height) -->
+  <!-- Slamtec 0° is usually opposite the cable. If cable faces the robot rear,
+       laser +X is ~180° from base_link +X → scan rides the bot, map→odom freezes
+       while driving, and Nav2 goals look inverted vs the room. Set 0.0 if your
+       S2E 0° mark already faces the chassis front. -->
+  <xacro:property name="laser_yaw"    value="${pi}"/>
 
   <!-- Lidar cylinder dimensions (default ~RPLidar A1) -->
   <xacro:property name="laser_radius" value="0.035"/> <!-- 70 mm diameter -->
@@ -24,7 +29,7 @@
   <joint name="laser_joint" type="fixed">
     <parent link="base_link"/>
     <child  link="laser_frame"/>
-    <origin xyz="${laser_x} ${laser_y} ${laser_z}" rpy="0 0 0"/>
+    <origin xyz="${laser_x} ${laser_y} ${laser_z}" rpy="0 0 ${laser_yaw}"/>
   </joint>
 
   <link name="laser_frame">

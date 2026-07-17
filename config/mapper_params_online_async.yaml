@@ -37,9 +37,8 @@ slam_toolbox:
     # the scan matcher; raise toward 30.0 for large open halls.
     min_laser_range: 0.2
     max_laser_range: 20.0
-    # Process scans often enough for smooth map→odom, but not so hard that the
-    # RPi 5 starves Nav2 (which showed up as stuttery driving).
-    minimum_time_interval: 0.08
+    # Process every scan (~10 Hz S2E) so map→odom keeps correcting while moving.
+    minimum_time_interval: 0.05
     transform_timeout: 0.5
     minimum_travel_distance: 0.0
     tf_buffer_duration: 30.
@@ -53,17 +52,19 @@ slam_toolbox:
     minimum_travel_heading: 0.0
     scan_buffer_size: 10
     scan_buffer_maximum_scan_distance: 10.0
-    link_match_minimum_response_fine: 0.1  
+    # Lower thresholds so matches still succeed while driving (board WARN was
+    # map→odom frozen = matcher rejecting scans until the robot stopped).
+    link_match_minimum_response_fine: 0.05
     link_scan_maximum_distance: 1.5
     loop_search_maximum_distance: 3.0
     do_loop_closing: true 
     loop_match_minimum_chain_size: 10           
     loop_match_maximum_variance_coarse: 3.0  
-    loop_match_minimum_response_coarse: 0.35    
-    loop_match_minimum_response_fine: 0.45
+    loop_match_minimum_response_coarse: 0.30    
+    loop_match_minimum_response_fine: 0.40
 
     # Correlation Parameters - Correlation Parameters
-    correlation_search_space_dimension: 0.5
+    correlation_search_space_dimension: 0.7
     correlation_search_space_resolution: 0.01
     correlation_search_space_smear_deviation: 0.1 
 
@@ -72,9 +73,9 @@ slam_toolbox:
     loop_search_space_resolution: 0.05
     loop_search_space_smear_deviation: 0.03
 
-    # Scan Matcher Parameters
-    distance_variance_penalty: 0.5      
-    angle_variance_penalty: 1.0    
+    # Scan Matcher Parameters — trust scan a bit more vs noisy odom prediction
+    distance_variance_penalty: 0.35
+    angle_variance_penalty: 0.7
 
     fine_search_angle_offset: 0.00349     
     coarse_search_angle_offset: 0.349   

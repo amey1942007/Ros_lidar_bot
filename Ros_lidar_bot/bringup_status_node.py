@@ -608,7 +608,9 @@ class BringupStatusNode(Node):
                 self._add_issue(
                     "WARN",
                     "map→odom frozen while odom→base_footprint is moving — "
-                    "SLAM correction lag; scan may rotate with the robot in RViz",
+                    "SLAM scan-match failing (laser yaw / odom-vs-scan). "
+                    "Scan rides robot until stop; check laser_yaw in lidar.xacro "
+                    "and rebuild a fresh map",
                 )
 
         if self._scan_frame_id:
