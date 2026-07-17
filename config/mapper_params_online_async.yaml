@@ -36,7 +36,9 @@ slam_toolbox:
     # beyond that indoor returns are sparse/glancing and mostly add noise to
     # the scan matcher; raise toward 30.0 for large open halls.
     min_laser_range: 0.2
-    max_laser_range: 20.0
+    # 16.0: the S2E in Standard scan mode reports 16 m max (slam_toolbox
+    # warned and clamped when this was 20.0). DenseBoost reports more.
+    max_laser_range: 16.0
     # Process scans often enough for smooth map→odom, but not so hard that the
     # RPi 5 starves Nav2 (0.05 = every scan caused stop-and-go driving under
     # nav; the laser_yaw fix removed the need for aggressive re-matching).
