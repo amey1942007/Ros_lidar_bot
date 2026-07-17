@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-joy_teleop_node.py — Gamepad teleop from a USB controller dongle.
+joy_teleop_node.py — Gamepad teleop (Bluetooth or USB controller).
 
 Pairs with the standard `joy` package's joy_node (SDL), which reads the
 controller and publishes sensor_msgs/Joy on /joy. This node converts /joy
@@ -19,12 +19,14 @@ Behaviour:
   - Stick centered → one zero Twist is published, then this node goes silent
     so Nav2 goals on /cmd_vel can drive the robot (same yield scheme the old
     keyboard teleop used).
-  - If /joy stops arriving mid-motion (dongle yanked) → immediate stop.
+  - If /joy stops arriving mid-motion (Bluetooth dropout / dongle yanked)
+    → immediate stop.
 
 Axis/button indices are parameters. Defaults match the Linux xpad driver:
   axes:    0=LX  1=LY  2=LT  3=RX  4=RY  5=RT   (triggers rest +1, pressed -1)
   buttons: 0=A 1=B 2=X 3=Y 4=LB 5=RB 6=back 7=start
-Verify your dongle's layout with:  ros2 topic echo /joy
+Bluetooth pads often enumerate DIFFERENTLY than the same pad over USB
+(trigger axes especially). Verify with:  ros2 topic echo /joy
 """
 
 import time

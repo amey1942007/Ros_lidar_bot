@@ -165,7 +165,7 @@ Ros_lidar_bot/
 │   ├── frontier_explorer_node.py   # Autonomous frontier exploration
 │   ├── semantic_slam_node.py       # Semantic object localisation + MarkerArray
 │   ├── safety_stop_node.py         # Emergency stop on proximity
-│   └── joy_teleop_node.py          # Gamepad teleoperation (USB controller)
+│   └── joy_teleop_node.py          # Gamepad teleoperation (Bluetooth/USB controller)
 │
 ├── config/
 │   ├── ekf.yaml                         # EKF sensor fusion parameters
@@ -264,8 +264,19 @@ echo "source ~/ros2_ws/install/setup.bash" >> ~/.bashrc
 ### Manual navigation (gamepad teleoperation + SLAM)
 
 The hardware launch (`launch_robot.launch.py`) already starts `joy_node` +
-`joy_teleop` for the USB controller dongle, so just plug in the dongle and
-drive. Teleop yields `/cmd_vel` to Nav2 whenever the left stick is centered.
+`joy_teleop`, so once the controller is connected (Bluetooth or USB dongle)
+it just drives. Teleop yields `/cmd_vel` to Nav2 whenever the left stick is
+centered.
+
+**Bluetooth pairing (one-time, on the Pi):**
+
+```bash
+bluetoothctl
+  scan on          # put the controller in pairing mode, note its MAC
+  pair XX:XX:XX:XX:XX:XX
+  trust XX:XX:XX:XX:XX:XX   # auto-reconnect after reboot / power cycle
+  connect XX:XX:XX:XX:XX:XX
+```
 
 To run teleop standalone:
 

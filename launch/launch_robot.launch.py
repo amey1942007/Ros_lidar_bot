@@ -182,18 +182,25 @@ def _launch_setup(context, *args, **kwargs):
     #     }],
     # )
 
-    # ── 6b. Gamepad teleop (USB controller dongle) ───────────────────────────
+    # ── 6b. Gamepad teleop (Bluetooth or USB controller) ─────────────────────
     # joy_node (SDL) reads the controller and publishes /joy; joy_teleop maps
     # it to /cmd_vel. Left stick = movement, RT/LT = linear speed ±,
     # RB/LB = angular speed ±. joy_teleop yields /cmd_vel to Nav2 whenever
     # the stick is centered, so both can coexist on the same topic.
+    #
+    # Bluetooth: pair once on the Pi with bluetoothctl (scan on / pair / trust
+    # / connect) — "trust" makes it auto-reconnect on power-up. NOTE: over
+    # Bluetooth many pads expose a DIFFERENT axis/button order than over a
+    # USB dongle (e.g. Xbox BT without xpadneo puts triggers elsewhere).
+    # If controls act wrong, check `ros2 topic echo /joy` and override the
+    # axis_*/button_* parameters on joy_teleop below.
     joy_node = Node(
         package="joy",
         executable="joy_node",
         name="joy_node",
         output=out,
         arguments=log_args,
-        # Survive dongle unplug/replug.
+        # Survive controller disconnect/reconnect (BT dropout or USB unplug).
         respawn=True,
         respawn_delay=2.0,
         parameters=[{
