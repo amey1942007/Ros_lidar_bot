@@ -52,6 +52,7 @@ ROS 2 NODE DATA-FLOW & TIMING
 
 import math
 import struct
+import termios
 import threading
 import time
 
@@ -65,6 +66,14 @@ try:
     import serial
 except ImportError:
     serial = None
+
+# Everything a dead/re-enumerated USB serial device can throw at us.
+# pyserial surfaces plain termios.error (NOT a SerialException subclass) from
+# flush(): letting it escape a timer callback kills the whole node — seen
+# live 2026-07-17 as "termios.error: (5, 'Input/output error')" crash-loops
+# when /dev/ttyACM0 was a stale node from before a USB re-enumeration.
+_IO_ERRORS = (OSError, termios.error) if serial is None else (
+    serial.SerialException, OSError, termios.error)
 
 
 def crc8_maxim(data: bytes) -> int:
@@ -221,7 +230,7 @@ class DriverNode(Node):
             self._serial.flush()
             self._io_fail_count = 0
             return True
-        except serial.SerialException as exc:
+        except _IO_ERRORS as exc:
             self._io_fail_count += 1
             self.get_logger().error(f"UART write failed: {exc}", throttle_duration_sec=5.0)
             return False
@@ -263,11 +272,12 @@ class DriverNode(Node):
         while (time.monotonic() - start_time) <= timeout:
             try:
                 data = self._serial.read(1)
-            except serial.SerialException as exc:
+            except _IO_ERRORS as exc:
                 if "device reports readiness to read but returned no data" in str(exc):
                     # Benign Linux pyserial glitch under high load. Sleep 1ms to yield.
                     time.sleep(0.001)
                     continue
+                self._io_fail_count += 1
                 self.get_logger().error(f"UART read failed: {exc}", throttle_duration_sec=5.0)
                 return None
 
