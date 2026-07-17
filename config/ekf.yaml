@@ -33,10 +33,11 @@ ekf_filter_node:
     two_d_mode: true          # flat ground robot — ignore Z, roll, pitch
     use_sim_time: false
 
-    # Do NOT extrapolate the state to "now" on every output cycle; publish the
-    # filtered state at the time of the last measurement instead. With good
-    # 20 Hz wheel data this removes prediction jitter (micro-teleporting).
-    predict_to_current_time: false
+    # Extrapolate odom→base_footprint TF to "now" so it matches lidar/scan
+    # stamps (sllidar stamps at receive time). With this false, TF lags the
+    # scan while moving → RViz/SLAM show the scan "riding" the robot until
+    # motion stops and map→odom snaps. This is the main timestamp fix.
+    predict_to_current_time: true
 
     # Scale process noise with the current velocity: when the robot is
     # stationary the model uncertainty collapses, so the pose estimate freezes
