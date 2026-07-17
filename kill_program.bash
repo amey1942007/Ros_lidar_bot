@@ -11,7 +11,7 @@ ros2 daemon stop &>/dev/null || true
 
 echo "Killing ROS 2 nodes and python processes..."
 # Kill specific executables
-PID_LIST=$(pgrep -f "driver_node|imu_node|odom_node|lidar_node|safety_stop|ekf_node|slam_toolbox|robot_state_publisher|joint_state_publisher|rviz2|xterm|teleop")
+PID_LIST=$(pgrep -f "driver_node|imu_node|odom_node|lidar_node|safety_stop|ekf_node|slam_toolbox|robot_state_publisher|joint_state_publisher|rviz2|xterm|teleop|joy_node")
 if [ -n "$PID_LIST" ]; then
     echo "Found running nodes: $PID_LIST"
     kill -9 $PID_LIST &>/dev/null || true

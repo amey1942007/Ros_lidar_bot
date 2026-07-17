@@ -31,7 +31,7 @@ Custom differential-drive robot platform targeting fully autonomous indoor opera
 - **Nav2** — global path planning, local trajectory, recovery behaviours
 - **Frontier exploration** — fully autonomous map coverage, no pre-defined waypoints
 - **Semantic mapping** — open-vocabulary YOLO World object detection → real-world (x, y) coordinates → RViz2 overlay
-- **Keyboard teleoperation** — manual driving
+- **Gamepad teleoperation** — manual driving with a USB controller
 
 ---
 
@@ -165,7 +165,7 @@ Ros_lidar_bot/
 │   ├── frontier_explorer_node.py   # Autonomous frontier exploration
 │   ├── semantic_slam_node.py       # Semantic object localisation + MarkerArray
 │   ├── safety_stop_node.py         # Emergency stop on proximity
-│   └── teleop_node.py              # Keyboard teleoperation
+│   └── joy_teleop_node.py          # Gamepad teleoperation (USB controller)
 │
 ├── config/
 │   ├── ekf.yaml                         # EKF sensor fusion parameters
@@ -261,26 +261,32 @@ echo "source ~/ros2_ws/install/setup.bash" >> ~/.bashrc
 
 ---
 
-### Manual navigation (teleoperation + SLAM)
+### Manual navigation (gamepad teleoperation + SLAM)
+
+The hardware launch (`launch_robot.launch.py`) already starts `joy_node` +
+`joy_teleop` for the USB controller dongle, so just plug in the dongle and
+drive. Teleop yields `/cmd_vel` to Nav2 whenever the left stick is centered.
+
+To run teleop standalone:
 
 ```bash
-ros2 launch Ros_lidar_bot launch_sim.launch.py
+ros2 run joy joy_node &
+ros2 run Ros_lidar_bot joy_teleop
 ```
 
-In a new terminal, drive manually:
+| Control | Action |
+|---------|--------|
+| Left stick up/down | Forward / reverse (proportional) |
+| Left stick left/right | Turn left / right (proportional) |
+| `RT` | Increase linear speed (+0.05 m/s per press) |
+| `LT` | Decrease linear speed (−0.05 m/s per press) |
+| `RB` | Increase angular speed (+0.1 rad/s per press) |
+| `LB` | Decrease angular speed (−0.1 rad/s per press) |
+| Release stick | Stop (and yield `/cmd_vel` to Nav2) |
 
-```bash
-ros2 run Ros_lidar_bot teleop_node.py
-```
-
-| Key | Action |
-|-----|--------|
-| `i` | Forward |
-| `k` | Reverse |
-| `j` | Turn left |
-| `l` | Turn right |
-| `Space` | Full stop |
-| `Ctrl+C` | Quit |
+Axis/button indices are ROS parameters on `joy_teleop` — if your controller
+maps differently, verify with `ros2 topic echo /joy` and override
+`axis_linear`, `axis_angular`, `axis_rt`, `axis_lt`, `button_rb`, `button_lb`.
 
 ---
 
@@ -444,7 +450,7 @@ Fuses `/odom_raw` + `/imu` at 30 Hz in 2D mode. Publishes `odom → base_footpri
 - [x] Nav2 stack (global planner, local controller, costmaps, recovery behaviours)
 - [x] Frontier-based autonomous exploration node
 - [x] Autonomous exploration launch file
-- [x] Keyboard teleoperation node
+- [x] Gamepad teleoperation node (USB controller, joy-based)
 - [x] Multiple indoor simulation worlds (testing, home 3BHK, room)
 - [x] RViz2 configuration
 - [x] Safety stop node (proximity-based emergency stop)

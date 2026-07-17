@@ -27,6 +27,9 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 
+  <!-- Gamepad teleop (joy_node reads the USB controller dongle) -->
+  <exec_depend>joy</exec_depend>
+
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>xacro</exec_depend>
   <!-- Semantic SLAM -->

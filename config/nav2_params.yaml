@@ -20,7 +20,12 @@ bt_navigator:
 controller_server:
   ros__parameters:
     use_sim_time: false
-    controller_frequency: 20.0
+    # 15 Hz (was 20): the RPi5 runs SLAM scan-matching + costmaps + control on
+    # the same cores. At 20 Hz the controller missed cycles under load
+    # ("Control loop missed its desired rate"), velocity_smoother's timeout
+    # then zeroed cmd_vel → the classic stop-and-go stutter. 15 Hz leaves CPU
+    # headroom while still being far above what RPP needs to track smoothly.
+    controller_frequency: 15.0
     min_x_velocity_threshold: 0.001
     min_theta_velocity_threshold: 0.001
     failure_tolerance: 0.5
@@ -46,9 +51,10 @@ controller_server:
       max_angular_accel: 2.0
       max_robot_pose_search_dist: 10.0
 
-      # Lookahead
+      # Lookahead — min raised 0.30 → 0.35: a too-short lookahead makes RPP
+      # chase every path wiggle at low speed → weaving/jerky heading.
       lookahead_dist: 0.5
-      min_lookahead_dist: 0.30
+      min_lookahead_dist: 0.35
       max_lookahead_dist: 0.9
       lookahead_time: 1.2
       use_velocity_scaled_lookahead_dist: true
@@ -189,16 +195,22 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: "OPEN_LOOP"
-    # [x, y, theta] — match RPP: desired_linear_vel 0.45, rotate_to_heading 1.5
+    # [x, y, theta]
     max_velocity: [0.5, 0.0, 2.0]
     min_velocity: [-0.5, 0.0, -2.0]
-    # Snappier accel so teleop/Nav2 does not feel laggy on hardware.
-    max_accel: [3.5, 0.0, 4.0]
-    max_decel: [-3.5, 0.0, -4.0]
+    # Gentle accel = smooth motion. The old 3.5/4.0 passed every controller
+    # hiccup straight to the wheels as a jolt; 1.2 m/s² still reaches full
+    # 0.35 m/s cruise in ~0.3 s. Decel kept stronger so obstacle/goal stops
+    # stay crisp.
+    max_accel: [1.2, 0.0, 2.5]
+    max_decel: [-2.5, 0.0, -3.2]
     odom_topic: "/odom"
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]
-    velocity_timeout: 0.5
+    # 1.0 s (was 0.5): with the controller at 15 Hz, a brief CPU spike could
+    # starve cmd_vel for >0.5 s → smoother zeroed output → stop-and-go.
+    # driver_node has its own failsafe stop, so this is safe to relax.
+    velocity_timeout: 1.0
 
 collision_monitor:
   ros__parameters:
@@ -217,11 +229,25 @@ collision_monitor:
     enable_stamped_cmd_vel: false
     # Must have >=1 polygon AND >=1 observation source or the node fails
     # configure / dies → lifecycle leaves bt_navigator "unconfigured".
-    # Front-only box starts at 0.30 m so chassis self-hits do not stop Nav2.
-    polygons: ["PolygonStop"]
+    # Front-only boxes start at 0.30 m so chassis self-hits do not stop Nav2.
+    #
+    # Two-stage: the old single 0.30–0.55 m stop box halted the robot dead
+    # every time furniture entered it, then Nav2 re-approached → repeated
+    # full stops near obstacles. Now the outer zone only slows to 50% and
+    # the hard stop is reserved for a genuinely imminent hit (< 0.40 m).
+    polygons: ["PolygonSlow", "PolygonStop"]
+    PolygonSlow:
+      type: "polygon"
+      points: "[[0.65, 0.24], [0.65, -0.24], [0.30, -0.24], [0.30, 0.24]]"
+      action_type: "slowdown"
+      slowdown_ratio: 0.5
+      min_points: 4
+      visualize: false
+      polygon_pub_topic: "polygon_slow"
+      enabled: true
     PolygonStop:
       type: "polygon"
-      points: "[[0.55, 0.22], [0.55, -0.22], [0.30, -0.22], [0.30, 0.22]]"
+      points: "[[0.40, 0.20], [0.40, -0.20], [0.30, -0.20], [0.30, 0.20]]"
       action_type: "stop"
       min_points: 4
       visualize: false

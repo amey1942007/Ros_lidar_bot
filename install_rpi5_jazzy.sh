@@ -240,7 +240,7 @@ sudo apt-get install -y \
     ros-jazzy-rqt \
     ros-jazzy-rqt-graph \
     ros-jazzy-rqt-tf-tree \
-    ros-jazzy-teleop-twist-keyboard
+    ros-jazzy-joy
 
 log "Additional ROS packages installed."
 

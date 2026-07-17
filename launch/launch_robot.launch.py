@@ -182,6 +182,37 @@ def _launch_setup(context, *args, **kwargs):
     #     }],
     # )
 
+    # ── 6b. Gamepad teleop (USB controller dongle) ───────────────────────────
+    # joy_node (SDL) reads the controller and publishes /joy; joy_teleop maps
+    # it to /cmd_vel. Left stick = movement, RT/LT = linear speed ±,
+    # RB/LB = angular speed ±. joy_teleop yields /cmd_vel to Nav2 whenever
+    # the stick is centered, so both can coexist on the same topic.
+    joy_node = Node(
+        package="joy",
+        executable="joy_node",
+        name="joy_node",
+        output=out,
+        arguments=log_args,
+        # Survive dongle unplug/replug.
+        respawn=True,
+        respawn_delay=2.0,
+        parameters=[{
+            "device_id": 0,
+            "deadzone": 0.05,
+            # Keep /joy streaming while a stick is held so joy_teleop's
+            # 0.5 s watchdog never fires mid-motion.
+            "autorepeat_rate": 20.0,
+        }],
+    )
+
+    joy_teleop = Node(
+        package=package_name,
+        executable="joy_teleop",
+        name="joy_teleop",
+        output=out,
+        arguments=log_args,
+    )
+
     # ── 7. EKF Node (Fuses Odom & IMU) ───────────────────────────────────────
     ekf_node = Node(
         package="robot_localization",
@@ -238,6 +269,8 @@ def _launch_setup(context, *args, **kwargs):
         driver_node,
         odom_node,
         lidar_node,
+        joy_node,
+        joy_teleop,
         ekf_node,
         # ── Stage 2 (T=5s): SLAM ──────────────────────────────────────────────
         TimerAction(period=5.0, actions=[slam_toolbox]),
