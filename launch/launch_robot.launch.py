@@ -77,6 +77,10 @@ def _launch_setup(context, *args, **kwargs):
         name="imu_node",
         output=out,
         arguments=log_args,
+        # Serial nodes self-heal (retry/reconnect loops), but respawn covers
+        # any crash path they can't recover from.
+        respawn=True,
+        respawn_delay=3.0,
         parameters=[{
             "serial_port": "/dev/ttyACM1",
             "baud_rate": 500000,
@@ -95,6 +99,8 @@ def _launch_setup(context, *args, **kwargs):
         name="driver_node",
         output=out,
         arguments=log_args,
+        respawn=True,
+        respawn_delay=3.0,
         parameters=[{
             "serial_port": "/dev/ttyACM0",
             "baud_rate": 115200,

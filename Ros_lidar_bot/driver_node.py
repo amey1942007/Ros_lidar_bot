@@ -145,6 +145,7 @@ class DriverNode(Node):
 
         self._lock = threading.Lock()
         self._serial = None
+        self._io_fail_count = 0   # consecutive failed writes → reconnect
         self._connect_serial()
 
         self.create_subscription(Twist, self._cmd_vel_topic, self._cmd_vel_cb, 10)
@@ -168,16 +169,28 @@ class DriverNode(Node):
             self.get_logger().fatal("pyserial not installed. Run: pip3 install pyserial")
             raise SystemExit(1)
 
-        try:
-            # timeout=0.005 (5 ms) per-byte: prevents each serial.read(1) call
-            # from blocking up to 10 ms, which was causing cumulative timer
-            # starvation (stutter) after 1–2 min of operation on a loaded RPi.
-            self._serial = serial.Serial(self._port, self._baud, timeout=0.005)
-            self.get_logger().info("UART connection established.")
-        except serial.SerialException as exc:
-            self.get_logger().fatal(f"Failed to open {self._port}: {exc}")
-            self.get_logger().fatal("Check the port and dialout/tty permissions. Exiting.")
-            raise SystemExit(1)
+        # Retry forever (same pattern as imu_node) instead of exiting fatally:
+        # a one-shot open used to kill this node when the port was briefly
+        # busy (stale process from the previous launch still holding it, or
+        # slow re-enumeration), and losing the driver cascades the whole
+        # stack down — no /encoder → no odom → no EKF TF → SLAM can't map →
+        # Nav2 lifecycle stuck inactive.
+        while rclpy.ok():
+            try:
+                # timeout=0.005 (5 ms) per-byte: prevents each serial.read(1)
+                # call from blocking up to 10 ms, which was causing cumulative
+                # timer starvation (stutter) after 1–2 min on a loaded RPi.
+                self._serial = serial.Serial(self._port, self._baud, timeout=0.005)
+                self.get_logger().info("UART connection established.")
+                return
+            except serial.SerialException as exc:
+                self.get_logger().error(
+                    f"Failed to open {self._port}: {exc} — retrying in 2 s. "
+                    f"(port held by a stale process? ACM number swapped? "
+                    f"check: fuser -v /dev/ttyACM*  and  ls -l /dev/serial/by-id/)",
+                    throttle_duration_sec=10.0,
+                )
+                time.sleep(2.0)
 
     def _cmd_vel_cb(self, msg: Twist) -> None:
         v = msg.linear.x * self._drive_sign
@@ -206,8 +219,10 @@ class DriverNode(Node):
         try:
             self._serial.write(packet)
             self._serial.flush()
+            self._io_fail_count = 0
             return True
         except serial.SerialException as exc:
+            self._io_fail_count += 1
             self.get_logger().error(f"UART write failed: {exc}", throttle_duration_sec=5.0)
             return False
 
@@ -321,6 +336,17 @@ class DriverNode(Node):
         return None
 
     def _control_loop(self):
+        # USB dropped mid-run (cable knock, re-enumeration): the stale handle
+        # fails every write forever. After ~2 s of failures, reopen the port.
+        if self._io_fail_count >= 40:
+            self.get_logger().warn("Serial link dead — reopening port.")
+            try:
+                self._serial.close()
+            except Exception:
+                pass
+            self._connect_serial()
+            self._io_fail_count = 0
+
         with self._lock:
             cmd_l = self._cmd_rpm_left
             cmd_r = self._cmd_rpm_right
