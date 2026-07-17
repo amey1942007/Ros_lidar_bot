@@ -72,9 +72,13 @@ controller_server:
       lookahead_time: 1.2
       use_velocity_scaled_lookahead_dist: true
 
-      # Face the path before driving — if heading in map is wrong, the robot
-      # otherwise drives "away" from the goal along +X of a bad orientation.
-      use_rotate_to_heading: true
+      # OFF (as it was originally): rotate-to-heading was enabled during the
+      # laser-flip hunt ("drives away from goal" was really the flipped
+      # laser_yaw, fixed in lidar.xacro). In-place rotation from standstill
+      # is also where the DDSM115 low-RPM stall bit hardest. With this off,
+      # RPP steers onto the path with forward motion + curvature, which
+      # starts the motors reliably.
+      use_rotate_to_heading: false
       rotate_to_heading_min_angle: 0.4
       rotate_to_heading_angular_vel: 1.0
 
