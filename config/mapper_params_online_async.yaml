@@ -37,8 +37,10 @@ slam_toolbox:
     # the scan matcher; raise toward 30.0 for large open halls.
     min_laser_range: 0.2
     max_laser_range: 20.0
-    # Process every scan (~10 Hz S2E) so map→odom keeps correcting while moving.
-    minimum_time_interval: 0.05
+    # Process scans often enough for smooth map→odom, but not so hard that the
+    # RPi 5 starves Nav2 (0.05 = every scan caused stop-and-go driving under
+    # nav; the laser_yaw fix removed the need for aggressive re-matching).
+    minimum_time_interval: 0.08
     transform_timeout: 0.5
     minimum_travel_distance: 0.0
     tf_buffer_duration: 30.
@@ -52,19 +54,22 @@ slam_toolbox:
     minimum_travel_heading: 0.0
     scan_buffer_size: 10
     scan_buffer_maximum_scan_distance: 10.0
-    # Lower thresholds so matches still succeed while driving (board WARN was
-    # map→odom frozen = matcher rejecting scans until the robot stopped).
-    link_match_minimum_response_fine: 0.05
+    # Match thresholds back at normal levels: they were loosened to fight the
+    # frozen map→odom, whose real cause was the flipped laser_yaw (fixed in
+    # lidar.xacro). Loose thresholds now would just let bad matches into the map.
+    link_match_minimum_response_fine: 0.1
     link_scan_maximum_distance: 1.5
     loop_search_maximum_distance: 3.0
-    do_loop_closing: true 
-    loop_match_minimum_chain_size: 10           
-    loop_match_maximum_variance_coarse: 3.0  
-    loop_match_minimum_response_coarse: 0.30    
-    loop_match_minimum_response_fine: 0.40
+    do_loop_closing: true
+    loop_match_minimum_chain_size: 10
+    loop_match_maximum_variance_coarse: 3.0
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45
 
     # Correlation Parameters - Correlation Parameters
-    correlation_search_space_dimension: 0.7
+    # 0.5 m search window: the 0.7 used during the laser-flip hunt costs ~2x
+    # CPU per scan on the RPi 5 and is unnecessary with sane odom.
+    correlation_search_space_dimension: 0.5
     correlation_search_space_resolution: 0.01
     correlation_search_space_smear_deviation: 0.1 
 
@@ -73,9 +78,9 @@ slam_toolbox:
     loop_search_space_resolution: 0.05
     loop_search_space_smear_deviation: 0.03
 
-    # Scan Matcher Parameters — trust scan a bit more vs noisy odom prediction
-    distance_variance_penalty: 0.35
-    angle_variance_penalty: 0.7
+    # Scan Matcher Parameters — defaults; odom prediction is trustworthy now
+    distance_variance_penalty: 0.5
+    angle_variance_penalty: 1.0
 
     fine_search_angle_offset: 0.00349     
     coarse_search_angle_offset: 0.349   
