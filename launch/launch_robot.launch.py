@@ -43,19 +43,24 @@ def _launch_setup(context, *args, **kwargs):
         # Soften CycloneDDS discovery chatter when RViz joins from another host.
         actions.append(SetEnvironmentVariable("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] [{name}]: {message}"))
 
-    # ── Bringup status board (always on screen) ──────────────────────────────
-    bringup_status = Node(
+    # ── Web dashboard (replaces the terminal bringup_status board) ───────────
+    # Serves the interactive GUI at http://<pi-ip>:8080 — open it in a
+    # browser on the laptop (the Pi is headless over SSH, so no X11 needed).
+    # Status board + live robot/lidar view + on-demand tools (IMU test,
+    # IMU calibration, drive-distance) + click-to-send nav goals + E-STOP.
+    # The old terminal board is still available:
+    #   ros2 run Ros_lidar_bot bringup_status
+    dashboard = Node(
         package=package_name,
-        executable="bringup_status",
-        name="bringup_status",
+        executable="robot_dashboard",
+        name="robot_dashboard",
         output="screen",
         emulate_tty=True,
+        respawn=True,
+        respawn_delay=3.0,
         parameters=[{
+            "port": 8080,
             "expect_frontier": expect_frontier,
-            "update_hz": 2.0,
-            "verbose_issues": True,
-            "clear_screen": True,
-            "expected_scan_frame": "laser_frame",
         }],
     )
 
@@ -278,7 +283,7 @@ def _launch_setup(context, *args, **kwargs):
     )
 
     actions.extend([
-        bringup_status,
+        dashboard,
         # ── Stage 1 (T=0s): Hardware + EKF ─────────────────────────────────────
         rsp,
         imu_node,

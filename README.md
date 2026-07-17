@@ -261,6 +261,31 @@ echo "source ~/ros2_ws/install/setup.bash" >> ~/.bashrc
 
 ---
 
+### Web dashboard (GUI over SSH — no X11 needed)
+
+The bringup serves an interactive dashboard from the Pi itself. After
+launching, open this in a browser on your laptop (or phone):
+
+```
+http://<pi-ip>:8080
+```
+
+- **Live view** — animated robot model, lidar overlay, motion trail,
+  wheel-zoom; readouts for odom/map pose, velocities, IMU gyro, cmd_vel.
+- **System status** — node health, topic rates, TF chain state.
+- **Tools (run on demand only — nothing autostarts):** IMU test,
+  IMU calibration (robot rotates in place), drive-distance test moves.
+  Tool output streams into the console panel; Stop kills it.
+- **Nav-goal mode** — arm the checkbox, click the canvas → NavigateToPose.
+- **E-STOP** — kills the running tool, cancels the nav goal, streams zero
+  velocity.
+
+Works identically for `autonomous_robot.launch.py` (frontier_explorer is
+added to the expected-node list). The old terminal board is still there:
+`ros2 run Ros_lidar_bot bringup_status`.
+
+---
+
 ### Manual navigation (gamepad teleoperation + SLAM)
 
 The hardware launch (`launch_robot.launch.py`) already starts `joy_node` +
