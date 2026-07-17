@@ -167,14 +167,13 @@ def _launch_setup(context, *args, **kwargs):
             "frame_id":          "laser_frame",
             "inverted":          False,
             "angle_compensate":  True,
-            # Standard (was DenseBoost): DenseBoost's ~3200 pts/rev cost the
-            # RPi5 so much scan-match/raytrace CPU that map→odom ran ~0.6 s
-            # stale (measured 2026-07-17) — Nav2 TF failures, map smear from
-            # late corrections, and general stutter all traced back to it.
-            # Standard still gives ~1000+ pts/rev at 10 Hz, plenty for indoor
-            # SLAM, and the whole pipeline runs fresher. If the driver logs
-            # "Failed to set scan mode", try "Sensitivity".
-            "scan_mode":         "Standard",
+            # DenseBoost per user requirement — full ~3200 pts/rev resolution
+            # matters for their use case; do NOT downgrade this again.
+            # Trade-off (measured 2026-07-17): the extra scan-match/raytrace
+            # CPU makes map→odom run ~0.6 s stale on the RPi5. The Nav2/SLAM
+            # transform tolerances are set to 1.0 s specifically to absorb
+            # that — if they are ever lowered, this mode is why things break.
+            "scan_mode":         "DenseBoost",
         }],
     )
 
