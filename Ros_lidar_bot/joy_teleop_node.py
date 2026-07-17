@@ -22,11 +22,17 @@ Behaviour:
   - If /joy stops arriving mid-motion (Bluetooth dropout / dongle yanked)
     → immediate stop.
 
-Axis/button indices are parameters. Defaults match the Linux xpad driver:
-  axes:    0=LX  1=LY  2=LT  3=RX  4=RY  5=RT   (triggers rest +1, pressed -1)
-  buttons: 0=A 1=B 2=X 3=Y 4=LB 5=RB 6=back 7=start
-Bluetooth pads often enumerate DIFFERENTLY than the same pad over USB
-(trigger axes especially). Verify with:  ros2 topic echo /joy
+Axis/button indices are parameters. Defaults match this robot's pad over
+BLUETOOTH (measured live on /joy, 2026-07-17):
+  axes:    0=LX  1=LY  2=RX  3=RY  4=LT  5=RT   (triggers rest +1, pressed -1)
+  buttons: 0=A 1=B 2=X 3=Y 4=LB 5=RB
+NOTE: the same pad over a USB dongle (xpad) usually has LT on axis 2 and
+RT on axis 5 instead. If controls act wrong after changing transport,
+verify with:  ros2 topic echo /joy  and override the parameters.
+
+Feedback: every accepted speed change fires a short rumble pulse on
+/joy/set_feedback (strong double-length pulse when hitting a limit), since
+robot logs are suppressed on the quiet bringup.
 """
 
 import time
@@ -34,7 +40,7 @@ import time
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
-from sensor_msgs.msg import Joy
+from sensor_msgs.msg import Joy, JoyFeedback, JoyFeedbackArray
 
 
 class JoyTeleop(Node):
@@ -45,7 +51,7 @@ class JoyTeleop(Node):
         self.declare_parameter('axis_linear', 1)     # left stick vertical
         self.declare_parameter('axis_angular', 0)    # left stick horizontal
         self.declare_parameter('axis_rt', 5)         # right trigger
-        self.declare_parameter('axis_lt', 2)         # left trigger
+        self.declare_parameter('axis_lt', 4)         # left trigger (BT; USB xpad = 2)
         self.declare_parameter('button_rb', 5)       # right bumper
         self.declare_parameter('button_lb', 4)       # left bumper
 
@@ -55,7 +61,9 @@ class JoyTeleop(Node):
         self.declare_parameter('lin_step', 0.05)     # m/s per RT/LT press
         self.declare_parameter('ang_step', 0.1)      # rad/s per RB/LB press
         self.declare_parameter('lin_min', 0.05)
-        self.declare_parameter('lin_max', 0.8)
+        # 0.5 matches the Nav2 velocity_smoother cap — teleop publishes raw
+        # to /cmd_vel, so nothing else limits it. 0.8 indoors was too hot.
+        self.declare_parameter('lin_max', 0.5)
         self.declare_parameter('ang_min', 0.2)
         self.declare_parameter('ang_max', 2.0)
 
@@ -87,14 +95,18 @@ class JoyTeleop(Node):
         self._yielded_to_nav = True
 
         # Edge detection for speed-adjust inputs (act once per press).
-        # Triggers: xpad rests near +1 (or 0 until first touched — driver
-        # quirk) and reads -1 fully pressed, so "pressed" = value < -0.5.
+        # Triggers rest near +1 (or 0 until first touched — driver quirk)
+        # and read -1 fully pressed, so "pressed" = value < 0.0 (≈ half
+        # pull; -0.5 required a near-full pull and felt unresponsive).
         self._rt_was_pressed = False
         self._lt_was_pressed = False
         self._rb_was_pressed = False
         self._lb_was_pressed = False
 
         self._pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self._rumble_pub = self.create_publisher(
+            JoyFeedbackArray, '/joy/set_feedback', 10)
+        self._rumble_off_timer = None
         self._sub = self.create_subscription(Joy, '/joy', self._joy_cb, 10)
         self._timer = self.create_timer(1.0 / gp('publish_hz'), self._publish_cb)
 
@@ -113,8 +125,8 @@ class JoyTeleop(Node):
             return bool(msg.buttons[i]) if i < len(msg.buttons) else False
 
         # Speed adjustment — edge triggered, once per press
-        rt = axis(self._ax_rt) < -0.5
-        lt = axis(self._ax_lt) < -0.5
+        rt = axis(self._ax_rt) < 0.0
+        lt = axis(self._ax_lt) < 0.0
         rb = button(self._btn_rb)
         lb = button(self._btn_lb)
 
@@ -142,14 +154,48 @@ class JoyTeleop(Node):
         self._cmd_ang = ang_in * self._ang_speed
 
     def _adjust_lin(self, delta):
-        self._lin_speed = round(
+        new = round(
             max(self._lin_min, min(self._lin_max, self._lin_speed + delta)), 3)
+        self._rumble(at_limit=(new == self._lin_speed))
+        self._lin_speed = new
         self.get_logger().info(f'Linear speed → {self._lin_speed:.2f} m/s')
 
     def _adjust_ang(self, delta):
-        self._ang_speed = round(
+        new = round(
             max(self._ang_min, min(self._ang_max, self._ang_speed + delta)), 3)
+        self._rumble(at_limit=(new == self._ang_speed))
+        self._ang_speed = new
         self.get_logger().info(f'Angular speed → {self._ang_speed:.2f} rad/s')
+
+    # ── Haptic feedback ────────────────────────────────────────────────────────
+    # Robot logs are hidden on the quiet bringup, so a rumble pulse is the
+    # only confirmation a trigger/bumper press registered. Short soft pulse
+    # per step; long strong pulse when already at the min/max limit.
+    def _rumble(self, at_limit: bool):
+        fb = JoyFeedback()
+        fb.type = JoyFeedback.TYPE_RUMBLE
+        fb.id = 0
+        fb.intensity = 1.0 if at_limit else 0.5
+        msg = JoyFeedbackArray()
+        msg.array = [fb]
+        self._rumble_pub.publish(msg)
+
+        if self._rumble_off_timer is not None:
+            self._rumble_off_timer.cancel()
+        self._rumble_off_timer = self.create_timer(
+            0.4 if at_limit else 0.15, self._rumble_off)
+
+    def _rumble_off(self):
+        if self._rumble_off_timer is not None:
+            self._rumble_off_timer.cancel()
+            self._rumble_off_timer = None
+        fb = JoyFeedback()
+        fb.type = JoyFeedback.TYPE_RUMBLE
+        fb.id = 0
+        fb.intensity = 0.0
+        msg = JoyFeedbackArray()
+        msg.array = [fb]
+        self._rumble_pub.publish(msg)
 
     # ── Publisher timer ────────────────────────────────────────────────────────
     def _publish_cb(self):

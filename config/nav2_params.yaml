@@ -8,6 +8,11 @@ bt_navigator:
     global_frame: map
     robot_base_frame: base_footprint
     odom_topic: /odom
+    # map→odom from slam_toolbox lags ~0.6 s on the RPi5 (scan-match latency
+    # on 3200-pt DenseBoost scans). Every map-frame TF consumer needs a
+    # tolerance above that lag or it fails. Verified live 2026-07-17: with
+    # the default (0.1) pose lookups intermittently fail; 1.0 fixed it.
+    transform_tolerance: 1.0
     bt_loop_duration: 20
     default_server_timeout: 20
     # plugin_lib_names deliberately NOT set: on Jazzy the default list
@@ -65,7 +70,10 @@ controller_server:
       rotate_to_heading_min_angle: 0.4
       rotate_to_heading_angular_vel: 1.0
 
-      transform_tolerance: 0.5
+      # 1.0 (was 0.5): map→odom staleness ~0.6 s exceeded 0.5 → path
+      # transform threw every cycle → FollowPath aborted within
+      # failure_tolerance. Verified live 2026-07-17 via dynamic param.
+      transform_tolerance: 1.0
 
       use_regulated_linear_velocity_scaling: true
       regulated_linear_scaling_min_radius: 0.30
@@ -115,6 +123,9 @@ local_costmap:
       publish_frequency: 2.0
       global_frame: odom
       robot_base_frame: base_footprint
+      # Default 0.3 is too tight when the RPi5 is loaded; keep in line with
+      # the rest of the stack (see bt_navigator note).
+      transform_tolerance: 1.0
       rolling_window: true
       width: 4
       height: 4
@@ -151,6 +162,11 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_footprint
+      # CRITICAL — verified live 2026-07-17: default 0.3 < map→odom lag
+      # (~0.6 s), so getRobotPose failed inside the costmap → EVERY
+      # ComputePathToPose returned FAILURE → goals aborted after spin
+      # recoveries. Raising to 1.0 made planning succeed instantly.
+      transform_tolerance: 1.0
       resolution: 0.05
       track_unknown_space: true     # required for frontier-based exploration
       # Robot footprint (same as local)

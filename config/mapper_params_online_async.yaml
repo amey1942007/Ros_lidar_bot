@@ -40,8 +40,15 @@ slam_toolbox:
     # Process scans often enough for smooth map→odom, but not so hard that the
     # RPi 5 starves Nav2 (0.05 = every scan caused stop-and-go driving under
     # nav; the laser_yaw fix removed the need for aggressive re-matching).
-    minimum_time_interval: 0.08
-    transform_timeout: 0.5
+    # 0.15 (was 0.08): S2E DenseBoost scans are ~3200 pts at 9 Hz; matching
+    # nearly every one kept map→odom ~0.6 s stale and ate the CPU Nav2
+    # needs. ~6 Hz matching is still dense at indoor speeds (≤6 cm between
+    # matches at 0.35 m/s).
+    minimum_time_interval: 0.15
+    # Future-dates the published map→odom stamp. 1.0 (was 0.5) covers the
+    # scan-match latency so Nav2's TF lookups at "now" succeed; measured
+    # staleness was ~0.6 s (see nav2_params.yaml transform_tolerance notes).
+    transform_timeout: 1.0
     minimum_travel_distance: 0.0
     tf_buffer_duration: 30.
     stack_size_to_use: 40000000 #// program needs a larger stack size to serialize large maps
