@@ -1256,16 +1256,8 @@ function draw(){
   // origin marker
   const[ox,oy]=W(0,0);ctx.fillStyle="#31465c";ctx.fillRect(ox-3,oy-3,6,6);
 
-  // SLAM occupancy map (drawn in map frame, placed via map→odom TF)
-  if(MAP){
-    const[mx,my]=mapToOdom(MAP.origin[0],MAP.origin[1]);
-    const[px,py]=W(mx,my);
-    ctx.save();ctx.translate(px,py);ctx.rotate(-MAP.tf[2]);
-    ctx.imageSmoothingEnabled=false;
-    ctx.scale(MAP.res*scale,-MAP.res*scale);   // flip y: image row 0 = map origin row
-    ctx.drawImage(MAP.img,0,0);
-    ctx.restore();
-  }
+  // Occupancy-grid rendering removed per user — lidar scan only. MAP is still
+  // received: its map→odom TF places the frontier/semantic overlays below.
 
   // frontier explorer overlays (map frame): blacklist / perm / manual zones + queue
   if(MAP&&S.frontier){

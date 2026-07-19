@@ -13,6 +13,14 @@ Controls (Xbox-style layout, xpad driver mapping):
   LT (left trigger)     — decrease linear speed by lin_step per press
   RB (right bumper)     — increase angular speed by ang_step per press
   LB (left bumper)      — decrease angular speed by ang_step per press
+  LT+RT+LB+RB together  — start IMU calibration (robot spins in place!)
+  R3 (right stick click)— save map as map_YYYYMMDD_HHMMSS (~/maps/)
+  L3 (left stick click) — start the semantic vision pipeline
+
+The three actions above are fired through the robot dashboard's HTTP API
+(localhost:8080), so they share its one-tool-at-a-time management and
+their output appears in the dashboard console. Each fires once per press
+with a 2 s cooldown; confirmation is a long strong rumble pulse.
 
 Behaviour:
   - Stick deflection scales speed proportionally up to the current setpoint.
@@ -35,7 +43,10 @@ Feedback: every accepted speed change fires a short rumble pulse on
 robot logs are suppressed on the quiet bringup.
 """
 
+import json
+import threading
 import time
+import urllib.request
 
 import rclpy
 from geometry_msgs.msg import Twist
@@ -54,6 +65,9 @@ class JoyTeleop(Node):
         self.declare_parameter('axis_lt', 4)         # left trigger (BT; USB xpad = 2)
         self.declare_parameter('button_rb', 5)       # right bumper
         self.declare_parameter('button_lb', 4)       # left bumper
+        self.declare_parameter('button_l3', 9)       # left stick click (verify on /joy)
+        self.declare_parameter('button_r3', 10)      # right stick click (verify on /joy)
+        self.declare_parameter('dashboard_url', 'http://127.0.0.1:8080')
 
         # ── Speed setpoints ───────────────────────────────────────────────────
         self.declare_parameter('lin_speed', 0.25)    # m/s at full stick
@@ -78,6 +92,9 @@ class JoyTeleop(Node):
         self._ax_lt = gp('axis_lt')
         self._btn_rb = gp('button_rb')
         self._btn_lb = gp('button_lb')
+        self._btn_l3 = gp('button_l3')
+        self._btn_r3 = gp('button_r3')
+        self._dash_url = str(gp('dashboard_url')).rstrip('/')
         self._lin_speed = gp('lin_speed')
         self._ang_speed = gp('ang_speed')
         self._lin_step = gp('lin_step')
@@ -102,6 +119,10 @@ class JoyTeleop(Node):
         self._lt_was_pressed = False
         self._rb_was_pressed = False
         self._lb_was_pressed = False
+        self._combo_was_pressed = False
+        self._l3_was_pressed = False
+        self._r3_was_pressed = False
+        self._action_last = {}   # action name → monotonic time of last fire
 
         self._pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self._rumble_pub = self.create_publisher(
@@ -142,6 +163,24 @@ class JoyTeleop(Node):
         self._rt_was_pressed, self._lt_was_pressed = rt, lt
         self._rb_was_pressed, self._lb_was_pressed = rb, lb
 
+        # Dashboard actions — edge triggered, 2 s cooldown each.
+        # (The four-button combo also fires the ± speed steps above, but the
+        # +/− pairs cancel out, so the setpoints are unchanged.)
+        combo = rt and lt and rb and lb
+        if combo and not self._combo_was_pressed:
+            self._fire_action('imu_cal')
+        self._combo_was_pressed = combo
+
+        r3 = button(self._btn_r3)
+        if r3 and not self._r3_was_pressed:
+            self._fire_action('save_map')
+        self._r3_was_pressed = r3
+
+        l3 = button(self._btn_l3)
+        if l3 and not self._l3_was_pressed:
+            self._fire_action('vision')
+        self._l3_was_pressed = l3
+
         # Movement — proportional to stick deflection
         lin_in = axis(self._ax_lin)
         ang_in = axis(self._ax_ang)
@@ -152,6 +191,43 @@ class JoyTeleop(Node):
 
         self._cmd_lin = lin_in * self._lin_speed
         self._cmd_ang = ang_in * self._ang_speed
+
+    # ── Gamepad → dashboard actions ────────────────────────────────────────────
+    # Fired through the dashboard HTTP API so tool management stays in one
+    # place (one at a time, output in the dashboard console). Runs in a
+    # daemon thread — the 20 Hz cmd_vel loop must never block on HTTP.
+    _ACTIONS = {
+        'imu_cal':  ('/api/run', {'tool': 'imu_calibration', 'params': {}},
+                     'IMU calibration (LT+RT+LB+RB)'),
+        'save_map': ('/api/save_map', {'name': ''},   # empty → map_YYYYMMDD_HHMMSS
+                     'save map (R3)'),
+        'vision':   ('/api/vision', {'on': True},
+                     'semantic vision start (L3)'),
+    }
+
+    def _fire_action(self, name):
+        now = time.monotonic()
+        if now - self._action_last.get(name, 0.0) < 2.0:
+            return
+        self._action_last[name] = now
+        endpoint, payload, desc = self._ACTIONS[name]
+        self.get_logger().info(f'gamepad action → {desc}')
+        self._rumble(at_limit=True)   # long strong pulse = action registered
+        threading.Thread(target=self._post_dashboard,
+                         args=(endpoint, payload, desc), daemon=True).start()
+
+    def _post_dashboard(self, endpoint, payload, desc):
+        try:
+            req = urllib.request.Request(
+                self._dash_url + endpoint,
+                data=json.dumps(payload).encode(),
+                headers={'Content-Type': 'application/json'})
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                out = json.loads(resp.read() or b'{}')
+            if not out.get('ok', False):
+                self.get_logger().error(f'{desc} failed: {out.get("error", "?")}')
+        except Exception as exc:
+            self.get_logger().error(f'{desc} request failed: {exc}')
 
     def _adjust_lin(self, delta):
         new = round(
