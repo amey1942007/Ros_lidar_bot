@@ -195,8 +195,12 @@ def _launch_setup(context, *args, **kwargs):
         respawn=True,
         respawn_delay=2.0,
         parameters=[{
-            "min_safe_distance": 0.40,
-            "ignore_below": 0.28,
+            # Stop for real obstacles just past the chassis; ignore_below must
+            # stay below this or the safety band is empty.
+            "min_safe_distance": 0.45,
+            # Bot frame / mast returns sit at ~0.35–0.37 m — treat <0.40 m as
+            # self-hits so they never pin the robot in a permanent stop.
+            "ignore_below": 0.40,
             "front_opening_deg": 90.0,
             "rear_opening_deg": 50.0,
         }],

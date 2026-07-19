@@ -31,11 +31,11 @@ slam_toolbox:
     transform_publish_period: 0.02
     map_update_frequency: 2.0
     resolution: 0.05
-    # RPLidar S2E: spec range 0.05–30 m. Keep min at 0.2 m so returns off the
-    # robot's own chassis/cables never enter the map. Max capped at 20 m —
-    # beyond that indoor returns are sparse/glancing and mostly add noise to
-    # the scan matcher; raise toward 30.0 for large open halls.
-    min_laser_range: 0.2
+    # RPLidar S2E: spec range 0.05–30 m. Min 0.40 m — bot frame/mast returns
+    # sit at ~0.35–0.37 m and must not enter the map or scan matcher.
+    # Max capped at 20 m — beyond that indoor returns are sparse/glancing and
+    # mostly add noise to the scan matcher; raise toward 30.0 for large halls.
+    min_laser_range: 0.4
     # 16.0: the S2E in Standard scan mode reports 16 m max (slam_toolbox
     # warned and clamped when this was 20.0). DenseBoost reports more.
     max_laser_range: 16.0
