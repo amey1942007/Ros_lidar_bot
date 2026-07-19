@@ -219,6 +219,8 @@ def _launch_setup(context, *args, **kwargs):
             "ignore_below": 0.45,
             "front_opening_deg": 90.0,
             "rear_opening_deg": 50.0,
+            # Hard-stop if wheel odometry dies (prevents Nav2 circle-on-stale-pose).
+            "odom_raw_timeout_sec": 0.5,
         }],
     )
 
