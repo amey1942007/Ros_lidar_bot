@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import json
 import math
 from collections import deque
 from typing import Dict, List, Optional, Set, Tuple
@@ -13,7 +14,7 @@ from nav_msgs.msg import OccupancyGrid
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
-from std_msgs.msg import Bool, ColorRGBA
+from std_msgs.msg import Bool, ColorRGBA, String
 from geometry_msgs.msg import Point
 from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import Buffer, TransformException, TransformListener
@@ -153,6 +154,11 @@ class FrontierExplorer(Node):
         self._debug_pub  = self.create_publisher(MarkerArray, "/frontier_debug", 10)
         self.create_subscription(OccupancyGrid, self.map_topic, self._map_cb, 10)
         self.create_subscription(Bool, "/safety_blocked", self._safety_cb, 10)
+        # User-drawn no-go zones from the web dashboard (map frame, JSON):
+        #   {"action":"add","x":..,"y":..,"radius":..,"duration":secs}
+        #   duration <= 0 → permanent; {"action":"clear"} wipes them.
+        self._manual_zones: List[Dict] = []   # {"x","y","r","until": clock secs | None}
+        self.create_subscription(String, "/manual_blacklist", self._manual_blacklist_cb, 10)
         self.create_timer(float(p("goal_interval_sec").value), self._tick)
 
     def _map_cb(self, msg: OccupancyGrid) -> None:
@@ -1172,12 +1178,47 @@ class FrontierExplorer(Node):
 
         self._last_cancel_xy = xy
 
+    def _manual_blacklist_cb(self, msg: String) -> None:
+        """Dashboard-drawn no-go zones — see subscription comment for format."""
+        try:
+            d = json.loads(msg.data)
+        except (json.JSONDecodeError, TypeError):
+            self.get_logger().warn("Bad /manual_blacklist payload — ignoring")
+            return
+        if d.get("action", "add") == "clear":
+            n = len(self._manual_zones)
+            self._manual_zones = []
+            self.get_logger().info(f"Manual blacklist: cleared {n} zone(s)")
+            return
+        try:
+            x, y = float(d["x"]), float(d["y"])
+            r = max(0.1, float(d.get("radius", self.goal_blacklist_radius)))
+        except (KeyError, TypeError, ValueError):
+            self.get_logger().warn("Bad /manual_blacklist payload — ignoring")
+            return
+        dur = float(d.get("duration") or 0.0)
+        now_s = self.get_clock().now().nanoseconds / 1e9
+        until = None if dur <= 0.0 else now_s + dur
+        self._manual_zones.append({"x": x, "y": y, "r": r, "until": until})
+        self.get_logger().info(
+            f"Manual blacklist zone: ({x:.2f},{y:.2f}) r={r:.2f} "
+            + ("PERMANENT" if until is None else f"for {dur:.0f}s"))
+
     def _is_blacklisted(self, gx: float, gy: float) -> bool:
         """Return True if (gx, gy) falls inside any blacklisted zone.
 
         Zones that have been hit more than once use double the normal radius
         so the robot gives a wider berth to repeatedly unreachable areas.
         """
+        # Manual no-go zones from the dashboard (lazy-expire timed ones)
+        if self._manual_zones:
+            now_s = self.get_clock().now().nanoseconds / 1e9
+            self._manual_zones = [z for z in self._manual_zones
+                                  if z["until"] is None or z["until"] > now_s]
+            for z in self._manual_zones:
+                if (gx - z["x"]) ** 2 + (gy - z["y"]) ** 2 <= z["r"] ** 2:
+                    return True
+
         base_r  = self.goal_blacklist_radius
         base_r2 = base_r ** 2
         dbl_r2  = (base_r * 2.0) ** 2
@@ -1314,6 +1355,42 @@ class FrontierExplorer(Node):
             pt.color     = ColorRGBA(r=0.8, g=0.8, b=0.8, a=1.0)
             pt.lifetime.sec = 0
             arr.markers.append(pt)
+
+        # ── Manual no-go zones (dashboard-drawn, purple) ─────────────────────
+        now_s = self.get_clock().now().nanoseconds / 1e9
+        for z in self._manual_zones:
+            mm           = Marker()
+            mm.header.frame_id = self.map_frame
+            mm.header.stamp    = now
+            mm.ns              = "manual_bl"
+            mm.id              = mid; mid += 1
+            mm.type            = Marker.CYLINDER
+            mm.action          = Marker.ADD
+            mm.pose.position.x = z["x"]
+            mm.pose.position.y = z["y"]
+            mm.pose.position.z = 0.05
+            mm.pose.orientation.w = 1.0
+            mm.scale.x = mm.scale.y = z["r"] * 2.0
+            mm.scale.z = 0.05
+            mm.color   = ColorRGBA(r=0.78, g=0.57, b=0.92, a=0.35)
+            mm.lifetime.sec = 0
+            arr.markers.append(mm)
+            mt           = Marker()
+            mt.header    = mm.header
+            mt.ns        = "manual_bl_label"
+            mt.id        = mid; mid += 1
+            mt.type      = Marker.TEXT_VIEW_FACING
+            mt.action    = Marker.ADD
+            mt.pose.position.x = z["x"]
+            mt.pose.position.y = z["y"]
+            mt.pose.position.z = 0.35
+            mt.pose.orientation.w = 1.0
+            mt.scale.z   = 0.16
+            mt.text      = ("MANUAL PERM" if z["until"] is None
+                            else f"MANUAL {max(0.0, z['until'] - now_s):.0f}s")
+            mt.color     = ColorRGBA(r=0.9, g=0.75, b=1.0, a=1.0)
+            mt.lifetime.sec = 0
+            arr.markers.append(mt)
 
         # ── Top-5 queued frontiers ────────────────────────────────────────────
         for rank, (xy, score) in enumerate(self._frontier_queue[:5]):

@@ -36,6 +36,8 @@ import json
 import math
 import os
 import queue
+import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -46,7 +48,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import rclpy
 from geometry_msgs.msg import Twist
-from nav_msgs.msg import Odometry, OccupancyGrid
+from nav_msgs.msg import Odometry, OccupancyGrid, Path
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
@@ -58,6 +60,12 @@ try:
     _MARKERS_OK = True
 except ImportError:
     _MARKERS_OK = False
+
+try:
+    from slam_toolbox.srv import SaveMap, SerializePoseGraph
+    _SLAM_SRV_OK = True
+except ImportError:
+    _SLAM_SRV_OK = False
 
 try:
     from nav2_msgs.action import NavigateToPose
@@ -176,6 +184,8 @@ class Dashboard(Node):
             "rates": {}, "nodes": {}, "tf": {}, "tool": None,
             "cmd": [0.0, 0.0], "map_pose": None, "nav": None,
             "yolo_det": [], "sem": [],
+            "frontier": {"zones": [], "queue": []},
+            "path": [], "goal": None, "sys": {},
         }
         self._last_msg_time = {}
         self._msg_counts = {}
@@ -200,8 +210,24 @@ class Dashboard(Node):
         map_qos = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(OccupancyGrid, "/map", self._map_cb, map_qos)
         self.create_subscription(String, "/yolo", self._yolo_cb, 10)
+        self.create_subscription(Path, "/plan", self._plan_cb, 10)
+        self._plan_time = 0.0
         if _MARKERS_OK:
             self.create_subscription(MarkerArray, "/semantic_markers", self._sem_cb, 10)
+            self.create_subscription(MarkerArray, "/frontier_debug", self._frontier_cb, 10)
+
+        # manual no-go zones → frontier_explorer (map frame, JSON)
+        self._bl_pub = self.create_publisher(String, "/manual_blacklist", 10)
+
+        self._save_map_cli = self._serialize_cli = None
+        if _SLAM_SRV_OK:
+            self._save_map_cli = self.create_client(SaveMap, "/slam_toolbox/save_map")
+            self._serialize_cli = self.create_client(
+                SerializePoseGraph, "/slam_toolbox/serialize_map")
+
+        self._prev_cpu = None
+        self._vcgencmd_ok = True
+        self.create_timer(5.0, self._sys_tick)
 
         self._tf_buffer = None
         if _TF2_OK:
@@ -284,6 +310,33 @@ class Dashboard(Node):
         with self._lock:
             self._state["sem"] = objs
 
+    def _frontier_cb(self, m):
+        zones, fqueue = [], []
+        kind_by_ns = {"blacklist": "bl", "perm_dead": "perm", "manual_bl": "manual"}
+        for mk in m.markers:
+            k = kind_by_ns.get(mk.ns)
+            if k is not None and mk.type == 3:                 # CYLINDER
+                zones.append([round(mk.pose.position.x, 2),
+                              round(mk.pose.position.y, 2),
+                              round(mk.scale.x / 2.0, 2), k])
+            elif mk.ns == "frontier_queue" and mk.type == 2:   # SPHERE
+                fqueue.append([round(mk.pose.position.x, 2),
+                               round(mk.pose.position.y, 2)])
+        with self._lock:
+            self._state["frontier"] = {"zones": zones[:40], "queue": fqueue[:8]}
+
+    def _plan_cb(self, m):
+        if not m.poses:
+            return
+        step = max(1, len(m.poses) // 60)
+        path = [[round(p.pose.position.x, 2), round(p.pose.position.y, 2)]
+                for p in m.poses[::step]]
+        g = m.poses[-1].pose.position
+        with self._lock:
+            self._state["path"] = path
+            self._state["goal"] = [round(g.x, 2), round(g.y, 2)]
+        self._plan_time = time.monotonic()
+
     def _scan_cb(self, m):
         self._mark("/scan")
         pts = []
@@ -305,6 +358,9 @@ class Dashboard(Node):
         st["t"] = "state"
         st["tool"] = self._tool_name
         st["vision"] = bool(self._vision_proc and self._vision_proc.poll() is None)
+        # Nav2 replans ~1 Hz while a goal is active — a stale plan means no goal.
+        if time.monotonic() - self._plan_time > 5.0:
+            st["path"], st["goal"] = [], None
         self.hub.send(st)
 
     def _slow_tick(self):
@@ -398,6 +454,124 @@ class Dashboard(Node):
         }, separators=(",", ":"))
         self.last_map_data = event   # replayed to newly connected clients
         self.hub.send_raw(event)
+
+    # ── System vitals (CPU / RAM / temp / disk) ──────────────────────────────
+    def _sys_tick(self):
+        info = {}
+        try:
+            with open("/proc/stat") as f:
+                vals = list(map(int, f.readline().split()[1:8]))
+            idle, total = vals[3] + vals[4], sum(vals)
+            if self._prev_cpu:
+                dt = total - self._prev_cpu[1]
+                if dt > 0:
+                    info["cpu"] = round(100.0 * (1 - (idle - self._prev_cpu[0]) / dt), 1)
+            self._prev_cpu = (idle, total)
+        except (OSError, ValueError):
+            pass
+        try:
+            info["load"] = round(os.getloadavg()[0], 2)
+        except OSError:
+            pass
+        try:
+            mi = {}
+            with open("/proc/meminfo") as f:
+                for ln in f:
+                    k, v = ln.split(":", 1)
+                    mi[k] = int(v.split()[0])
+            info["mem"] = [round((mi["MemTotal"] - mi["MemAvailable"]) / 1048576, 2),
+                           round(mi["MemTotal"] / 1048576, 2)]
+        except (OSError, KeyError, ValueError):
+            pass
+        try:
+            with open("/sys/class/thermal/thermal_zone0/temp") as f:
+                info["temp"] = round(int(f.read().strip()) / 1000.0, 1)
+        except (OSError, ValueError):
+            pass
+        try:
+            du = shutil.disk_usage("/")
+            info["disk"] = [round((du.total - du.free) / 2**30, 1),
+                            round(du.total / 2**30, 1)]
+        except OSError:
+            pass
+        try:
+            with open("/proc/uptime") as f:
+                up = int(float(f.read().split()[0]))
+            info["up"] = f"{up // 3600}h {(up % 3600) // 60:02d}m"
+        except (OSError, ValueError):
+            pass
+        if self._vcgencmd_ok:   # Pi firmware throttle flags; disabled after first failure
+            try:
+                out = subprocess.run(["vcgencmd", "get_throttled"], capture_output=True,
+                                     text=True, timeout=1.0).stdout.strip()
+                info["throttled"] = int(out.split("=")[1], 16)
+            except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+                self._vcgencmd_ok = False
+        with self._lock:
+            self._state["sys"] = info
+
+    # ── Save map (slam_toolbox services) ─────────────────────────────────────
+    def save_map(self, name):
+        if not _SLAM_SRV_OK:
+            return {"ok": False, "error": "slam_toolbox srv types not available"}
+        name = re.sub(r"[^A-Za-z0-9_-]", "", str(name or ""))
+        name = name or time.strftime("map_%Y%m%d_%H%M%S")
+        map_dir = os.path.expanduser("~/maps")
+        os.makedirs(map_dir, exist_ok=True)
+        path = os.path.join(map_dir, name)
+        if not self._save_map_cli.service_is_ready():
+            return {"ok": False,
+                    "error": "slam_toolbox save_map service not up — is SLAM running?"}
+        req = SaveMap.Request()
+        req.name.data = path
+        self._save_map_cli.call_async(req).add_done_callback(
+            lambda f: self._map_saved(f, path, "pgm/yaml"))
+        # Also serialize the pose-graph so mapping can be resumed later.
+        sreq = SerializePoseGraph.Request()
+        sreq.filename = path
+        self._serialize_cli.call_async(sreq).add_done_callback(
+            lambda f: self._map_saved(f, path, "posegraph"))
+        self.log(f"💾 saving map → {path}", "run")
+        return {"ok": True, "path": path}
+
+    def _map_saved(self, fut, path, kind):
+        try:
+            fut.result()
+            self.log(f"map {kind} saved: {path}", "info")
+        except Exception as exc:
+            self.log(f"map {kind} save FAILED: {exc}", "error")
+
+    # ── Manual blacklist zones → frontier_explorer ───────────────────────────
+    def blacklist_zone(self, payload):
+        if payload.get("action") == "clear":
+            self._bl_pub.publish(String(data=json.dumps({"action": "clear"})))
+            self.log("manual blacklist zones cleared", "info")
+            return {"ok": True}
+        # Canvas points arrive in odom frame; frontier zones live in map frame.
+        tx = ty = th = 0.0
+        if self._tf_buffer is not None:
+            try:
+                tr = self._tf_buffer.lookup_transform("map", "odom", rclpy.time.Time())
+                q = tr.transform.rotation
+                th = math.atan2(2 * (q.w * q.z + q.x * q.y),
+                                1 - 2 * (q.y * q.y + q.z * q.z))
+                tx, ty = tr.transform.translation.x, tr.transform.translation.y
+            except Exception:
+                pass  # frames coincide until SLAM is up
+        try:
+            xo, yo = float(payload["x"]), float(payload["y"])
+            radius = max(0.1, min(5.0, float(payload.get("radius", 0.8))))
+            duration = max(0.0, float(payload.get("duration", 0.0)))
+        except (KeyError, TypeError, ValueError):
+            return {"ok": False, "error": "bad blacklist payload"}
+        mx = tx + xo * math.cos(th) - yo * math.sin(th)
+        my = ty + xo * math.sin(th) + yo * math.cos(th)
+        self._bl_pub.publish(String(data=json.dumps({
+            "action": "add", "x": round(mx, 3), "y": round(my, 3),
+            "radius": round(radius, 2), "duration": duration})))
+        desc = "PERMANENT" if duration <= 0 else f"{duration:.0f}s"
+        self.log(f"🚫 no-go zone ({mx:.2f},{my:.2f}) r={radius:.2f} m {desc}", "run")
+        return {"ok": True}
 
     # ── Semantic vision pipeline (independent of the one-shot tool slot) ─────
     def start_vision(self):
@@ -650,6 +824,10 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/vision":
             out = (self.dash.start_vision() if payload.get("on")
                    else self.dash.stop_vision())
+        elif self.path == "/api/save_map":
+            out = self.dash.save_map(payload.get("name"))
+        elif self.path == "/api/blacklist":
+            out = self.dash.blacklist_zone(payload)
         else:
             self.send_error(404)
             return
@@ -729,6 +907,17 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
 #console{grid-column:1/-1}
 #logbox{background:#0a0f14;border:1px solid var(--edge);border-radius:8px;height:230px;
   overflow-y:auto;padding:8px 10px;font:12px/1.6 ui-monospace,Consolas,monospace}
+#sysgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.sys{background:#0a0f14;border:1px solid var(--edge);border-radius:8px;padding:7px 10px}
+.sys b{display:block;font-size:11px;color:var(--dim);font-weight:600}
+.sys span{font-family:ui-monospace,Consolas,monospace;font-size:14px;color:var(--acc)}
+.bar{height:5px;border-radius:3px;background:#1c2733;margin-top:5px;overflow:hidden}
+.bar i{display:block;height:100%;border-radius:3px}
+#navmode{flex-wrap:wrap}
+#navmode select{background:#0a0f14;color:var(--acc);border:1px solid var(--edge);
+  border-radius:6px;padding:4px 6px}
+#mapname{flex:1;background:#0a0f14;color:var(--acc);border:1px solid var(--edge);
+  border-radius:6px;padding:6px 8px;font-family:ui-monospace,monospace;min-width:0}
 .ln .t{color:var(--dim);margin-right:8px}
 .ln.info{color:var(--tx)} .ln.error{color:var(--err)} .ln.run{color:var(--run)} .ln.tool{color:#9fb8cc}
 @media (max-width:900px){main{grid-template-columns:1fr}}
@@ -759,6 +948,12 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
     <div id="navmode">
       <label><input type="checkbox" id="navarm"> Nav-goal mode (click canvas to send goal)</label>
       <button class="btn stop" id="navcancel" style="padding:4px 12px">cancel goal</button>
+      <label style="margin-left:8px"><input type="checkbox" id="blarm"> 🚫 No-go mode (drag a circle)</label>
+      <select id="bldur">
+        <option value="60">1 min</option><option value="300" selected>5 min</option>
+        <option value="900">15 min</option><option value="0">permanent</option>
+      </select>
+      <button class="btn stop" id="blclear" style="padding:4px 12px">clear zones</button>
     </div>
     <div id="pad">
       <span></span><button data-c="0.15,0">▲</button><span></span>
@@ -768,6 +963,15 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
   </section>
 
   <div class="right">
+    <section class="card">
+      <h2>System</h2>
+      <div id="sysgrid"></div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:10px">
+        <input id="mapname" placeholder="map name (blank = timestamp)">
+        <button class="btn" id="savemap">💾 Save map</button>
+      </div>
+    </section>
+
     <section class="card">
       <h2>System status</h2>
       <div id="nodes"></div>
@@ -869,6 +1073,20 @@ function updatePanels(m){
       `<tr><td><span class="dot ${v.ok?"ok":"bad"}"></span>TF ${k}</td>
        <td class="num">${v.ok?("age "+v.age+"s"):"MISSING"}</td></tr>`).join("");
   }
+  if(m.sys&&Object.keys(m.sys).length){
+    const s=m.sys,pct=(v,mx)=>Math.min(100,Math.round(100*v/mx));
+    const bar=(p,w,c)=>`<div class="bar"><i style="width:${p}%;background:var(${p>=c?"--err":p>=w?"--warn":"--ok"})"></i></div>`;
+    const t=[];
+    if(s.cpu!=null)t.push(`<div class="sys"><b>CPU</b><span>${s.cpu}%</span>${bar(s.cpu,70,90)}</div>`);
+    if(s.temp!=null)t.push(`<div class="sys"><b>SoC temp</b><span>${s.temp}°C</span>${bar(pct(s.temp,90),67,84)}</div>`);
+    if(s.mem)t.push(`<div class="sys"><b>RAM</b><span>${s.mem[0]} / ${s.mem[1]} GB</span>${bar(pct(s.mem[0],s.mem[1]),75,90)}</div>`);
+    if(s.disk)t.push(`<div class="sys"><b>Disk /</b><span>${s.disk[0]} / ${s.disk[1]} GB</span>${bar(pct(s.disk[0],s.disk[1]),80,95)}</div>`);
+    if(s.load!=null)t.push(`<div class="sys"><b>load 1m</b><span>${s.load}</span></div>`);
+    if(s.up)t.push(`<div class="sys"><b>uptime</b><span>${s.up}</span></div>`);
+    if(s.throttled)t.push(`<div class="sys" style="border-color:var(--err)"><b>⚠ PI THROTTLED</b><span style="color:var(--err)">0x${s.throttled.toString(16)}</span></div>`);
+    $("sysgrid").innerHTML=t.join("");
+  }
+
   const vb=$("visionbtn");
   vb.textContent=m.vision?"Stop":"Start";
   vb.className=m.vision?"btn stop":"btn";
@@ -922,12 +1140,32 @@ const cv=$("cv"),ctx=cv.getContext("2d");
 if(!ctx.roundRect){ctx.roundRect=function(x,y,w,h){this.rect(x,y,w,h);};}
 cv.addEventListener("wheel",e=>{e.preventDefault();
   scale=Math.max(25,Math.min(220,scale*(e.deltaY<0?1.12:0.89)));},{passive:false});
-cv.addEventListener("click",e=>{
-  if(!$("navarm").checked||!S)return;
+function canvasToWorld(e){
   const r=cv.getBoundingClientRect();
   const px=(e.clientX-r.left)*(cv.width/r.width), py=(e.clientY-r.top)*(cv.height/r.height);
-  const wx=S.pose[0]+(px-cv.width/2)/scale, wy=S.pose[1]-(py-cv.height/2)/scale;
+  return [S.pose[0]+(px-cv.width/2)/scale, S.pose[1]-(py-cv.height/2)/scale];
+}
+cv.addEventListener("click",e=>{
+  if(!$("navarm").checked||$("blarm").checked||!S)return;
+  const[wx,wy]=canvasToWorld(e);
   post("/api/nav_goal",{x:wx,y:wy});
+});
+// no-go zones: press = centre, drag = radius, release = send
+let blDrag=null;   // [cx, cy, r] in odom-frame metres
+cv.addEventListener("mousedown",e=>{
+  if(!$("blarm").checked||!S)return;
+  const[wx,wy]=canvasToWorld(e);blDrag=[wx,wy,0];e.preventDefault();
+});
+cv.addEventListener("mousemove",e=>{
+  if(!blDrag)return;
+  const[wx,wy]=canvasToWorld(e);
+  blDrag[2]=Math.hypot(wx-blDrag[0],wy-blDrag[1]);
+});
+window.addEventListener("mouseup",()=>{
+  if(!blDrag)return;
+  const[zx,zy,zr]=blDrag;blDrag=null;
+  if(zr<0.05)return;   // accidental click, not a drag
+  post("/api/blacklist",{x:zx,y:zy,radius:zr,duration:parseFloat($("bldur").value)});
 });
 
 function draw(){
@@ -958,6 +1196,25 @@ function draw(){
     ctx.restore();
   }
 
+  // frontier explorer overlays (map frame): blacklist / perm / manual zones + queue
+  if(MAP&&S.frontier){
+    const fill={bl:"rgba(255,60,60,.22)",perm:"rgba(15,15,15,.55)",manual:"rgba(199,146,234,.28)"};
+    const edge={bl:"#ff5d5d",perm:"#777",manual:"#c792ea"};
+    for(const[zx,zy,zr,k] of (S.frontier.zones||[])){
+      const[wx2,wy2]=mapToOdom(zx,zy),[px,py]=W(wx2,wy2);
+      ctx.beginPath();ctx.arc(px,py,zr*scale,0,6.2832);
+      ctx.fillStyle=fill[k]||fill.bl;ctx.fill();
+      ctx.strokeStyle=edge[k]||edge.bl;ctx.lineWidth=1.5;ctx.stroke();
+    }
+    ctx.font="11px system-ui";ctx.textAlign="center";
+    (S.frontier.queue||[]).forEach(([qx,qy],i)=>{
+      const[wx2,wy2]=mapToOdom(qx,qy),[px,py]=W(wx2,wy2);
+      ctx.fillStyle="rgba(61,220,132,.9)";
+      ctx.beginPath();ctx.arc(px,py,7,0,6.2832);ctx.fill();
+      ctx.fillStyle="#04270f";ctx.fillText(String(i+1),px,py+4);
+    });
+  }
+
   // trail
   if(trail.length>1){ctx.strokeStyle="rgba(79,195,247,.45)";ctx.lineWidth=2;ctx.beginPath();
     trail.forEach((p,i)=>{const[a,b]=W(p[0],p[1]);i?ctx.lineTo(a,b):ctx.moveTo(a,b);});ctx.stroke();}
@@ -967,6 +1224,31 @@ function draw(){
   for(const [a,r] of S.scan){
     const th=yaw+a, [px,py]=W(rx+r*Math.cos(th), ry+r*Math.sin(th));
     ctx.fillRect(px-1.5,py-1.5,3,3);
+  }
+
+  // nav2 plan + current goal flag (map frame)
+  if(MAP&&S.path&&S.path.length>1){
+    ctx.strokeStyle="rgba(79,195,247,.8)";ctx.lineWidth=2;ctx.setLineDash([6,5]);ctx.beginPath();
+    S.path.forEach((p,i)=>{const[wx2,wy2]=mapToOdom(p[0],p[1]);const[a,b]=W(wx2,wy2);i?ctx.lineTo(a,b):ctx.moveTo(a,b);});
+    ctx.stroke();ctx.setLineDash([]);
+  }
+  if(MAP&&S.goal){
+    const[wx2,wy2]=mapToOdom(S.goal[0],S.goal[1]),[px,py]=W(wx2,wy2);
+    ctx.strokeStyle="#ffb74d";ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(px,py);ctx.lineTo(px,py-22);ctx.stroke();
+    ctx.fillStyle="#ffb74d";
+    ctx.beginPath();ctx.moveTo(px,py-22);ctx.lineTo(px+13,py-16);ctx.lineTo(px,py-11);ctx.closePath();ctx.fill();
+    ctx.beginPath();ctx.arc(px,py,3,0,6.2832);ctx.fill();
+  }
+
+  // no-go drag preview
+  if(blDrag&&blDrag[2]>0){
+    const[px,py]=W(blDrag[0],blDrag[1]);
+    ctx.beginPath();ctx.arc(px,py,blDrag[2]*scale,0,6.2832);
+    ctx.fillStyle="rgba(199,146,234,.20)";ctx.fill();
+    ctx.strokeStyle="#c792ea";ctx.lineWidth=2;ctx.stroke();
+    ctx.font="12px system-ui";ctx.fillStyle="#c792ea";ctx.textAlign="center";
+    ctx.fillText(blDrag[2].toFixed(2)+" m",px,py-blDrag[2]*scale-6);
   }
 
   // semantic objects (map frame → odom via map TF)
@@ -1017,6 +1299,8 @@ document.querySelectorAll("#pad button[data-c]").forEach(b=>{
   b.onclick=()=>{const[l,a]=b.dataset.c.split(",").map(Number);post("/api/nudge",{lin:l,ang:a});};
 });
 $("visionbtn").onclick=()=>post("/api/vision",{on:!(S&&S.vision)});
+$("savemap").onclick=()=>post("/api/save_map",{name:$("mapname").value});
+$("blclear").onclick=()=>post("/api/blacklist",{action:"clear"});
 document.querySelectorAll("[data-tool]").forEach(b=>{
   b.onclick=()=>{
     const t=b.dataset.tool,params={};
