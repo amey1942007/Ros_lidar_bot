@@ -193,6 +193,7 @@ class Dashboard(Node):
         self._tool_proc = None
         self._tool_name = None
         self._vision_proc = None
+        self._map_saves_pending = 0   # >0 while save_map service calls in flight
         self._latest_map = None
         self._map_dirty = False
         self.last_map_data = None   # cached SSE map event for new clients
@@ -348,6 +349,7 @@ class Dashboard(Node):
         st["t"] = "state"
         st["tool"] = self._tool_name
         st["vision"] = bool(self._vision_proc and self._vision_proc.poll() is None)
+        st["saving"] = self._map_saves_pending > 0
         self.hub.send(st)
 
     def _slow_tick(self):
@@ -509,6 +511,7 @@ class Dashboard(Node):
         if not self._save_map_cli.service_is_ready():
             return {"ok": False,
                     "error": "slam_toolbox save_map service not up — is SLAM running?"}
+        self._map_saves_pending = 2   # save_map + serialize below
         req = SaveMap.Request()
         req.name.data = path
         self._save_map_cli.call_async(req).add_done_callback(
@@ -522,6 +525,7 @@ class Dashboard(Node):
         return {"ok": True, "path": path}
 
     def _map_saved(self, fut, path, kind):
+        self._map_saves_pending = max(0, self._map_saves_pending - 1)
         try:
             fut.result()
             self.log(f"map {kind} saved: {path}", "info")
@@ -891,8 +895,12 @@ class Handler(BaseHTTPRequestHandler):
             self.dash.cancel_nav()
             out = {"ok": True}
         elif self.path == "/api/vision":
-            out = (self.dash.start_vision() if payload.get("on")
-                   else self.dash.stop_vision())
+            if payload.get("toggle"):
+                proc = self.dash._vision_proc
+                on = not (proc and proc.poll() is None)
+            else:
+                on = payload.get("on")
+            out = self.dash.start_vision() if on else self.dash.stop_vision()
         elif self.path == "/api/save_map":
             out = self.dash.save_map(payload.get("name"))
         elif self.path == "/api/blacklist":
@@ -1002,6 +1010,8 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
   <h1>🤖 Ros_lidar_bot</h1>
   <span id="overall" class="pill bad">CONNECTING</span>
   <span id="toolpill" class="pill" style="display:none;background:#1d1430;color:var(--run)"></span>
+  <span id="visionpill" class="pill" style="display:none;background:#0d2b1a;color:var(--acc)">👁 VISION ON</span>
+  <span id="savepill" class="pill" style="display:none;background:#102a3a;color:#4fc3f7">💾 SAVING MAP…</span>
   <button id="estop">E-STOP</button>
 </header>
 
@@ -1090,6 +1100,10 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
           <span id="yolodet" style="color:var(--dim);font-size:12px"></span>
         </div>
       </div>
+
+      <div style="color:var(--dim);font-size:12px;margin-top:10px">
+        🎮 Gamepad: <b>B</b> save map · <b>X</b> vision on/off ·
+        <b>LT+RT+LB+RB</b> IMU calibration</div>
     </section>
   </div>
 
@@ -1165,6 +1179,8 @@ function updatePanels(m){
   const vb=$("visionbtn");
   vb.textContent=m.vision?"Stop":"Start";
   vb.className=m.vision?"btn stop":"btn";
+  $("visionpill").style.display=m.vision?"":"none";
+  $("savepill").style.display=m.saving?"":"none";
   $("yolodet").textContent=(m.yolo_det&&m.yolo_det.length)?("👁 "+m.yolo_det.join(", ")):"";
 
   const run=$("running"), pill=$("toolpill");

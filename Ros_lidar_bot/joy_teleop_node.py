@@ -14,8 +14,8 @@ Controls (Xbox-style layout, xpad driver mapping):
   RB (right bumper)     — increase angular speed by ang_step per press
   LB (left bumper)      — decrease angular speed by ang_step per press
   LT+RT+LB+RB together  — start IMU calibration (robot spins in place!)
-  R3 (right stick click)— save map as map_YYYYMMDD_HHMMSS (~/maps/)
-  L3 (left stick click) — start the semantic vision pipeline
+  B                     — save map as map_YYYYMMDD_HHMMSS (~/maps/)
+  X                     — toggle the semantic vision pipeline on/off
 
 The three actions above are fired through the robot dashboard's HTTP API
 (localhost:8080), so they share its one-tool-at-a-time management and
@@ -65,8 +65,8 @@ class JoyTeleop(Node):
         self.declare_parameter('axis_lt', 4)         # left trigger (BT; USB xpad = 2)
         self.declare_parameter('button_rb', 7)       # right bumper
         self.declare_parameter('button_lb', 6)       # left bumper
-        self.declare_parameter('button_l3', 13)      # left stick click
-        self.declare_parameter('button_r3', 14)      # right stick click
+        self.declare_parameter('button_save_map', 1) # B (stick clicks were unreliable)
+        self.declare_parameter('button_vision', 3)   # X
         self.declare_parameter('dashboard_url', 'http://127.0.0.1:8080')
 
         # ── Speed setpoints ───────────────────────────────────────────────────
@@ -92,8 +92,8 @@ class JoyTeleop(Node):
         self._ax_lt = gp('axis_lt')
         self._btn_rb = gp('button_rb')
         self._btn_lb = gp('button_lb')
-        self._btn_l3 = gp('button_l3')
-        self._btn_r3 = gp('button_r3')
+        self._btn_save = gp('button_save_map')
+        self._btn_vision = gp('button_vision')
         self._dash_url = str(gp('dashboard_url')).rstrip('/')
         self._lin_speed = gp('lin_speed')
         self._ang_speed = gp('ang_speed')
@@ -120,8 +120,8 @@ class JoyTeleop(Node):
         self._rb_was_pressed = False
         self._lb_was_pressed = False
         self._combo_was_pressed = False
-        self._l3_was_pressed = False
-        self._r3_was_pressed = False
+        self._save_was_pressed = False
+        self._vision_was_pressed = False
         self._action_last = {}   # action name → monotonic time of last fire
 
         self._pub = self.create_publisher(Twist, '/cmd_vel', 10)
@@ -171,15 +171,15 @@ class JoyTeleop(Node):
             self._fire_action('imu_cal')
         self._combo_was_pressed = combo
 
-        r3 = button(self._btn_r3)
-        if r3 and not self._r3_was_pressed:
+        sv = button(self._btn_save)
+        if sv and not self._save_was_pressed:
             self._fire_action('save_map')
-        self._r3_was_pressed = r3
+        self._save_was_pressed = sv
 
-        l3 = button(self._btn_l3)
-        if l3 and not self._l3_was_pressed:
+        vi = button(self._btn_vision)
+        if vi and not self._vision_was_pressed:
             self._fire_action('vision')
-        self._l3_was_pressed = l3
+        self._vision_was_pressed = vi
 
         # Movement — proportional to stick deflection
         lin_in = axis(self._ax_lin)
@@ -200,9 +200,9 @@ class JoyTeleop(Node):
         'imu_cal':  ('/api/run', {'tool': 'imu_calibration', 'params': {}},
                      'IMU calibration (LT+RT+LB+RB)'),
         'save_map': ('/api/save_map', {'name': ''},   # empty → map_YYYYMMDD_HHMMSS
-                     'save map (R3)'),
-        'vision':   ('/api/vision', {'on': True},
-                     'semantic vision start (L3)'),
+                     'save map (B)'),
+        'vision':   ('/api/vision', {'toggle': True},
+                     'vision on/off (X)'),
     }
 
     def _fire_action(self, name):
