@@ -31,9 +31,9 @@ Behaviour:
     → immediate stop.
 
 Axis/button indices are parameters. Defaults match this robot's pad over
-BLUETOOTH (measured live on /joy, 2026-07-17):
+BLUETOOTH (re-measured live on /joy, 2026-07-20):
   axes:    0=LX  1=LY  2=RX  3=RY  4=LT  5=RT   (triggers rest +1, pressed -1)
-  buttons: 0=A 1=B 2=X 3=Y 4=LB 5=RB
+  buttons: 6=LB  7=RB  13=L3  14=R3   (sparse Xbox-BT hid layout)
 NOTE: the same pad over a USB dongle (xpad) usually has LT on axis 2 and
 RT on axis 5 instead. If controls act wrong after changing transport,
 verify with:  ros2 topic echo /joy  and override the parameters.
@@ -63,10 +63,10 @@ class JoyTeleop(Node):
         self.declare_parameter('axis_angular', 0)    # left stick horizontal
         self.declare_parameter('axis_rt', 5)         # right trigger
         self.declare_parameter('axis_lt', 4)         # left trigger (BT; USB xpad = 2)
-        self.declare_parameter('button_rb', 5)       # right bumper
-        self.declare_parameter('button_lb', 4)       # left bumper
-        self.declare_parameter('button_l3', 9)       # left stick click (verify on /joy)
-        self.declare_parameter('button_r3', 10)      # right stick click (verify on /joy)
+        self.declare_parameter('button_rb', 7)       # right bumper
+        self.declare_parameter('button_lb', 6)       # left bumper
+        self.declare_parameter('button_l3', 13)      # left stick click
+        self.declare_parameter('button_r3', 14)      # right stick click
         self.declare_parameter('dashboard_url', 'http://127.0.0.1:8080')
 
         # ── Speed setpoints ───────────────────────────────────────────────────
