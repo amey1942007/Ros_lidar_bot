@@ -143,6 +143,10 @@ class OdomNode(Node):
         self._odom_frame = self.declare_parameter('odom_frame',   'odom').value
         self._base_frame = self.declare_parameter('base_frame',   'base_footprint').value
         broadcast_tf     = self.declare_parameter('broadcast_tf',  True).value
+        # Feedback below this on BOTH wheels is treated as true standstill.
+        # The driver's command floor is 6 RPM (DDSM115 stall zone), so ±2 RPM
+        # of feedback can only be sensor jitter, never real motion.
+        self._standstill_rpm = self.declare_parameter('standstill_rpm', 2.0).value
 
         # ── Pose state ────────────────────────────────────────────────────────
         self._x     = 0.0   # m
@@ -249,6 +253,17 @@ class OdomNode(Node):
             )
             self._last_time_ns = now_ns
             return
+
+        # ── 2b. Standstill deadband ──────────────────────────────────────────
+        # At rest the DDSM115 feedback jitters ±1–2 RPM; the wheel differential
+        # turns that into yaw noise which integrates into a visibly wobbling
+        # heading (the whole lidar scan rotates on screen while parked).
+        # Both wheels under the deadband ⇒ clamp to exactly zero so pose and
+        # twist are rock-still. One wheel above it ⇒ real (slow) motion, keep.
+        if (abs(rpm_left) < self._standstill_rpm
+                and abs(rpm_right) < self._standstill_rpm):
+            rpm_left = 0.0
+            rpm_right = 0.0
 
         # ── 3. RPM → wheel linear velocity (m/s) ─────────────────────────────
         #   ω  [rad/s] = RPM × 2π / 60
