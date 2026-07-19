@@ -39,6 +39,7 @@ setup(
             'drive_distance = Ros_lidar_bot.drive_distance_node:main',
             'bringup_status = Ros_lidar_bot.bringup_status_node:main',
             'robot_dashboard = Ros_lidar_bot.robot_dashboard_node:main',
+            'scan_min_range_filter = Ros_lidar_bot.scan_min_range_filter_node:main',
         ],
     },
     extras_require={

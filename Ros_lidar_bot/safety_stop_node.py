@@ -32,8 +32,8 @@ class SafetyStop(Node):
     def __init__(self) -> None:
         super().__init__("safety_stop")
 
-        self.declare_parameter("min_safe_distance", 0.45)  # metres
-        self.declare_parameter("ignore_below", 0.40)       # ignore chassis (~0.35–0.37 m)
+        self.declare_parameter("min_safe_distance", 0.50)  # metres
+        self.declare_parameter("ignore_below", 0.45)       # ignore chassis (≤~0.45 m)
         self.declare_parameter("front_opening_deg", 90.0)  # total forward arc
         self.declare_parameter("rear_opening_deg", 50.0)   # total rear arc
 

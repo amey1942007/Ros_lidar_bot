@@ -106,7 +106,7 @@ TOOLS = {
 
 EXPECTED_NODES = [
     "robot_state_publisher", "imu_node", "driver_node", "odom_node",
-    "rplidar_node", "ekf_filter_node", "slam_toolbox", "joy_node",
+    "rplidar_node", "scan_min_range_filter", "ekf_filter_node", "slam_toolbox", "joy_node",
     "joy_teleop", "bt_navigator", "controller_server", "planner_server",
     "behavior_server", "velocity_smoother", "collision_monitor",
 ]

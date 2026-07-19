@@ -154,11 +154,10 @@ local_costmap:
           marking: true
           data_type: "LaserScan"
           raytrace_max_range: 5.5
-          raytrace_min_range: 0.40
+          raytrace_min_range: 0.45
           obstacle_max_range: 4.5    # reduced — only mark obstacles the robot is actually close to
-          # 0.40: chassis/mast returns at ~0.35–0.37 m must not mark as obstacles
-          # (was 0.25 — still saw the frame and made driving stop-and-go).
-          obstacle_min_range: 0.40
+          # 0.45: chassis/mast returns verified within ~0.45 m (also filtered on /scan)
+          obstacle_min_range: 0.45
           observation_keep_time: 0.2
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
@@ -198,9 +197,9 @@ global_costmap:
           marking: true
           data_type: "LaserScan"
           raytrace_max_range: 5.5
-          raytrace_min_range: 0.40
+          raytrace_min_range: 0.45
           obstacle_max_range: 4.5
-          obstacle_min_range: 0.40   # match local — ignore chassis/mast self-hits
+          obstacle_min_range: 0.45   # match local — ignore chassis/mast self-hits
           observation_keep_time: 0.3
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"

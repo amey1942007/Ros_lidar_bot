@@ -161,6 +161,9 @@ def _launch_setup(context, *args, **kwargs):
         # no motor spin-down grace period like the A1 did, so 5 s is plenty.
         respawn=True,
         respawn_delay=5.0,
+        # Raw hardware scan — chassis/mast returns still present. Filtered to
+        # /scan by scan_min_range_filter so RViz/SLAM/Nav2 never see them.
+        remappings=[("scan", "scan_raw")],
         parameters=[{
             "channel_type":      "udp",
             "udp_ip":            "192.168.11.2",   # S2E factory default
@@ -175,6 +178,21 @@ def _launch_setup(context, *args, **kwargs):
             # transform tolerances are set to 1.0 s specifically to absorb
             # that — if they are ever lowered, this mode is why things break.
             "scan_mode":         "DenseBoost",
+        }],
+    )
+
+    # Drop returns closer than the chassis extent (~0.35–0.45 m frame hits).
+    # Without this, RViz /scan still shows the body even if Nav2 ignores it.
+    scan_filter = Node(
+        package=package_name,
+        executable="scan_min_range_filter",
+        name="scan_min_range_filter",
+        output=out,
+        arguments=log_args,
+        respawn=True,
+        respawn_delay=2.0,
+        parameters=[{
+            "min_range": 0.45,  # verified: frame marks sit within ~0.45 m
         }],
     )
 
@@ -195,12 +213,10 @@ def _launch_setup(context, *args, **kwargs):
         respawn=True,
         respawn_delay=2.0,
         parameters=[{
-            # Stop for real obstacles just past the chassis; ignore_below must
-            # stay below this or the safety band is empty.
-            "min_safe_distance": 0.45,
-            # Bot frame / mast returns sit at ~0.35–0.37 m — treat <0.40 m as
-            # self-hits so they never pin the robot in a permanent stop.
-            "ignore_below": 0.40,
+            # Stop for real obstacles just past the filtered near field.
+            "min_safe_distance": 0.50,
+            # /scan is already clipped at 0.45 m; keep ignore in sync.
+            "ignore_below": 0.45,
             "front_opening_deg": 90.0,
             "rear_opening_deg": 50.0,
         }],
@@ -301,6 +317,7 @@ def _launch_setup(context, *args, **kwargs):
         safety_stop,
         odom_node,
         lidar_node,
+        scan_filter,
         joy_node,
         joy_teleop,
         ekf_node,
