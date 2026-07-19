@@ -40,7 +40,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import rclpy
 from geometry_msgs.msg import Twist
-from nav_msgs.msg import Odometry, OccupancyGrid
+from nav_msgs.msg import Odometry, OccupancyGrid, Path
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
@@ -160,6 +160,7 @@ class Dashboard(Node):
             "imu": {"gz": 0.0, "ax": 0.0, "ay": 0.0}, "scan": [],
             "rates": {}, "nodes": {}, "tf": {}, "tool": None,
             "cmd": [0.0, 0.0], "map_pose": None, "nav": None,
+            "goal": None, "path": [],
         }
         self._last_msg_time = {}
         self._msg_counts = {}
@@ -170,6 +171,9 @@ class Dashboard(Node):
         self._nudge_cmd = (0.0, 0.0)
         self._estop_until = 0.0
         self._nav_goal_handle = None
+        # Bumped on every new goal / cancel so stale accept/result callbacks
+        # cannot revive a superseded or cancelled NavigateToPose goal.
+        self._nav_gen = 0
 
         self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self.create_subscription(Odometry, "/odom", self._odom_cb, 10)
@@ -177,6 +181,7 @@ class Dashboard(Node):
         self.create_subscription(Imu, "/imu", self._imu_cb, 20)
         self.create_subscription(LaserScan, "/scan", self._scan_cb, 5)
         self.create_subscription(Twist, "/cmd_vel", self._cmd_cb, 10)
+        self.create_subscription(Path, "/plan", self._plan_cb, 5)
         map_qos = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(OccupancyGrid, "/map", self._mk_rate_cb("/map"), map_qos)
 
@@ -378,6 +383,44 @@ class Dashboard(Node):
         return {"ok": True}
 
     # ── Nav goal from canvas click ───────────────────────────────────────────
+    def _map_to_odom(self, mx, my):
+        """Transform a map-frame point into odom for canvas drawing."""
+        tr = self._tf_buffer.lookup_transform("odom", "map", rclpy.time.Time())
+        q = tr.transform.rotation
+        th = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+        tx, ty = tr.transform.translation.x, tr.transform.translation.y
+        return (tx + mx * math.cos(th) - my * math.sin(th),
+                ty + mx * math.sin(th) + my * math.cos(th))
+
+    def _plan_cb(self, msg: Path):
+        """Stream Nav2's global plan to the browser (odom frame)."""
+        if not msg.poses:
+            return
+        with self._lock:
+            active = self._state["goal"] is not None
+        if not active:
+            return
+        frame = msg.header.frame_id or "map"
+        step = max(1, len(msg.poses) // 60)
+        path = []
+        for p in msg.poses[::step]:
+            x, y = p.pose.position.x, p.pose.position.y
+            if frame != "odom":
+                try:
+                    x, y = self._map_to_odom(x, y)
+                except Exception:
+                    return
+            path.append([round(x, 2), round(y, 2)])
+        with self._lock:
+            if self._state["goal"] is None:
+                return
+            self._state["path"] = path
+
+    def _clear_nav_viz(self):
+        with self._lock:
+            self._state["goal"] = None
+            self._state["path"] = []
+
     def nav_goal(self, x_odom, y_odom):
         if self._nav_client is None:
             return {"ok": False, "error": "nav2_msgs not available"}
@@ -395,6 +438,22 @@ class Dashboard(Node):
             rx, ry, _ = self._state["pose"]
         yaw = math.atan2(y_odom - ry, x_odom - rx) + th  # face travel direction
 
+        # Preempt any in-flight goal so a second click always sticks.
+        prev = self._nav_goal_handle
+        self._nav_goal_handle = None
+        self._nav_gen += 1
+        gen = self._nav_gen
+        if prev is not None:
+            try:
+                prev.cancel_goal_async()
+            except Exception:
+                pass
+
+        # Flag appears immediately (odom frame, matches canvas).
+        with self._lock:
+            self._state["goal"] = [round(float(x_odom), 2), round(float(y_odom), 2)]
+            self._state["path"] = []
+
         goal = NavigateToPose.Goal()
         goal.pose.header.frame_id = "map"
         goal.pose.header.stamp = self.get_clock().now().to_msg()
@@ -403,39 +462,67 @@ class Dashboard(Node):
         goal.pose.pose.orientation.z = math.sin(yaw / 2)
         goal.pose.pose.orientation.w = math.cos(yaw / 2)
 
-        if not self._nav_client.wait_for_server(timeout_sec=2.0):
-            return {"ok": False, "error": "navigate_to_pose server not available"}
+        if not self._nav_client.server_is_ready():
+            if not self._nav_client.wait_for_server(timeout_sec=0.5):
+                self._clear_nav_viz()
+                return {"ok": False, "error": "navigate_to_pose server not available"}
         self.log(f"🎯 nav goal → map ({gx:.2f}, {gy:.2f})", "run")
         fut = self._nav_client.send_goal_async(goal)
-        fut.add_done_callback(self._nav_accepted)
+        fut.add_done_callback(lambda f, g=gen: self._nav_accepted(f, g))
         return {"ok": True}
 
-    def _nav_accepted(self, fut):
-        gh = fut.result()
+    def _nav_accepted(self, fut, gen):
+        try:
+            gh = fut.result()
+        except Exception as exc:
+            if gen == self._nav_gen:
+                self.log(f"nav goal accept error: {exc}", "error")
+                self._clear_nav_viz()
+            return
+        if gen != self._nav_gen:
+            # Superseded / cancelled while waiting for accept — drop it.
+            if gh and gh.accepted:
+                try:
+                    gh.cancel_goal_async()
+                except Exception:
+                    pass
+            return
         if not gh or not gh.accepted:
             self.log("nav goal REJECTED", "error")
+            self._clear_nav_viz()
             return
         self._nav_goal_handle = gh
-        gh.get_result_async().add_done_callback(self._nav_done)
+        gh.get_result_async().add_done_callback(lambda f, g=gen: self._nav_done(f, g))
 
-    def _nav_done(self, fut):
+    def _nav_done(self, fut, gen):
+        if gen != self._nav_gen:
+            return
         try:
             status = fut.result().status
         except Exception as exc:
             self.log(f"nav goal error: {exc}", "error")
+            self._nav_goal_handle = None
+            self._clear_nav_viz()
             return
         names = {4: "SUCCEEDED", 5: "CANCELED", 6: "ABORTED"}
-        lvl = "info" if status == 4 else "error"
+        lvl = "info" if status in (4, 5) else "error"
         self.log(f"nav goal finished: {names.get(status, status)}", lvl)
         self._nav_goal_handle = None
+        self._clear_nav_viz()
 
     def cancel_nav(self):
-        if self._nav_goal_handle is not None:
+        """Cancel immediately — UI clears now; Nav2 cancel is async."""
+        self._nav_gen += 1
+        gh = self._nav_goal_handle
+        self._nav_goal_handle = None
+        self._clear_nav_viz()
+        if gh is not None:
             try:
-                self._nav_goal_handle.cancel_goal_async()
+                gh.cancel_goal_async()
             except Exception:
                 pass
-            self._nav_goal_handle = None
+        self.log("✕ nav goal cancelled", "info")
+        return {"ok": True}
 
 
 # ── HTTP layer ────────────────────────────────────────────────────────────────
@@ -737,6 +824,8 @@ cv.addEventListener("click",e=>{
   const r=cv.getBoundingClientRect();
   const px=(e.clientX-r.left)*(cv.width/r.width), py=(e.clientY-r.top)*(cv.height/r.height);
   const wx=S.pose[0]+(px-cv.width/2)/scale, wy=S.pose[1]-(py-cv.height/2)/scale;
+  // Optimistic flag so the marker appears on the first click, every time.
+  S.goal=[+wx.toFixed(2),+wy.toFixed(2)]; S.path=[];
   post("/api/nav_goal",{x:wx,y:wy});
 });
 
@@ -760,6 +849,22 @@ function draw(){
   // trail
   if(trail.length>1){ctx.strokeStyle="rgba(79,195,247,.45)";ctx.lineWidth=2;ctx.beginPath();
     trail.forEach((p,i)=>{const[a,b]=W(p[0],p[1]);i?ctx.lineTo(a,b):ctx.moveTo(a,b);});ctx.stroke();}
+
+  // Nav2 global path (odom frame)
+  if(S.path&&S.path.length>1){
+    ctx.strokeStyle="#ffb74d";ctx.lineWidth=2.5;ctx.setLineDash([8,5]);ctx.beginPath();
+    S.path.forEach((p,i)=>{const[a,b]=W(p[0],p[1]);i?ctx.lineTo(a,b):ctx.moveTo(a,b);});
+    ctx.stroke();ctx.setLineDash([]);
+  }
+
+  // Goal flag
+  if(S.goal){
+    const[gx,gy]=W(S.goal[0],S.goal[1]);
+    ctx.strokeStyle="#ff5d5d";ctx.fillStyle="#ff5d5d";ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(gx,gy);ctx.lineTo(gx,gy-28);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(gx,gy-28);ctx.lineTo(gx+16,gy-22);ctx.lineTo(gx,gy-16);ctx.closePath();ctx.fill();
+    ctx.beginPath();ctx.arc(gx,gy,4,0,Math.PI*2);ctx.fill();
+  }
 
   // lidar
   ctx.fillStyle="rgba(61,220,132,.75)";
@@ -797,7 +902,7 @@ draw();
 // ── Buttons ──────────────────────────────────────────────────────────────────
 $("estop").onclick=()=>post("/api/estop");
 $("stoptool").onclick=()=>post("/api/stop");
-$("navcancel").onclick=()=>post("/api/nav_cancel");
+$("navcancel").onclick=()=>{if(S){S.goal=null;S.path=[];} post("/api/nav_cancel");};
 $("padstop").onclick=()=>post("/api/estop");
 document.querySelectorAll("#pad button[data-c]").forEach(b=>{
   if(b.id==="padstop")return;
