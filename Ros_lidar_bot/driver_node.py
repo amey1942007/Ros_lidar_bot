@@ -41,8 +41,10 @@ Response Payload Formats:
 ================================================================================
 ROS 2 NODE DATA-FLOW & TIMING
 ================================================================================
-- Subscribes to: /cmd_vel (geometry_msgs/Twist) — direct from Nav2 / teleop
-  (override with parameter cmd_vel_topic if needed)
+- Subscribes to: /cmd_vel_safe (geometry_msgs/Twist) — the safety_stop node's
+  filtered output (Nav2/teleop publish /cmd_vel, safety_stop republishes it as
+  /cmd_vel_safe with unsafe motion zeroed). Override with parameter
+  cmd_vel_topic (e.g. /cmd_vel) only for bench tests without safety_stop.
 - Converts body velocities (v, w) into left/right wheel RPMs.
 - Publishes to: /encoder (sensor_msgs/JointState) carrying wheel position, velocity, and effort.
 - An internal timer loop runs at the polling rate (10 Hz). To prevent RS485 bus
@@ -132,7 +134,7 @@ class DriverNode(Node):
         self._invert_drive = bool(self.declare_parameter("invert_drive", False).value)
         self._drive_sign = -1.0 if self._invert_drive else 1.0
         self._cmd_vel_topic = str(
-            self.declare_parameter("cmd_vel_topic", "/cmd_vel").value
+            self.declare_parameter("cmd_vel_topic", "/cmd_vel_safe").value
         )
         # DDSM115 hub motors stall silently below ~5 RPM under load. Nav2's
         # RPP ramps rotate-to-heading from (measured speed + accel*dt) — from

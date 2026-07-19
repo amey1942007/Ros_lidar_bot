@@ -97,7 +97,7 @@ def _launch_setup(context, *args, **kwargs):
     )
 
     # ── 3. Motor Driver Node (DDSM115 via UART) ──────────────────────────────
-    # Direct path: Nav2 / teleop → /cmd_vel → driver (safety_stop disabled).
+    # Filtered path: Nav2 / teleop → /cmd_vel → safety_stop → /cmd_vel_safe → driver.
     driver_node = Node(
         package=package_name,
         executable="driver_node",
@@ -113,7 +113,8 @@ def _launch_setup(context, *args, **kwargs):
             "poll_rate": 20.0,
             # False: teleop W / ROS +X = physical forward on this chassis.
             "invert_drive": False,
-            "cmd_vel_topic": "/cmd_vel",
+            # Only consume safety-filtered commands — never raw /cmd_vel.
+            "cmd_vel_topic": "/cmd_vel_safe",
         }],
     )
 
@@ -177,23 +178,29 @@ def _launch_setup(context, *args, **kwargs):
         }],
     )
 
-    # ── 6. Safety Stop Node — DISABLED ───────────────────────────────────────
-    # User requested: driver takes /cmd_vel directly from Nav2 (no filter).
-    # Re-enable by uncommenting the Node below and adding safety_stop to
-    # actions.extend([...]), and set driver cmd_vel_topic back to /cmd_vel_safe.
-    # safety_stop = Node(
-    #     package=package_name,
-    #     executable="safety_stop_node",
-    #     name="safety_stop",
-    #     output=out,
-    #     arguments=log_args,
-    #     parameters=[{
-    #         "min_safe_distance": 0.40,
-    #         "ignore_below": 0.28,
-    #         "front_opening_deg": 90.0,
-    #         "rear_opening_deg": 50.0,
-    #     }],
-    # )
+    # ── 6. Safety Stop Node ──────────────────────────────────────────────────
+    # Scan-based velocity filter between Nav2/teleop and the motor driver
+    # (same wiring as the main-branch sim pipeline):
+    #   Nav2 / teleop → /cmd_vel → safety_stop → /cmd_vel_safe → driver
+    # Also publishes /safety_blocked, which frontier_explorer uses to abort
+    # goals that keep the robot pinned against an obstacle.
+    safety_stop = Node(
+        package=package_name,
+        executable="safety_stop_node",
+        name="safety_stop",
+        output=out,
+        arguments=log_args,
+        # If this node dies the driver gets no commands at all (fail-safe:
+        # robot stops) — respawn it so the pipeline recovers on its own.
+        respawn=True,
+        respawn_delay=2.0,
+        parameters=[{
+            "min_safe_distance": 0.40,
+            "ignore_below": 0.28,
+            "front_opening_deg": 90.0,
+            "rear_opening_deg": 50.0,
+        }],
+    )
 
     # ── 6b. Gamepad teleop (Bluetooth or USB controller) ─────────────────────
     # joy_node (SDL) reads the controller and publishes /joy; joy_teleop maps
@@ -265,7 +272,7 @@ def _launch_setup(context, *args, **kwargs):
     )
 
     # ── 9. Nav2 Navigation Stack ────────────────────────────────────────────
-    # Nav2 publishes /cmd_vel → driver_node (safety_stop bypassed).
+    # Nav2 publishes /cmd_vel → safety_stop → /cmd_vel_safe → driver_node.
     nav2 = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
@@ -287,6 +294,7 @@ def _launch_setup(context, *args, **kwargs):
         rsp,
         imu_node,
         driver_node,
+        safety_stop,
         odom_node,
         lidar_node,
         joy_node,

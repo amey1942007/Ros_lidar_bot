@@ -80,8 +80,8 @@ def _tool_imu_calibration(params):
     rotations = _f(params, "rotations", 2.0, 0.5, 4.0)
     return [
         "ros2", "run", "Ros_lidar_bot", "imu_calibration_node", "--ros-args",
-        # safety_stop is disabled on this robot — the node's default
-        # /cmd_vel_safe goes nowhere, drive the motors directly.
+        # Publish on /cmd_vel so the command passes through safety_stop like
+        # every other source (spin-in-place is angular-only, never blocked).
         "-p", "cmd_vel_topic:=/cmd_vel",
         "-p", f"rotation_speed:={speed}",
         "-p", f"rotation_count:={rotations}",
