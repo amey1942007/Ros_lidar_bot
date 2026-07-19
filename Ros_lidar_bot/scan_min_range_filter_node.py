@@ -23,7 +23,7 @@ from sensor_msgs.msg import LaserScan
 class ScanMinRangeFilter(Node):
     def __init__(self) -> None:
         super().__init__("scan_min_range_filter")
-        self._min = float(self.declare_parameter("min_range", 0.45).value)
+        self._min = float(self.declare_parameter("min_range", 0.30).value)
         # Lidar drivers use SensorData (BEST_EFFORT). RViz / ros2 topic echo /
         # the dashboard default to RELIABLE — so publish RELIABLE or they see
         # an "empty" /scan even though we are publishing.

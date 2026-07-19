@@ -52,7 +52,7 @@ ROS parameters:
     serial_baud      (int,     default 115200)           – baud rate
     scan_topic       (string,  default '/scan')          – topic to publish LaserScan
     frame_id         (string,  default 'laser_frame')   – LaserScan header frame_id
-    min_range        (float,   default 0.40)            – range filter threshold (meters)
+    min_range        (float,   default 0.30)            – range filter threshold (meters)
     max_range        (float,   default 12.0)            – maximum valid range (meters)
     publish_rate     (float,   default 10.0)            – max throttled publish frequency
     motor_pwm        (int,     default 660)              – motor PWM value
@@ -101,7 +101,7 @@ class LidarNode(Node):
         self.serial_baud      = self.declare_parameter('serial_baud',      115200).value
         self.scan_topic       = self.declare_parameter('scan_topic',        '/scan').value
         self.frame_id         = self.declare_parameter('frame_id',          'laser_frame').value
-        self.min_range        = self.declare_parameter('min_range',         0.40).value
+        self.min_range        = self.declare_parameter('min_range',         0.30).value
         self.max_range        = self.declare_parameter('max_range',         12.0).value
         self.publish_rate     = self.declare_parameter('publish_rate',      10.0).value
         self.motor_pwm        = self.declare_parameter('motor_pwm',         660).value

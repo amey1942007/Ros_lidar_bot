@@ -181,7 +181,7 @@ def _launch_setup(context, *args, **kwargs):
         }],
     )
 
-    # Drop returns closer than the chassis extent (~0.35–0.45 m frame hits).
+    # Drop returns within 0.30 m of the lidar (chassis/mast frame hits).
     # Without this, RViz /scan still shows the body even if Nav2 ignores it.
     scan_filter = Node(
         package=package_name,
@@ -192,7 +192,7 @@ def _launch_setup(context, *args, **kwargs):
         respawn=True,
         respawn_delay=2.0,
         parameters=[{
-            "min_range": 0.45,  # verified: frame marks sit within ~0.45 m
+            "min_range": 0.30,  # per user: nothing within 30 cm of the bot
         }],
     )
 
@@ -215,8 +215,8 @@ def _launch_setup(context, *args, **kwargs):
         parameters=[{
             # Stop for real obstacles just past the filtered near field.
             "min_safe_distance": 0.50,
-            # /scan is already clipped at 0.45 m; keep ignore in sync.
-            "ignore_below": 0.45,
+            # /scan is already clipped at 0.30 m; keep ignore in sync.
+            "ignore_below": 0.30,
             "front_opening_deg": 90.0,
             "rear_opening_deg": 50.0,
             # Hard-stop if wheel odometry dies (prevents Nav2 circle-on-stale-pose).
