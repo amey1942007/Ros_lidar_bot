@@ -214,7 +214,7 @@ def _launch_setup(context, *args, **kwargs):
         respawn_delay=2.0,
         parameters=[{
             # Stop for real obstacles just past the filtered near field.
-            "min_safe_distance": 0.50,
+            "min_safe_distance": 0.35,
             # /scan is already clipped at 0.30 m; keep ignore in sync.
             "ignore_below": 0.30,
             "front_opening_deg": 90.0,

@@ -36,8 +36,8 @@ class SafetyStop(Node):
     def __init__(self) -> None:
         super().__init__("safety_stop")
 
-        self.declare_parameter("min_safe_distance", 0.50)  # metres
-        self.declare_parameter("ignore_below", 0.45)       # ignore chassis (≤~0.45 m)
+        self.declare_parameter("min_safe_distance", 0.35)  # metres
+        self.declare_parameter("ignore_below", 0.30)       # ignore chassis (≤~0.30 m)
         self.declare_parameter("front_opening_deg", 90.0)  # total forward arc
         self.declare_parameter("rear_opening_deg", 50.0)   # total rear arc
         self.declare_parameter("odom_raw_timeout_sec", 0.5)
