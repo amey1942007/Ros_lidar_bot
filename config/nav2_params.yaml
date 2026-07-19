@@ -72,11 +72,12 @@ controller_server:
       lookahead_time: 1.2
       use_velocity_scaled_lookahead_dist: true
 
-      # OFF: with stale/wrong map heading (odom_raw dropout, SLAM lag) RPP
-      # never finishes this spin and the robot circles forever with a live
-      # goal (seen live 2026-07-19: cmd v=0, cmd ω≈0.7, spiral trail).
-      # Drive while correcting heading instead — safer on this chassis.
-      use_rotate_to_heading: false
+      # ON per user (2026-07-20): rotate in place toward the path first, then
+      # drive straight — no more long curved approach arcs. The 2026-07-19
+      # circle-forever failure this was disabled for (spinning on dead
+      # odom_raw) is now cut off at the source: safety_stop zeroes all motion
+      # when wheel odometry goes silent. Keep angular_vel ≤1.0 (scan skew).
+      use_rotate_to_heading: true
       rotate_to_heading_min_angle: 0.4
       rotate_to_heading_angular_vel: 1.0
 
