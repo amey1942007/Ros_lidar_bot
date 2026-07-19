@@ -226,7 +226,13 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node._pub.publish(Twist())   # motors zeroed on exit
+        # Best-effort motor zero: on launch SIGINT the context is already dead
+        # and publish raises — the driver's 1 s cmd_vel timeout stops the
+        # motors regardless, so never let this crash the exit path.
+        try:
+            node._pub.publish(Twist())   # motors zeroed on exit
+        except Exception:
+            pass
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

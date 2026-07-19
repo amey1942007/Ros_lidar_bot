@@ -433,7 +433,10 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        # Under ros2 launch, SIGINT already shut the context down — calling
+        # shutdown() again raises and makes launch report "process has died".
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":
