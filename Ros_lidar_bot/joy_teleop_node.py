@@ -216,16 +216,31 @@ class JoyTeleop(Node):
         threading.Thread(target=self._post_dashboard,
                          args=(endpoint, payload, desc), daemon=True).start()
 
+    def _post(self, endpoint, payload):
+        req = urllib.request.Request(
+            self._dash_url + endpoint,
+            data=json.dumps(payload).encode(),
+            headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
+            return json.loads(resp.read() or b'{}')
+
     def _post_dashboard(self, endpoint, payload, desc):
+        # Robot logs are suppressed on the quiet bringup, so the press and
+        # any failure are echoed into the dashboard console instead.
         try:
-            req = urllib.request.Request(
-                self._dash_url + endpoint,
-                data=json.dumps(payload).encode(),
-                headers={'Content-Type': 'application/json'})
-            with urllib.request.urlopen(req, timeout=3.0) as resp:
-                out = json.loads(resp.read() or b'{}')
+            self._post('/api/log', {'text': f'🎮 {desc}', 'level': 'run'})
+        except Exception:
+            pass
+        try:
+            out = self._post(endpoint, payload)
             if not out.get('ok', False):
-                self.get_logger().error(f'{desc} failed: {out.get("error", "?")}')
+                err = out.get('error', '?')
+                self.get_logger().error(f'{desc} failed: {err}')
+                try:
+                    self._post('/api/log',
+                               {'text': f'🎮 {desc} FAILED: {err}', 'level': 'error'})
+                except Exception:
+                    pass
         except Exception as exc:
             self.get_logger().error(f'{desc} request failed: {exc}')
 

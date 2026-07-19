@@ -897,6 +897,12 @@ class Handler(BaseHTTPRequestHandler):
             out = self.dash.save_map(payload.get("name"))
         elif self.path == "/api/blacklist":
             out = self.dash.blacklist_zone(payload)
+        elif self.path == "/api/log":
+            # Lets other nodes (gamepad teleop) drop a line into the console.
+            lvl = payload.get("level")
+            self.dash.log(str(payload.get("text", ""))[:200],
+                          lvl if lvl in ("info", "run", "error") else "info")
+            out = {"ok": True}
         else:
             self.send_error(404)
             return
