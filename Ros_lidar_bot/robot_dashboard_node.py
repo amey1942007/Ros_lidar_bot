@@ -9,7 +9,8 @@ the laptop/phone simply opens  http://<pi-ip>:8080  in a browser.
 
 Features
   • Live 2D visualization: animated robot model (odom pose), lidar scan
-    overlay, motion trail, pan-free follow camera, mouse-wheel zoom.
+    overlay, live SLAM occupancy map, semantic object labels, motion trail,
+    pan-free follow camera, mouse-wheel zoom.
   • Status board: expected-node health, topic rates/ages, TF chain state.
   • Tool launcher — NOTHING runs at bringup; each starts only on click:
       - IMU test        (imu_test_node)
@@ -17,6 +18,9 @@ Features
       - Drive distance  (drive_distance — exact-distance test moves)
     Tool stdout streams into the console panel; one tool at a time; Stop
     kills the tool's whole process group.
+  • Semantic vision toggle: starts/stops vision.launch.py (YOLO-World camera
+    node + semantic SLAM) in its own slot, independent of the tools above.
+    E-STOP leaves it running — perception is passive, it moves nothing.
   • Nav goal mode: click the canvas to send a NavigateToPose goal (canvas
     point is transformed odom→map via TF); result/feedback logged.
   • Nudge pad (short cmd_vel pulses) and a big E-STOP that kills the tool,
@@ -27,6 +31,7 @@ lines), plain POST for browser→Pi commands. Standard library only — no
 websocket dependency, no CDN, works offline.
 """
 
+import base64
 import json
 import math
 import os
@@ -36,6 +41,7 @@ import socket
 import subprocess
 import threading
 import time
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import rclpy
@@ -45,6 +51,13 @@ from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 from sensor_msgs.msg import Imu, LaserScan
+from std_msgs.msg import String
+
+try:
+    from visualization_msgs.msg import MarkerArray
+    _MARKERS_OK = True
+except ImportError:
+    _MARKERS_OK = False
 
 try:
     from nav2_msgs.action import NavigateToPose
@@ -131,7 +144,9 @@ class Hub:
                 self._clients.remove(q)
 
     def send(self, event: dict):
-        data = json.dumps(event, separators=(",", ":"))
+        self.send_raw(json.dumps(event, separators=(",", ":")))
+
+    def send_raw(self, data: str):
         with self._lock:
             clients = list(self._clients)
         for q in clients:
@@ -160,12 +175,17 @@ class Dashboard(Node):
             "imu": {"gz": 0.0, "ax": 0.0, "ay": 0.0}, "scan": [],
             "rates": {}, "nodes": {}, "tf": {}, "tool": None,
             "cmd": [0.0, 0.0], "map_pose": None, "nav": None,
+            "yolo_det": [], "sem": [],
         }
         self._last_msg_time = {}
         self._msg_counts = {}
 
         self._tool_proc = None
         self._tool_name = None
+        self._vision_proc = None
+        self._latest_map = None
+        self._map_dirty = False
+        self.last_map_data = None   # cached SSE map event for new clients
         self._nudge_until = 0.0
         self._nudge_cmd = (0.0, 0.0)
         self._estop_until = 0.0
@@ -178,7 +198,10 @@ class Dashboard(Node):
         self.create_subscription(LaserScan, "/scan", self._scan_cb, 5)
         self.create_subscription(Twist, "/cmd_vel", self._cmd_cb, 10)
         map_qos = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
-        self.create_subscription(OccupancyGrid, "/map", self._mk_rate_cb("/map"), map_qos)
+        self.create_subscription(OccupancyGrid, "/map", self._map_cb, map_qos)
+        self.create_subscription(String, "/yolo", self._yolo_cb, 10)
+        if _MARKERS_OK:
+            self.create_subscription(MarkerArray, "/semantic_markers", self._sem_cb, 10)
 
         self._tf_buffer = None
         if _TF2_OK:
@@ -236,6 +259,31 @@ class Dashboard(Node):
         with self._lock:
             self._state["cmd"] = [round(m.linear.x, 3), round(m.angular.z, 3)]
 
+    def _map_cb(self, m):
+        self._mark("/map")
+        with self._lock:
+            self._latest_map = m
+            self._map_dirty = True
+
+    def _yolo_cb(self, m):
+        self._mark("/yolo")
+        try:
+            dets = json.loads(m.data).get("detections", [])
+        except (json.JSONDecodeError, AttributeError):
+            return
+        summary = []
+        for d in dets[:6]:
+            conf = d.get("confidence", d.get("conf", 0.0)) or 0.0
+            summary.append(f'{d.get("class", "?")} {round(100 * float(conf))}%')
+        with self._lock:
+            self._state["yolo_det"] = summary
+
+    def _sem_cb(self, m):
+        objs = [[round(mk.pose.position.x, 2), round(mk.pose.position.y, 2), mk.text]
+                for mk in m.markers if mk.ns == "semantic_labels"][:40]
+        with self._lock:
+            self._state["sem"] = objs
+
     def _scan_cb(self, m):
         self._mark("/scan")
         pts = []
@@ -256,12 +304,13 @@ class Dashboard(Node):
             st = dict(self._state)
         st["t"] = "state"
         st["tool"] = self._tool_name
+        st["vision"] = bool(self._vision_proc and self._vision_proc.poll() is None)
         self.hub.send(st)
 
     def _slow_tick(self):
         now = time.monotonic()
         rates = {}
-        for topic in ("/scan", "/odom", "/odom_raw", "/imu", "/map", "/cmd_vel"):
+        for topic in ("/scan", "/odom", "/odom_raw", "/imu", "/map", "/cmd_vel", "/yolo"):
             cnt = self._msg_counts.pop(topic, 0)
             last = self._last_msg_time.get(topic)
             rates[topic] = {
@@ -301,6 +350,98 @@ class Dashboard(Node):
             self._state["nodes"] = nodes
             self._state["tf"] = tf_state
             self._state["map_pose"] = map_pose
+
+        self._push_map()
+
+    # ── Live map → browser ───────────────────────────────────────────────────
+    MAP_MAX_CELLS = 220   # per-side cap after downsampling (browser payload)
+
+    def _push_map(self):
+        with self._lock:
+            m = self._latest_map
+            dirty = self._map_dirty
+            self._map_dirty = False
+        if m is None or not dirty:
+            return
+
+        # map→odom pose so the browser can place the grid in its odom-frame view.
+        tf = [0.0, 0.0, 0.0]
+        if self._tf_buffer is not None:
+            try:
+                tr = self._tf_buffer.lookup_transform("odom", "map", rclpy.time.Time())
+                q = tr.transform.rotation
+                tf = [tr.transform.translation.x, tr.transform.translation.y,
+                      math.atan2(2 * (q.w * q.z + q.x * q.y),
+                                 1 - 2 * (q.y * q.y + q.z * q.z))]
+            except Exception:
+                pass  # frames coincide until SLAM publishes map→odom
+
+        w, h = m.info.width, m.info.height
+        f = max(1, (max(w, h) + self.MAP_MAX_CELLS - 1) // self.MAP_MAX_CELLS)
+        data = m.data
+        rows = []
+        for r in range(0, h, f):
+            base = r * w
+            # 0 = unknown, 1 = free, 2 = occupied — 1 byte per downsampled cell
+            rows.append(bytes(0 if v < 0 else (2 if v > 50 else 1)
+                              for v in data[base:base + w:f]))
+        if not rows:
+            return
+        packed = base64.b64encode(zlib.compress(b"".join(rows), 6)).decode()
+        event = json.dumps({
+            "t": "map", "w": len(rows[0]), "h": len(rows),
+            "res": round(m.info.resolution * f, 4),
+            "origin": [round(m.info.origin.position.x, 3),
+                       round(m.info.origin.position.y, 3)],
+            "tf": [round(tf[0], 3), round(tf[1], 3), round(tf[2], 4)],
+            "data": packed,
+        }, separators=(",", ":"))
+        self.last_map_data = event   # replayed to newly connected clients
+        self.hub.send_raw(event)
+
+    # ── Semantic vision pipeline (independent of the one-shot tool slot) ─────
+    def start_vision(self):
+        if self._vision_proc and self._vision_proc.poll() is None:
+            return {"ok": True, "note": "already running"}
+        cmd = ["ros2", "launch", "Ros_lidar_bot", "vision.launch.py"]
+        self.log("▶ starting semantic vision (YOLO-World + semantic SLAM)", "run")
+        try:
+            self._vision_proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, start_new_session=True)
+        except OSError as exc:
+            self.log(f"failed to start vision: {exc}", "error")
+            return {"ok": False, "error": str(exc)}
+        threading.Thread(target=self._pump_vision, args=(self._vision_proc,),
+                         daemon=True).start()
+        return {"ok": True}
+
+    def _pump_vision(self, proc):
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line:
+                self.hub.send({"t": "log", "level": "tool",
+                               "time": time.strftime("%H:%M:%S"),
+                               "text": "[vision] " + line})
+        rc = proc.wait()
+        with self._lock:
+            self._state["yolo_det"] = []
+        lvl = "info" if rc == 0 else "error"
+        self.log(f"■ semantic vision exited (code {rc})", lvl)
+
+    def stop_vision(self):
+        proc = self._vision_proc
+        if not proc or proc.poll() is not None:
+            return {"ok": True, "note": "not running"}
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        return {"ok": True}
 
     # ── Nudge / E-stop pulse publisher ───────────────────────────────────────
     def _motion_tick(self):
@@ -464,6 +605,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             q = self.dash.hub.attach()
+            if self.dash.last_map_data:   # replay latest map to the new client
+                try:
+                    q.put_nowait(self.dash.last_map_data)
+                except queue.Full:
+                    pass
             try:
                 while True:
                     try:
@@ -501,6 +647,9 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/nav_cancel":
             self.dash.cancel_nav()
             out = {"ok": True}
+        elif self.path == "/api/vision":
+            out = (self.dash.start_vision() if payload.get("on")
+                   else self.dash.stop_vision())
         else:
             self.send_error(404)
             return
@@ -653,6 +802,15 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
           <button class="btn" data-tool="drive_distance">Drive</button>
         </div>
       </div>
+
+      <div class="tool"><h3>🎥 Semantic vision</h3>
+        <p>YOLO-World camera detections + LiDAR depth → labelled objects on the
+        map (needs the camera connected). Runs alongside the tools above.</p>
+        <div class="row">
+          <button class="btn" id="visionbtn">Start</button>
+          <span id="yolodet" style="color:var(--dim);font-size:12px"></span>
+        </div>
+      </div>
     </section>
   </div>
 
@@ -676,6 +834,7 @@ es.onmessage=e=>{
     if(!lt||Math.hypot(p[0]-lt[0],p[1]-lt[1])>0.02){trail.push([p[0],p[1]]);if(trail.length>600)trail.shift();}
     updatePanels(m);
   } else if(m.t==="log"){addLog(m);}
+  else if(m.t==="map"){loadMap(m);}
 };
 es.onerror=()=>{$("overall").textContent="DISCONNECTED";$("overall").className="pill bad";};
 
@@ -710,6 +869,11 @@ function updatePanels(m){
       `<tr><td><span class="dot ${v.ok?"ok":"bad"}"></span>TF ${k}</td>
        <td class="num">${v.ok?("age "+v.age+"s"):"MISSING"}</td></tr>`).join("");
   }
+  const vb=$("visionbtn");
+  vb.textContent=m.vision?"Stop":"Start";
+  vb.className=m.vision?"btn stop":"btn";
+  $("yolodet").textContent=(m.yolo_det&&m.yolo_det.length)?("👁 "+m.yolo_det.join(", ")):"";
+
   const run=$("running"), pill=$("toolpill");
   if(m.tool){run.style.display="flex";$("runname").textContent=m.tool;
     pill.style.display="";pill.textContent="⏳ "+m.tool;}
@@ -725,6 +889,32 @@ function addLog(m){
   box.appendChild(d);
   while(box.childNodes.length>500)box.removeChild(box.firstChild);
   box.scrollTop=box.scrollHeight;
+}
+
+// ── Live SLAM map layer ──────────────────────────────────────────────────────
+let MAP=null;
+async function loadMap(m){
+  try{
+    const raw=Uint8Array.from(atob(m.data),c=>c.charCodeAt(0));
+    const ds=new DecompressionStream("deflate");
+    const buf=await new Response(new Blob([raw]).stream().pipeThrough(ds)).arrayBuffer();
+    const cells=new Uint8Array(buf);
+    const off=document.createElement("canvas");off.width=m.w;off.height=m.h;
+    const ictx=off.getContext("2d");
+    const img=ictx.createImageData(m.w,m.h);
+    for(let i=0;i<cells.length;i++){
+      const v=cells[i],o=i*4;
+      if(v===1){img.data[o]=25;img.data[o+1]=36;img.data[o+2]=48;img.data[o+3]=210;}       // free
+      else if(v===2){img.data[o]=176;img.data[o+1]=196;img.data[o+2]=212;img.data[o+3]=255;} // occupied
+    }                                                                                        // 0 = unknown → transparent
+    ictx.putImageData(img,0,0);
+    MAP={img:off,res:m.res,origin:m.origin,tf:m.tf};
+  }catch(e){/* old browser without DecompressionStream — no map layer */}
+}
+// map-frame point → odom-frame point (using the map→odom TF sent with the map)
+function mapToOdom(mx,my){
+  const[tx,ty,th]=MAP.tf;
+  return [tx+mx*Math.cos(th)-my*Math.sin(th), ty+mx*Math.sin(th)+my*Math.cos(th)];
 }
 
 // ── Canvas ───────────────────────────────────────────────────────────────────
@@ -757,6 +947,17 @@ function draw(){
   // origin marker
   const[ox,oy]=W(0,0);ctx.fillStyle="#31465c";ctx.fillRect(ox-3,oy-3,6,6);
 
+  // SLAM occupancy map (drawn in map frame, placed via map→odom TF)
+  if(MAP){
+    const[mx,my]=mapToOdom(MAP.origin[0],MAP.origin[1]);
+    const[px,py]=W(mx,my);
+    ctx.save();ctx.translate(px,py);ctx.rotate(-MAP.tf[2]);
+    ctx.imageSmoothingEnabled=false;
+    ctx.scale(MAP.res*scale,-MAP.res*scale);   // flip y: image row 0 = map origin row
+    ctx.drawImage(MAP.img,0,0);
+    ctx.restore();
+  }
+
   // trail
   if(trail.length>1){ctx.strokeStyle="rgba(79,195,247,.45)";ctx.lineWidth=2;ctx.beginPath();
     trail.forEach((p,i)=>{const[a,b]=W(p[0],p[1]);i?ctx.lineTo(a,b):ctx.moveTo(a,b);});ctx.stroke();}
@@ -766,6 +967,18 @@ function draw(){
   for(const [a,r] of S.scan){
     const th=yaw+a, [px,py]=W(rx+r*Math.cos(th), ry+r*Math.sin(th));
     ctx.fillRect(px-1.5,py-1.5,3,3);
+  }
+
+  // semantic objects (map frame → odom via map TF)
+  if(MAP&&S.sem&&S.sem.length){
+    ctx.font="11px system-ui";ctx.textAlign="center";
+    for(const[mx,my,label] of S.sem){
+      const[wx2,wy2]=mapToOdom(mx,my);
+      const[px,py]=W(wx2,wy2);
+      ctx.fillStyle="#ffb74d";
+      ctx.beginPath();ctx.moveTo(px,py-5);ctx.lineTo(px+5,py);ctx.lineTo(px,py+5);ctx.lineTo(px-5,py);ctx.closePath();ctx.fill();
+      ctx.fillStyle="#ffd9a0";ctx.fillText(label,px,py-8);
+    }
   }
 
   // robot body 0.50×0.36 m
@@ -803,6 +1016,7 @@ document.querySelectorAll("#pad button[data-c]").forEach(b=>{
   if(b.id==="padstop")return;
   b.onclick=()=>{const[l,a]=b.dataset.c.split(",").map(Number);post("/api/nudge",{lin:l,ang:a});};
 });
+$("visionbtn").onclick=()=>post("/api/vision",{on:!(S&&S.vision)});
 document.querySelectorAll("[data-tool]").forEach(b=>{
   b.onclick=()=>{
     const t=b.dataset.tool,params={};
