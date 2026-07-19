@@ -1,154 +1,138 @@
 # Ros_lidar_bot
 
-A ROS 2 differential-drive robot with LiDAR, IMU, camera, and semantic object detection. Runs in Ignition Gazebo with real-time SLAM, EKF odometry fusion, Nav2 autonomous navigation, frontier-based exploration, and YOLO World semantic mapping.
+A ROS 2 (Jazzy) differential-drive robot for fully autonomous indoor mapping.
+Real hardware: Raspberry Pi 5, DDSM115 hub motors over RS485, RPLidar S2E over
+Ethernet, BNO055 IMU via Arduino Mega. Real-time SLAM, EKF sensor fusion, Nav2
+navigation, frontier exploration, a scan-based safety stop, YOLO-World semantic
+mapping, and a browser control dashboard served from the robot.
+
+> **Branches**
+> - **`main` (this branch — hardware):** runs the physical robot.
+> - **[`Simulation`](../../tree/Simulation):** the Ignition Gazebo simulation
+>   version of the same stack (furnished worlds, gz bridge, camera plugin).
+>   Use it to develop and test without the robot.
 
 ---
 
 ## Table of Contents
 
-- [About](#about)
 - [System Architecture](#system-architecture)
-- [Semantic Detection Pipeline](#semantic-detection-pipeline)
 - [Robot Hardware](#robot-hardware)
+- [Web Dashboard](#web-dashboard)
+- [Semantic Vision Pipeline](#semantic-vision-pipeline)
 - [Project Structure](#project-structure)
-- [Prerequisites](#prerequisites)
 - [Installation](#installation)
 - [Usage](#usage)
 - [ROS 2 Topics](#ros-2-topics)
 - [Configuration](#configuration)
-- [Progress](#progress)
 - [Common Issues](#common-issues)
-
----
-
-## About
-
-Custom differential-drive robot platform targeting fully autonomous indoor operation. The stack covers:
-
-- **Ignition Gazebo (Fortress)** physics simulation — indoor furnished worlds
-- **SLAM Toolbox** — real-time occupancy-grid mapping with loop closure
-- **robot_localization EKF** — fuses wheel odometry + IMU into clean `/odom`
-- **Nav2** — global path planning, local trajectory, recovery behaviours
-- **Frontier exploration** — fully autonomous map coverage, no pre-defined waypoints
-- **Semantic mapping** — open-vocabulary YOLO World object detection → real-world (x, y) coordinates → RViz2 overlay
-- **Gamepad teleoperation** — manual driving with a USB controller
 
 ---
 
 ## System Architecture
 
 ```
-Ignition Gazebo
-  │
-  ├─ DiffDrive plugin   ──→ /odom       ──→ [gz bridge] ──→ /odom_raw
-  ├─ GPU LiDAR          ──→ /scan       ──→ [gz bridge] ──→ /scan
-  ├─ IMU sensor         ──→ /imu        ──→ [gz bridge] ──→ /imu
-  ├─ Camera             ──→ /images_raw ──→ [gz bridge]
-  └─ JointStatePublisher──→ /joint_states──→ [gz bridge]
+DDSM115 motors ←RS485/USB→ [driver_node] ──→ /encoder (JointState, 20 Hz)
+                                │  ← subscribes /cmd_vel_safe
+BNO055 ←UART→ Arduino Mega ←USB→ [imu_node] ──→ /imu (50 Hz)
+RPLidar S2E ←Ethernet/UDP→ [sllidar_node] ──→ /scan (10 Hz, DenseBoost)
 
-[robot_state_publisher]  ←─ robot_description (URDF/Xacro)
-    └─ TF: base_footprint → base_link → laser_frame / camera_link / imu / wheels
+[odom_node]  ←─ /encoder ──→ /odom_raw (wheel odometry, no TF)
 
 [ekf_filter_node]  ←─ /odom_raw + /imu
-    └─ TF: odom → base_footprint
-    └─ publishes: /odom (filtered)
+    └─ TF: odom → base_footprint          └─ publishes /odom (filtered)
 
-[slam_toolbox]  ←─ /scan + TF(odom→base_footprint)
-    └─ TF: map → odom
-    └─ publishes: /map (OccupancyGrid, updated every 3 s)
+[slam_toolbox]  ←─ /scan + TF
+    └─ TF: map → odom                     └─ publishes /map
 
-[nav2 stack]  ←─ /map + /scan + /odom + TF tree
-    ├─ planner_server   — NavFn A* global planner
-    ├─ controller_server— Regulated Pure Pursuit local controller
-    ├─ behavior_server  — spin / backup / wait recovery behaviours
-    └─ bt_navigator     — navigate_to_pose action server → /cmd_vel
+[nav2 stack]  ←─ /map + /scan + /odom ──→ /cmd_vel
 
-[frontier_explorer]  ←─ /map + TF(map→base_footprint)
-    └─ sends goals to navigate_to_pose action server
+[frontier_explorer]  ←─ /map + /safety_blocked + /manual_blacklist
+    └─ sends NavigateToPose actions to Nav2 (autonomous exploration)
 
-[OpenCV + YOLO World publisher]  ←─ RPi Camera Module 3 (or Gazebo /images_raw)
-    └─ runs YOLO World inference, publishes /yolo (JSON detections)
+[joy_node + joy_teleop]  gamepad ──→ /cmd_vel  (overrides Nav2 while stick moves)
 
-[semantic_slam_node]  ←─ /yolo + /scan + TF(map→base_link)
-    └─ publishes: /semantic_markers (RViz2 MarkerArray with x,y map coordinates)
-    └─ saves:     /tmp/semantic_map.json
+[safety_stop]  ←─ /cmd_vel + /scan
+    └─ zeroes unsafe motion ──→ /cmd_vel_safe ──→ driver_node ──→ motors
+    └─ publishes /safety_blocked
 ```
 
-**Staged startup** (`launch_sim.launch.py`):
-
-| Time | What starts |
-|------|-------------|
-| T = 0 s | Gazebo, RSP, bridge |
-| T = 3 s | Robot spawned into world |
-| T = 6 s | EKF + SLAM Toolbox |
-| T = 16 s | Nav2 stack |
-| T = 32 s | Frontier explorer *(autonomous launch only)* |
-
-The semantic node and OpenCV publisher are started **independently** in separate terminals.
-
----
-
-## Semantic Detection Pipeline
-
-The semantic pipeline runs as two cooperating nodes:
-
-```
-RPi Camera Module 3 (physical) or Gazebo /images_raw (simulation)
-        │
-        ▼
-[opencv_yolo_publisher node]
-  • Captures frames from the camera
-  • Runs YOLO World open-vocabulary detection (classes configured in script)
-  • Publishes /yolo — std_msgs/String — JSON array of detections
-        │
-        │  /yolo message format:
-        │  [
-        │    {"class": "chair",  "x": 320, "y": 240, "w": 100, "h": 150, "conf": 0.82},
-        │    {"class": "person", "x": 120, "y": 200, "w": 60,  "h": 180, "conf": 0.91}
-        │  ]
-        │  x, y = bbox centre in pixels | w, h = bbox size in pixels
-        ▼
-[semantic_slam_node]
-  • Subscribes to /yolo + /scan + TF (map → base_link)
-  • For each detection:
-      1. Compute horizontal angle from bbox centre pixel + camera FOV
-      2. Look up LiDAR range at that angle  →  object depth (m)
-      3. Project depth into base_link frame (x_base, y_base)
-      4. Rotate to map frame using robot_yaw from TF
-      5. Merge with existing object list (weighted average, 0.6 m radius)
-  • Publishes after MIN_SIGHTINGS = 3 confirmations
-        │
-        ▼
-/semantic_markers  —  visualization_msgs/MarkerArray
-  • Coloured CUBE marker at (x, y) map position
-  • TEXT_VIEW_FACING label: "chair (82%)"
-  • Lifetime 3 s (refreshed on each detection cycle)
-
-/tmp/semantic_map.json  —  persisted across node restarts
-```
-
-### Camera Constants (edit in `semantic_slam_node.py` if needed)
-
-| Constant | Value | Notes |
-|----------|-------|-------|
-| `IMG_W` | 640 px | Frame width expected from publisher |
-| `IMG_H` | 480 px | Frame height |
-| `FOV_H` | 66° (1.152 rad) | RPi Camera Module 3 horizontal FOV |
-| `FOCAL_LEN` | ~514 px | Derived: `IMG_W / (2 × tan(FOV_H/2))` |
+Every velocity command — Nav2, gamepad, dashboard, test tools — flows through
+the safety stop before reaching the motors. Forward/reverse motion is blocked
+when an obstacle is inside `min_safe_distance`; rotation is always preserved so
+Nav2 recovery spins still work.
 
 ---
 
 ## Robot Hardware
 
-| Component | Specification |
-|-----------|---------------|
-| Base | Custom differential-drive chassis |
-| Drive wheels | 2 × motorised, separation 339.5 mm, radius 81 mm |
-| Casters | 2 × passive ball casters |
-| LiDAR | 360° GPU LiDAR, range 0.3–12 m, 20 Hz, 360 samples/rev |
-| IMU | 6-DOF IMU, 50 Hz |
-| Camera | RPi Camera Module 3, RGB 640×480, 30 Hz, 66° FOV |
-| Footprint | ~500 mm × 360 mm |
+| Component | Detail |
+|---|---|
+| Compute | Raspberry Pi 5, Ubuntu 24.04, ROS 2 Jazzy |
+| Drive | 2× DDSM115 direct-drive hub motors (RS485, 10-byte CRC8/MAXIM packets) via USB-RS485 dongle on `/dev/ttyACM0` |
+| Wheels | ⌀100.7 mm, wheel base 0.33 m, min reliable command ≈6 RPM |
+| LiDAR | RPLidar S2E — **Ethernet/UDP** (`192.168.11.2:8089`), DenseBoost (~3200 pts/rev) |
+| IMU | BNO055 on Arduino Mega, streamed over USB serial `/dev/ttyACM1` at 500000 baud |
+| Camera (planned) | RPi Camera Module 3 for the semantic vision pipeline |
+| Teleop | Any SDL gamepad (USB or Bluetooth) |
+
+**LiDAR network setup (one-time):** give `eth0` a static IP on the lidar's
+subnet:
+
+```bash
+sudo nmcli con add type ethernet ifname eth0 con-name lidar \
+     ipv4.method manual ipv4.addresses 192.168.11.1/24
+ping 192.168.11.2   # verify
+```
+
+The lidar driver is [Slamtec sllidar_ros2](https://github.com/Slamtec/sllidar_ros2)
+cloned into `src/` — the apt `rplidar-ros` package is serial-only and will not
+work with the S2E.
+
+---
+
+## Web Dashboard
+
+`launch_robot.launch.py` serves a self-contained browser GUI from the robot at
+**`http://<robot-ip>:8080`** — no RViz or X11 needed on a headless Pi.
+
+- **Live view** — robot model, lidar scan, motion trail, **live SLAM map**,
+  planned path + current goal flag, frontier queue and blacklist zones,
+  semantic object labels. Wheel-zoom canvas.
+- **Click-to-navigate** — arm "Nav-goal mode", click the map to send a Nav2 goal.
+- **No-go zones** — arm "🚫 No-go mode", press-and-drag to draw a circle the
+  frontier explorer must avoid; pick duration (1/5/15 min or permanent).
+- **System panel** — CPU, SoC temperature, RAM, disk, load, uptime, Pi
+  throttling alarm.
+- **💾 Save map** — writes `.pgm`/`.yaml` + a serialized pose-graph to `~/maps/`.
+- **Tools** — IMU test, IMU calibration, drive-distance test; started on
+  demand, output streamed to the console panel.
+- **Semantic vision toggle** — starts/stops the camera + YOLO-World + semantic
+  SLAM pipeline (see below).
+- **E-STOP** — kills the running tool, cancels the nav goal, streams zero
+  velocity.
+
+---
+
+## Semantic Vision Pipeline
+
+Started on demand from the dashboard toggle (or manually:
+`ros2 launch Ros_lidar_bot vision.launch.py`):
+
+```
+camera (OpenCV, 640×480) → yolo (YOLO-World, open vocabulary)
+    → /yolo (String, JSON detections)
+/yolo + /scan + TF map→base_link → semantic_slam
+    → object (x, y) in map frame → /semantic_markers + /tmp/semantic_map.json
+```
+
+Object bearing comes from the bbox centre through the camera model
+(66° HFOV), depth from the lidar ray at that bearing. Detections are merged
+across sightings and only published after 3 confirmations. Labels appear in
+RViz and on the dashboard map.
+
+Requires `pip3 install ultralytics` and the `yolov8s-world.pt` weights
+(auto-downloaded on first run).
 
 ---
 
@@ -156,370 +140,134 @@ RPi Camera Module 3 (physical) or Gazebo /images_raw (simulation)
 
 ```
 Ros_lidar_bot/
-├── CMakeLists.txt
-├── package.xml
-├── setup.py
-│
-├── Ros_lidar_bot/
-│   ├── __init__.py
-│   ├── frontier_explorer_node.py   # Autonomous frontier exploration
-│   ├── semantic_slam_node.py       # Semantic object localisation + MarkerArray
-│   ├── safety_stop_node.py         # Emergency stop on proximity
-│   └── joy_teleop_node.py          # Gamepad teleoperation (Bluetooth/USB controller)
-│
-├── config/
-│   ├── ekf.yaml                         # EKF sensor fusion parameters
-│   ├── frontier_explorer.yaml           # Frontier explorer tuning
-│   ├── mapper_params_online_async.yaml  # SLAM Toolbox (mapping mode)
-│   ├── mapper_params_localization.yaml  # SLAM Toolbox (localisation mode)
-│   ├── nav2_params.yaml                 # Nav2 stack parameters
-│   └── view_bot.rviz                    # RViz2 configuration
-│
-├── description/
-│   ├── robot.urdf.xacro       # Top-level URDF entry point
-│   ├── slam.xacro             # Base, wheels, casters
-│   ├── slam.gazebo            # Gazebo material/friction
-│   ├── robot_control.xacro   # DiffDrive + JointState plugins
-│   ├── lidar.xacro            # GPU LiDAR sensor
-│   ├── camera.xacro           # RGB camera sensor
-│   └── imu.xacro              # IMU sensor
-│
 ├── launch/
-│   ├── autonomous_exploration.launch.py  # Sim + Nav2 + frontier explorer
-│   ├── launch_sim.launch.py              # Sim + SLAM + EKF + Nav2
-│   └── rsp.launch.py                     # Robot State Publisher only
-│
-├── meshes/
-│   └── *.stl                  # Robot mesh files
-│
-├── scripts/
-│   ├── install_deps.sh        # Install all dependencies
-│   └── kill_sim.sh            # Kill all sim processes before relaunch
-│
-└── worlds/
-    ├── testing.world           # 10×10 m furnished indoor world
-    ├── home.world              # 3BHK residential (18×15 m)
-    ├── room.world              # Mixed-use institutional space
-    └── empty.world
+│   ├── launch_robot.launch.py       # hardware bringup (manual driving)
+│   ├── autonomous_robot.launch.py   # bringup + frontier exploration
+│   ├── vision.launch.py             # on-demand semantic vision (dashboard toggle)
+│   ├── rsp.launch.py                # robot_state_publisher (URDF)
+│   └── lidar_test.launch.py         # lidar-only smoke test
+├── Ros_lidar_bot/
+│   ├── driver_node.py               # DDSM115 RS485 driver — /cmd_vel_safe → motors, /encoder out
+│   ├── odom_node.py                 # wheel odometry → /odom_raw
+│   ├── imu_node.py                  # BNO055 serial reader → /imu
+│   ├── safety_stop_node.py          # /cmd_vel → /cmd_vel_safe scan-based filter
+│   ├── frontier_explorer_node.py    # autonomous exploration (Nav2 action client)
+│   ├── robot_dashboard_node.py      # web GUI server (port 8080)
+│   ├── joy_teleop_node.py           # gamepad → /cmd_vel
+│   ├── yolo.py                      # YOLO-World camera detector → /yolo
+│   ├── semantic_slam_node.py        # /yolo + lidar → object map
+│   ├── imu_test_node.py / imu_calibration_node.py / drive_distance_node.py
+│   └── bringup_status_node.py       # legacy terminal status board
+├── config/
+│   ├── ekf.yaml                     # robot_localization fusion (audited timestamps)
+│   ├── nav2_params.yaml             # Nav2 stack tuning
+│   ├── mapper_params_online_async.yaml  # SLAM Toolbox
+│   └── frontier_explorer.yaml       # exploration tuning
+├── description/                     # URDF/Xacro
+└── install_rpi5_jazzy.sh            # one-shot Pi setup script
 ```
-
----
-
-## Prerequisites
-
-| Dependency | Version | Install |
-|------------|---------|---------|
-| Ubuntu | 22.04 LTS | — |
-| ROS 2 | Humble | [docs.ros.org](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html) |
-| Ignition Gazebo | Fortress | [gazebosim.org](https://gazebosim.org/docs/fortress/install_ubuntu) |
-| SLAM Toolbox | Humble | `sudo apt install ros-humble-slam-toolbox` |
-| Nav2 | Humble | `sudo apt install ros-humble-navigation2 ros-humble-nav2-bringup` |
-| robot_localization | Humble | `sudo apt install ros-humble-robot-localization` |
-| ros_gz | Humble-Fortress | `sudo apt install ros-humble-ros-gz` |
-| ultralytics | ≥ 8.1 | `pip3 install ultralytics` |
-| opencv-python | ≥ 4.8 | `pip3 install opencv-python` |
-| numpy | — | `pip3 install numpy` |
-
-> Select **Fortress LTS** on the Gazebo install page and use binary installation.
 
 ---
 
 ## Installation
 
 ```bash
-# 1. Create workspace
+# 1. Workspace
 mkdir -p ~/ros2_ws/src && cd ~/ros2_ws/src
 
-# 2. Clone
+# 2. Clone (this repo + the S2E lidar driver)
 git clone https://github.com/amey1942007/Ros_lidar_bot.git
+git clone https://github.com/Slamtec/sllidar_ros2.git
 
-# 3. Install ROS dependencies
-cd ~/ros2_ws
-rosdep install --from-paths src --ignore-src -r -y
+# 3. ROS dependencies
+sudo apt install ros-jazzy-slam-toolbox ros-jazzy-navigation2 \
+     ros-jazzy-nav2-bringup ros-jazzy-robot-localization ros-jazzy-joy
 
-# 4. Install Python dependencies
-pip3 install ultralytics opencv-python numpy
+# 4. Python dependencies
+pip3 install pyserial ultralytics opencv-python
 
-# 5. Build
-colcon build --packages-select Ros_lidar_bot --symlink-install
-
-# 6. Source
-source install/setup.bash
-# Add permanently:
-echo "source ~/ros2_ws/install/setup.bash" >> ~/.bashrc
+# 5. Build & source
+cd ~/ros2_ws && colcon build
+source install/setup.bash   # add to ~/.bashrc
 ```
+
+Or run `install_rpi5_jazzy.sh` on a fresh Pi.
 
 ---
 
 ## Usage
 
-### Before every launch — kill leftover processes
+**Manual driving / mapping by hand:**
 
 ```bash
-~/ros2_ws/src/Ros_lidar_bot/scripts/kill_sim.sh
+ros2 launch Ros_lidar_bot launch_robot.launch.py
 ```
 
----
-
-### Web dashboard (GUI over SSH — no X11 needed)
-
-The bringup serves an interactive dashboard from the Pi itself. After
-launching, open this in a browser on your laptop (or phone):
-
-```
-http://<pi-ip>:8080
-```
-
-- **Live view** — animated robot model, lidar overlay, motion trail,
-  wheel-zoom; readouts for odom/map pose, velocities, IMU gyro, cmd_vel.
-- **System status** — node health, topic rates, TF chain state.
-- **Tools (run on demand only — nothing autostarts):** IMU test,
-  IMU calibration (robot rotates in place), drive-distance test moves.
-  Tool output streams into the console panel; Stop kills it.
-- **Nav-goal mode** — arm the checkbox, click the canvas → NavigateToPose.
-- **E-STOP** — kills the running tool, cancels the nav goal, streams zero
-  velocity.
-
-Works identically for `autonomous_robot.launch.py` (frontier_explorer is
-added to the expected-node list). The old terminal board is still there:
-`ros2 run Ros_lidar_bot bringup_status`.
-
----
-
-### Manual navigation (gamepad teleoperation + SLAM)
-
-The hardware launch (`launch_robot.launch.py`) already starts `joy_node` +
-`joy_teleop`, so once the controller is connected (Bluetooth or USB dongle)
-it just drives. Teleop yields `/cmd_vel` to Nav2 whenever the left stick is
-centered.
-
-**Bluetooth pairing (one-time, on the Pi):**
+**Fully autonomous exploration:**
 
 ```bash
-bluetoothctl
-  scan on          # put the controller in pairing mode, note its MAC
-  pair XX:XX:XX:XX:XX:XX
-  trust XX:XX:XX:XX:XX:XX   # auto-reconnect after reboot / power cycle
-  connect XX:XX:XX:XX:XX:XX
+ros2 launch Ros_lidar_bot autonomous_robot.launch.py
 ```
 
-To run teleop standalone:
+Then open `http://<robot-ip>:8080` in a browser. Node logs are suppressed to
+keep the terminal clean — add `verbose:=true` to either launch to see them.
 
-```bash
-ros2 run joy joy_node &
-ros2 run Ros_lidar_bot joy_teleop
-```
-
-| Control | Action |
-|---------|--------|
-| Left stick up/down | Forward / reverse (proportional) |
-| Left stick left/right | Turn left / right (proportional) |
-| `RT` | Increase linear speed (+0.05 m/s per press) |
-| `LT` | Decrease linear speed (−0.05 m/s per press) |
-| `RB` | Increase angular speed (+0.1 rad/s per press) |
-| `LB` | Decrease angular speed (−0.1 rad/s per press) |
-| Release stick | Stop (and yield `/cmd_vel` to Nav2) |
-
-Axis/button indices are ROS parameters on `joy_teleop` — if your controller
-maps differently, verify with `ros2 topic echo /joy` and override
-`axis_linear`, `axis_angular`, `axis_rt`, `axis_lt`, `button_rb`, `button_lb`.
-
----
-
-### Autonomous exploration
-
-```bash
-ros2 launch Ros_lidar_bot autonomous_exploration.launch.py
-# Optional: world:=home.world  or  world:=room.world
-```
-
-Starts Gazebo, SLAM, EKF, Nav2, and the frontier explorer. The robot autonomously covers the entire environment. Explorer starts at **T = 32 s**.
-
----
-
-### Semantic object detection
-
-Run the two semantic nodes in **separate terminals** (after the simulation or real robot is up):
-
-**Terminal 1 — OpenCV + YOLO World publisher:**
-```bash
-# (your opencv_yolo_publisher script)
-python3 opencv_yolo_publisher.py
-# Publishes /yolo with JSON detections from the RPi Cam 3
-```
-
-**Terminal 2 — Semantic SLAM node:**
-```bash
-ros2 run Ros_lidar_bot semantic_slam_node.py
-```
-
-Optional parameters:
-```bash
-ros2 run Ros_lidar_bot semantic_slam_node.py \
-  --ros-args -p conf:=0.3 -p max_depth:=6.0
-```
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `conf` | `0.25` | Minimum detection confidence to accept |
-| `max_depth` | `8.0` | Maximum LiDAR depth (m) — ignore far-wall hits |
-
----
-
-### View semantic markers in RViz2
-
-```bash
-rviz2 -d ~/ros2_ws/src/Ros_lidar_bot/config/view_bot.rviz
-```
-
-Add display: **MarkerArray** → topic `/semantic_markers`. Coloured 3D boxes and labels will appear at detected object positions in the map frame.
-
----
-
-### Save the finished map
-
-```bash
-ros2 run nav2_map_server map_saver_cli -f ~/my_map
-```
+The gamepad always works: Nav2 owns `/cmd_vel` while the stick is centred,
+the stick overrides while moved. Save the finished map from the dashboard.
 
 ---
 
 ## ROS 2 Topics
 
-### Subscribed
+| Topic | Type | Producer → Consumer |
+|---|---|---|
+| `/cmd_vel` | Twist | Nav2 / teleop / dashboard → safety_stop |
+| `/cmd_vel_safe` | Twist | safety_stop → driver_node |
+| `/safety_blocked` | Bool | safety_stop → frontier_explorer / UI |
+| `/encoder` | JointState | driver_node → odom_node |
+| `/odom_raw` | Odometry | odom_node → EKF |
+| `/odom` | Odometry | EKF (filtered) → Nav2 / UI |
+| `/imu` | Imu | imu_node → EKF |
+| `/scan` | LaserScan | sllidar → SLAM / Nav2 / safety_stop |
+| `/map` | OccupancyGrid | slam_toolbox → Nav2 / frontier / dashboard |
+| `/yolo` | String (JSON) | yolo → semantic_slam |
+| `/semantic_markers` | MarkerArray | semantic_slam → RViz / dashboard |
+| `/frontier_debug` | MarkerArray | frontier_explorer → RViz / dashboard |
+| `/manual_blacklist` | String (JSON) | dashboard → frontier_explorer |
 
-| Topic | Type | Node | Description |
-|-------|------|------|-------------|
-| `/yolo` | `std_msgs/String` | semantic_slam_node | JSON array of YOLO World detections |
-| `/scan` | `sensor_msgs/LaserScan` | semantic_slam_node, SLAM | LiDAR scan |
-| `/odom_raw` | `nav_msgs/Odometry` | EKF | Raw wheel odometry from Gazebo |
-| `/imu` | `sensor_msgs/Imu` | EKF | IMU data |
-| `/map` | `nav_msgs/OccupancyGrid` | frontier_explorer, Nav2 | SLAM occupancy grid |
-| `/cmd_vel` | `geometry_msgs/Twist` | Gazebo bridge | Velocity commands |
-
-### Published
-
-| Topic | Type | Node | Description |
-|-------|------|------|-------------|
-| `/semantic_markers` | `visualization_msgs/MarkerArray` | semantic_slam_node | Object positions in map frame (RViz2) |
-| `/scan` | `sensor_msgs/LaserScan` | Gazebo bridge | Live LiDAR scan |
-| `/odom` | `nav_msgs/Odometry` | EKF | Filtered odometry |
-| `/map` | `nav_msgs/OccupancyGrid` | SLAM Toolbox | Occupancy grid |
-| `/images_raw` | `sensor_msgs/Image` | Gazebo bridge | Camera feed |
-| `/robot_description` | `std_msgs/String` | robot_state_publisher | URDF |
-| `/tf` / `/tf_static` | `tf2_msgs/TFMessage` | RSP + EKF + SLAM | Transform tree |
-
-### TF Tree
-
-```
-map
- └─ odom                (SLAM Toolbox)
-     └─ base_footprint  (EKF)
-         └─ base_link   (robot_state_publisher)
-             ├─ laser_frame
-             ├─ camera_link
-             │   └─ camera_link_optical
-             ├─ imu_for_urdf_1
-             ├─ wheel_urdf_1        (right wheel)
-             └─ wheel_urdf__1__1    (left wheel)
-```
+TF chain: `map → odom` (SLAM) `→ base_footprint` (EKF) `→ base_link → laser_frame / imu_link / wheels` (URDF).
 
 ---
 
 ## Configuration
 
-### EKF (`config/ekf.yaml`)
-Fuses `/odom_raw` + `/imu` at 30 Hz in 2D mode. Publishes `odom → base_footprint` TF and filtered `/odom`.
+The important, hardware-derived settings (change with care):
 
-### SLAM Toolbox (`config/mapper_params_online_async.yaml`)
-
-| Parameter | Value | Notes |
-|-----------|-------|-------|
-| `resolution` | 0.05 m | Map cell size |
-| `max_laser_range` | 12.0 m | Matches LiDAR range |
-| `map_update_interval` | 3.0 s | OccupancyGrid publish rate |
-| `map_start_pose` | [0, 0, 0] | Map origin at robot spawn |
-| `do_loop_closing` | true | Pose-graph loop closure |
-
-### Nav2 (`config/nav2_params.yaml`)
-
-| Parameter | Value | Notes |
-|-----------|-------|-------|
-| Planner | NavFn A* | `allow_unknown: true` |
-| Controller | Regulated Pure Pursuit | `use_rotate_to_heading: true` |
-| Linear velocity | 0.22 m/s | Cruise speed |
-| Local inflation radius | 0.55 m | Safety clearance |
-| Global inflation radius | 0.65 m | Route away from walls |
-| Recovery behaviours | spin, backup, wait | After 25 s without progress |
-
-### Frontier Explorer (`config/frontier_explorer.yaml`)
-
-| Parameter | Value | Notes |
-|-----------|-------|-------|
-| `min_frontier_size` | 3 cells | Minimum cluster to consider |
-| `wall_safe_distance` | 0.6 m | Reject goals near map boundary |
-| `openness_weight` | 0.7 | Prefer open space over tight corners |
-| `max_goal_distance` | 5.5 m | Maximum frontier search radius |
-| `progress_timeout_sec` | 35 s | Longer than Nav2 recovery window |
-| `no_frontier_done_ticks` | 10 | Declare exploration complete |
-
-### Semantic SLAM (ROS parameters)
-
-| Parameter | Default | Notes |
-|-----------|---------|-------|
-| `conf` | `0.25` | Minimum detection confidence |
-| `max_depth` | `8.0` | Ignore LiDAR hits beyond this (m) |
-| `MERGE_RADIUS` | 0.60 m | (code constant) merge nearby detections |
-| `MIN_SIGHTINGS` | 3 | (code constant) confirmations before publishing |
-| `MIN_DEPTH` | 0.20 m | (code constant) ignore very close LiDAR returns |
-
----
-
-## Progress
-
-### Done
-- [x] Differential-drive robot URDF with accurate inertials and collision meshes
-- [x] GPU LiDAR, IMU, RGB camera sensors in simulation
-- [x] Full Ignition Gazebo — ROS 2 bridge (sensors, clock, cmd\_vel, joint states)
-- [x] EKF odometry fusion (wheel odometry + IMU)
-- [x] SLAM Toolbox online async mapping with loop closure
-- [x] Nav2 stack (global planner, local controller, costmaps, recovery behaviours)
-- [x] Frontier-based autonomous exploration node
-- [x] Autonomous exploration launch file
-- [x] Gamepad teleoperation node (USB controller, joy-based)
-- [x] Multiple indoor simulation worlds (testing, home 3BHK, room)
-- [x] RViz2 configuration
-- [x] Safety stop node (proximity-based emergency stop)
-- [x] **Semantic SLAM node** — YOLO World detections → LiDAR-fused (x, y) → `/semantic_markers`
-- [x] **Persistent semantic map** (`/tmp/semantic_map.json`)
-
-### In Progress
-- [ ] OpenCV + YOLO World publisher node (RPi Camera Module 3)
-- [ ] Hardware deployment and testing on physical robot
-
-### Planned
-- [ ] Real-hardware integration and field testing
-- [ ] Navigate-to-object commands using the semantic map
-- [ ] Human avoidance using semantic labels
+- **`ekf.yaml`** — wheel odometry is the primary sensor (vX, vYaw); gyro
+  complements yaw. The full timestamp pipeline is documented in the file
+  header.
+- **`nav2_params.yaml`** — `transform_tolerance: 1.0` everywhere, needed
+  because DenseBoost scan-matching runs ~0.6 s behind on the Pi.
+- **DenseBoost** is intentional (full angular resolution). Do not downgrade
+  the scan mode to buy CPU headroom without checking first.
+- **`frontier_explorer.yaml`** — exploration scoring, blacklist radii and
+  auto-calibration. Progress timeout must stay above Nav2's
+  `movement_time_allowance`.
+- **Serial ports** — motors `/dev/ttyACM0`, IMU `/dev/ttyACM1` (set in
+  `launch_robot.launch.py`). If USB re-enumeration swaps them, check
+  `ls -l /dev/serial/by-id/`.
 
 ---
 
 ## Common Issues
 
-**Robot teleports between positions after relaunch**
-→ Zombie process still publishing stale TF. Run `scripts/kill_sim.sh` before every relaunch.
-
-**`worldToMap failed: mx,my` errors**
-→ Frontier goal landed at map boundary. Increase `wall_safe_distance` in `frontier_explorer.yaml`.
-
-**No valid frontier at exploration start**
-→ Map hasn't built yet (wait for T = 32 s) or `min_frontier_size` is too high. Try reducing to 3.
-
-**`Message Filter dropping message: frame 'odom'`**
-→ Cosmetic RViz warning from sim-clock reset. Does not affect navigation.
-
-**`/semantic_markers` not appearing in RViz2**
-→ Check (1) SLAM is running and TF map→base_link exists, (2) `/scan` is publishing, (3) the object has been seen ≥ 3 times. Use `ros2 topic echo /yolo` to verify the publisher is running.
-
-**Semantic node reports wrong object positions**
-→ Check `FOV_H` and `IMG_W` in `semantic_slam_node.py` match the actual camera used. For the RPi Camera Module 3 at 640×480, FOV_H = 66°.
+| Symptom | Cause / fix |
+|---|---|
+| Dashboard shows TF `map→odom` / `odom→base_footprint` MISSING | A stale previous launch is holding the serial ports (or port 8080). `pkill -9 -f "ros2 launch"; pkill -9 -f _node`, verify with `fuser -v /dev/ttyACM* 8080/tcp`, relaunch. |
+| Driver up but robot won't move | Check `/cmd_vel_safe` is flowing (`ros2 topic hz /cmd_vel_safe`) — the driver only listens to the safety-filtered topic. For bench tests without safety_stop: `--ros-args -p cmd_vel_topic:=/cmd_vel`. |
+| "SAFETY STOP: obstacle X m ahead" | Working as intended — something is inside `min_safe_distance` (0.40 m). The robot can still rotate away. |
+| No `/scan` | Lidar Ethernet link: `ping 192.168.11.2`; check the static IP on `eth0`. |
+| Serial nodes silent / no `/encoder` or `/imu` | ACM numbers swapped after replug — see `/dev/serial/by-id/`, update ports in the launch, or replug/reboot. |
+| Robot plans but never drives | Chassis self-hits tripping the safety stop — `ignore_below` must stay ≥ the chassis radius (0.28 m). |
+| Map smears during fast spins | Known S2E timestamp skew; keep rotation speeds moderate (see `ekf.yaml` header). |
+| `worldToMap failed` errors during exploration | Frontier goal at the map boundary — raise `wall_safe_distance` in `frontier_explorer.yaml`. |

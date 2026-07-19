@@ -78,6 +78,10 @@ class YoloWorldPublisher(Node):
         if not self.cap.isOpened():
             self.get_logger().error(f"Could not open camera index {args.camera}")
             sys.exit(1)
+        # semantic_slam_node converts bbox pixels → bearing using IMG_W=640,
+        # IMG_H=480 — the capture MUST match or every object angle is wrong.
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
         self.log_file = open(args.log, "a") if args.log else None
         self.frame_id = 0

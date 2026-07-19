@@ -9,7 +9,8 @@ the laptop/phone simply opens  http://<pi-ip>:8080  in a browser.
 
 Features
   • Live 2D visualization: animated robot model (odom pose), lidar scan
-    overlay, motion trail, pan-free follow camera, mouse-wheel zoom.
+    overlay, live SLAM occupancy map, semantic object labels, motion trail,
+    pan-free follow camera, mouse-wheel zoom.
   • Status board: expected-node health, topic rates/ages, TF chain state.
   • Tool launcher — NOTHING runs at bringup; each starts only on click:
       - IMU test        (imu_test_node)
@@ -17,6 +18,9 @@ Features
       - Drive distance  (drive_distance — exact-distance test moves)
     Tool stdout streams into the console panel; one tool at a time; Stop
     kills the tool's whole process group.
+  • Semantic vision toggle: starts/stops vision.launch.py (YOLO-World camera
+    node + semantic SLAM) in its own slot, independent of the tools above.
+    E-STOP leaves it running — perception is passive, it moves nothing.
   • Nav goal mode: click the canvas to send a NavigateToPose goal (canvas
     point is transformed odom→map via TF); result/feedback logged.
   • Nudge pad (short cmd_vel pulses) and a big E-STOP that kills the tool,
@@ -27,15 +31,19 @@ lines), plain POST for browser→Pi commands. Standard library only — no
 websocket dependency, no CDN, works offline.
 """
 
+import base64
 import json
 import math
 import os
 import queue
+import re
+import shutil
 import signal
 import socket
 import subprocess
 import threading
 import time
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import rclpy
@@ -45,6 +53,19 @@ from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from sensor_msgs.msg import Imu, LaserScan
+from std_msgs.msg import String
+
+try:
+    from visualization_msgs.msg import MarkerArray
+    _MARKERS_OK = True
+except ImportError:
+    _MARKERS_OK = False
+
+try:
+    from slam_toolbox.srv import SaveMap, SerializePoseGraph
+    _SLAM_SRV_OK = True
+except ImportError:
+    _SLAM_SRV_OK = False
 
 try:
     from nav2_msgs.action import NavigateToPose
@@ -131,7 +152,9 @@ class Hub:
                 self._clients.remove(q)
 
     def send(self, event: dict):
-        data = json.dumps(event, separators=(",", ":"))
+        self.send_raw(json.dumps(event, separators=(",", ":")))
+
+    def send_raw(self, data: str):
         with self._lock:
             clients = list(self._clients)
         for q in clients:
@@ -160,13 +183,19 @@ class Dashboard(Node):
             "imu": {"gz": 0.0, "ax": 0.0, "ay": 0.0}, "scan": [],
             "rates": {}, "nodes": {}, "tf": {}, "tool": None,
             "cmd": [0.0, 0.0], "map_pose": None, "nav": None,
-            "goal": None, "path": [],
+            "yolo_det": [], "sem": [],
+            "frontier": {"zones": [], "queue": []},
+            "path": [], "goal": None, "sys": {},
         }
         self._last_msg_time = {}
         self._msg_counts = {}
 
         self._tool_proc = None
         self._tool_name = None
+        self._vision_proc = None
+        self._latest_map = None
+        self._map_dirty = False
+        self.last_map_data = None   # cached SSE map event for new clients
         self._nudge_until = 0.0
         self._nudge_cmd = (0.0, 0.0)
         self._estop_until = 0.0
@@ -183,7 +212,24 @@ class Dashboard(Node):
         self.create_subscription(Twist, "/cmd_vel", self._cmd_cb, 10)
         self.create_subscription(Path, "/plan", self._plan_cb, 5)
         map_qos = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
-        self.create_subscription(OccupancyGrid, "/map", self._mk_rate_cb("/map"), map_qos)
+        self.create_subscription(OccupancyGrid, "/map", self._map_cb, map_qos)
+        self.create_subscription(String, "/yolo", self._yolo_cb, 10)
+        if _MARKERS_OK:
+            self.create_subscription(MarkerArray, "/semantic_markers", self._sem_cb, 10)
+            self.create_subscription(MarkerArray, "/frontier_debug", self._frontier_cb, 10)
+
+        # manual no-go zones → frontier_explorer (map frame, JSON)
+        self._bl_pub = self.create_publisher(String, "/manual_blacklist", 10)
+
+        self._save_map_cli = self._serialize_cli = None
+        if _SLAM_SRV_OK:
+            self._save_map_cli = self.create_client(SaveMap, "/slam_toolbox/save_map")
+            self._serialize_cli = self.create_client(
+                SerializePoseGraph, "/slam_toolbox/serialize_map")
+
+        self._prev_cpu = None
+        self._vcgencmd_ok = True
+        self.create_timer(5.0, self._sys_tick)
 
         self._tf_buffer = None
         if _TF2_OK:
@@ -241,6 +287,46 @@ class Dashboard(Node):
         with self._lock:
             self._state["cmd"] = [round(m.linear.x, 3), round(m.angular.z, 3)]
 
+    def _map_cb(self, m):
+        self._mark("/map")
+        with self._lock:
+            self._latest_map = m
+            self._map_dirty = True
+
+    def _yolo_cb(self, m):
+        self._mark("/yolo")
+        try:
+            dets = json.loads(m.data).get("detections", [])
+        except (json.JSONDecodeError, AttributeError):
+            return
+        summary = []
+        for d in dets[:6]:
+            conf = d.get("confidence", d.get("conf", 0.0)) or 0.0
+            summary.append(f'{d.get("class", "?")} {round(100 * float(conf))}%')
+        with self._lock:
+            self._state["yolo_det"] = summary
+
+    def _sem_cb(self, m):
+        objs = [[round(mk.pose.position.x, 2), round(mk.pose.position.y, 2), mk.text]
+                for mk in m.markers if mk.ns == "semantic_labels"][:40]
+        with self._lock:
+            self._state["sem"] = objs
+
+    def _frontier_cb(self, m):
+        zones, fqueue = [], []
+        kind_by_ns = {"blacklist": "bl", "perm_dead": "perm", "manual_bl": "manual"}
+        for mk in m.markers:
+            k = kind_by_ns.get(mk.ns)
+            if k is not None and mk.type == 3:                 # CYLINDER
+                zones.append([round(mk.pose.position.x, 2),
+                              round(mk.pose.position.y, 2),
+                              round(mk.scale.x / 2.0, 2), k])
+            elif mk.ns == "frontier_queue" and mk.type == 2:   # SPHERE
+                fqueue.append([round(mk.pose.position.x, 2),
+                               round(mk.pose.position.y, 2)])
+        with self._lock:
+            self._state["frontier"] = {"zones": zones[:40], "queue": fqueue[:8]}
+
     def _scan_cb(self, m):
         self._mark("/scan")
         pts = []
@@ -261,12 +347,13 @@ class Dashboard(Node):
             st = dict(self._state)
         st["t"] = "state"
         st["tool"] = self._tool_name
+        st["vision"] = bool(self._vision_proc and self._vision_proc.poll() is None)
         self.hub.send(st)
 
     def _slow_tick(self):
         now = time.monotonic()
         rates = {}
-        for topic in ("/scan", "/odom", "/odom_raw", "/imu", "/map", "/cmd_vel"):
+        for topic in ("/scan", "/odom", "/odom_raw", "/imu", "/map", "/cmd_vel", "/yolo"):
             cnt = self._msg_counts.pop(topic, 0)
             last = self._last_msg_time.get(topic)
             rates[topic] = {
@@ -306,6 +393,216 @@ class Dashboard(Node):
             self._state["nodes"] = nodes
             self._state["tf"] = tf_state
             self._state["map_pose"] = map_pose
+
+        self._push_map()
+
+    # ── Live map → browser ───────────────────────────────────────────────────
+    MAP_MAX_CELLS = 220   # per-side cap after downsampling (browser payload)
+
+    def _push_map(self):
+        with self._lock:
+            m = self._latest_map
+            dirty = self._map_dirty
+            self._map_dirty = False
+        if m is None or not dirty:
+            return
+
+        # map→odom pose so the browser can place the grid in its odom-frame view.
+        tf = [0.0, 0.0, 0.0]
+        if self._tf_buffer is not None:
+            try:
+                tr = self._tf_buffer.lookup_transform("odom", "map", rclpy.time.Time())
+                q = tr.transform.rotation
+                tf = [tr.transform.translation.x, tr.transform.translation.y,
+                      math.atan2(2 * (q.w * q.z + q.x * q.y),
+                                 1 - 2 * (q.y * q.y + q.z * q.z))]
+            except Exception:
+                pass  # frames coincide until SLAM publishes map→odom
+
+        w, h = m.info.width, m.info.height
+        f = max(1, (max(w, h) + self.MAP_MAX_CELLS - 1) // self.MAP_MAX_CELLS)
+        data = m.data
+        rows = []
+        for r in range(0, h, f):
+            base = r * w
+            # 0 = unknown, 1 = free, 2 = occupied — 1 byte per downsampled cell
+            rows.append(bytes(0 if v < 0 else (2 if v > 50 else 1)
+                              for v in data[base:base + w:f]))
+        if not rows:
+            return
+        packed = base64.b64encode(zlib.compress(b"".join(rows), 6)).decode()
+        event = json.dumps({
+            "t": "map", "w": len(rows[0]), "h": len(rows),
+            "res": round(m.info.resolution * f, 4),
+            "origin": [round(m.info.origin.position.x, 3),
+                       round(m.info.origin.position.y, 3)],
+            "tf": [round(tf[0], 3), round(tf[1], 3), round(tf[2], 4)],
+            "data": packed,
+        }, separators=(",", ":"))
+        self.last_map_data = event   # replayed to newly connected clients
+        self.hub.send_raw(event)
+
+    # ── System vitals (CPU / RAM / temp / disk) ──────────────────────────────
+    def _sys_tick(self):
+        info = {}
+        try:
+            with open("/proc/stat") as f:
+                vals = list(map(int, f.readline().split()[1:8]))
+            idle, total = vals[3] + vals[4], sum(vals)
+            if self._prev_cpu:
+                dt = total - self._prev_cpu[1]
+                if dt > 0:
+                    info["cpu"] = round(100.0 * (1 - (idle - self._prev_cpu[0]) / dt), 1)
+            self._prev_cpu = (idle, total)
+        except (OSError, ValueError):
+            pass
+        try:
+            info["load"] = round(os.getloadavg()[0], 2)
+        except OSError:
+            pass
+        try:
+            mi = {}
+            with open("/proc/meminfo") as f:
+                for ln in f:
+                    k, v = ln.split(":", 1)
+                    mi[k] = int(v.split()[0])
+            info["mem"] = [round((mi["MemTotal"] - mi["MemAvailable"]) / 1048576, 2),
+                           round(mi["MemTotal"] / 1048576, 2)]
+        except (OSError, KeyError, ValueError):
+            pass
+        try:
+            with open("/sys/class/thermal/thermal_zone0/temp") as f:
+                info["temp"] = round(int(f.read().strip()) / 1000.0, 1)
+        except (OSError, ValueError):
+            pass
+        try:
+            du = shutil.disk_usage("/")
+            info["disk"] = [round((du.total - du.free) / 2**30, 1),
+                            round(du.total / 2**30, 1)]
+        except OSError:
+            pass
+        try:
+            with open("/proc/uptime") as f:
+                up = int(float(f.read().split()[0]))
+            info["up"] = f"{up // 3600}h {(up % 3600) // 60:02d}m"
+        except (OSError, ValueError):
+            pass
+        if self._vcgencmd_ok:   # Pi firmware throttle flags; disabled after first failure
+            try:
+                out = subprocess.run(["vcgencmd", "get_throttled"], capture_output=True,
+                                     text=True, timeout=1.0).stdout.strip()
+                info["throttled"] = int(out.split("=")[1], 16)
+            except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+                self._vcgencmd_ok = False
+        with self._lock:
+            self._state["sys"] = info
+
+    # ── Save map (slam_toolbox services) ─────────────────────────────────────
+    def save_map(self, name):
+        if not _SLAM_SRV_OK:
+            return {"ok": False, "error": "slam_toolbox srv types not available"}
+        name = re.sub(r"[^A-Za-z0-9_-]", "", str(name or ""))
+        name = name or time.strftime("map_%Y%m%d_%H%M%S")
+        map_dir = os.path.expanduser("~/maps")
+        os.makedirs(map_dir, exist_ok=True)
+        path = os.path.join(map_dir, name)
+        if not self._save_map_cli.service_is_ready():
+            return {"ok": False,
+                    "error": "slam_toolbox save_map service not up — is SLAM running?"}
+        req = SaveMap.Request()
+        req.name.data = path
+        self._save_map_cli.call_async(req).add_done_callback(
+            lambda f: self._map_saved(f, path, "pgm/yaml"))
+        # Also serialize the pose-graph so mapping can be resumed later.
+        sreq = SerializePoseGraph.Request()
+        sreq.filename = path
+        self._serialize_cli.call_async(sreq).add_done_callback(
+            lambda f: self._map_saved(f, path, "posegraph"))
+        self.log(f"💾 saving map → {path}", "run")
+        return {"ok": True, "path": path}
+
+    def _map_saved(self, fut, path, kind):
+        try:
+            fut.result()
+            self.log(f"map {kind} saved: {path}", "info")
+        except Exception as exc:
+            self.log(f"map {kind} save FAILED: {exc}", "error")
+
+    # ── Manual blacklist zones → frontier_explorer ───────────────────────────
+    def blacklist_zone(self, payload):
+        if payload.get("action") == "clear":
+            self._bl_pub.publish(String(data=json.dumps({"action": "clear"})))
+            self.log("manual blacklist zones cleared", "info")
+            return {"ok": True}
+        # Canvas points arrive in odom frame; frontier zones live in map frame.
+        tx = ty = th = 0.0
+        if self._tf_buffer is not None:
+            try:
+                tr = self._tf_buffer.lookup_transform("map", "odom", rclpy.time.Time())
+                q = tr.transform.rotation
+                th = math.atan2(2 * (q.w * q.z + q.x * q.y),
+                                1 - 2 * (q.y * q.y + q.z * q.z))
+                tx, ty = tr.transform.translation.x, tr.transform.translation.y
+            except Exception:
+                pass  # frames coincide until SLAM is up
+        try:
+            xo, yo = float(payload["x"]), float(payload["y"])
+            radius = max(0.1, min(5.0, float(payload.get("radius", 0.8))))
+            duration = max(0.0, float(payload.get("duration", 0.0)))
+        except (KeyError, TypeError, ValueError):
+            return {"ok": False, "error": "bad blacklist payload"}
+        mx = tx + xo * math.cos(th) - yo * math.sin(th)
+        my = ty + xo * math.sin(th) + yo * math.cos(th)
+        self._bl_pub.publish(String(data=json.dumps({
+            "action": "add", "x": round(mx, 3), "y": round(my, 3),
+            "radius": round(radius, 2), "duration": duration})))
+        desc = "PERMANENT" if duration <= 0 else f"{duration:.0f}s"
+        self.log(f"🚫 no-go zone ({mx:.2f},{my:.2f}) r={radius:.2f} m {desc}", "run")
+        return {"ok": True}
+
+    # ── Semantic vision pipeline (independent of the one-shot tool slot) ─────
+    def start_vision(self):
+        if self._vision_proc and self._vision_proc.poll() is None:
+            return {"ok": True, "note": "already running"}
+        cmd = ["ros2", "launch", "Ros_lidar_bot", "vision.launch.py"]
+        self.log("▶ starting semantic vision (YOLO-World + semantic SLAM)", "run")
+        try:
+            self._vision_proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, start_new_session=True)
+        except OSError as exc:
+            self.log(f"failed to start vision: {exc}", "error")
+            return {"ok": False, "error": str(exc)}
+        threading.Thread(target=self._pump_vision, args=(self._vision_proc,),
+                         daemon=True).start()
+        return {"ok": True}
+
+    def _pump_vision(self, proc):
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line:
+                self.hub.send({"t": "log", "level": "tool",
+                               "time": time.strftime("%H:%M:%S"),
+                               "text": "[vision] " + line})
+        rc = proc.wait()
+        with self._lock:
+            self._state["yolo_det"] = []
+        lvl = "info" if rc == 0 else "error"
+        self.log(f"■ semantic vision exited (code {rc})", lvl)
+
+    def stop_vision(self):
+        proc = self._vision_proc
+        if not proc or proc.poll() is not None:
+            return {"ok": True, "note": "not running"}
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        return {"ok": True}
 
     # ── Nudge / E-stop pulse publisher ───────────────────────────────────────
     def _motion_tick(self):
@@ -551,6 +848,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             q = self.dash.hub.attach()
+            if self.dash.last_map_data:   # replay latest map to the new client
+                try:
+                    q.put_nowait(self.dash.last_map_data)
+                except queue.Full:
+                    pass
             try:
                 while True:
                     try:
@@ -588,6 +890,13 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/nav_cancel":
             self.dash.cancel_nav()
             out = {"ok": True}
+        elif self.path == "/api/vision":
+            out = (self.dash.start_vision() if payload.get("on")
+                   else self.dash.stop_vision())
+        elif self.path == "/api/save_map":
+            out = self.dash.save_map(payload.get("name"))
+        elif self.path == "/api/blacklist":
+            out = self.dash.blacklist_zone(payload)
         else:
             self.send_error(404)
             return
@@ -667,6 +976,17 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
 #console{grid-column:1/-1}
 #logbox{background:#0a0f14;border:1px solid var(--edge);border-radius:8px;height:230px;
   overflow-y:auto;padding:8px 10px;font:12px/1.6 ui-monospace,Consolas,monospace}
+#sysgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.sys{background:#0a0f14;border:1px solid var(--edge);border-radius:8px;padding:7px 10px}
+.sys b{display:block;font-size:11px;color:var(--dim);font-weight:600}
+.sys span{font-family:ui-monospace,Consolas,monospace;font-size:14px;color:var(--acc)}
+.bar{height:5px;border-radius:3px;background:#1c2733;margin-top:5px;overflow:hidden}
+.bar i{display:block;height:100%;border-radius:3px}
+#navmode{flex-wrap:wrap}
+#navmode select{background:#0a0f14;color:var(--acc);border:1px solid var(--edge);
+  border-radius:6px;padding:4px 6px}
+#mapname{flex:1;background:#0a0f14;color:var(--acc);border:1px solid var(--edge);
+  border-radius:6px;padding:6px 8px;font-family:ui-monospace,monospace;min-width:0}
 .ln .t{color:var(--dim);margin-right:8px}
 .ln.info{color:var(--tx)} .ln.error{color:var(--err)} .ln.run{color:var(--run)} .ln.tool{color:#9fb8cc}
 @media (max-width:900px){main{grid-template-columns:1fr}}
@@ -697,6 +1017,12 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
     <div id="navmode">
       <label><input type="checkbox" id="navarm"> Nav-goal mode (click canvas to send goal)</label>
       <button class="btn stop" id="navcancel" style="padding:4px 12px">cancel goal</button>
+      <label style="margin-left:8px"><input type="checkbox" id="blarm"> 🚫 No-go mode (drag a circle)</label>
+      <select id="bldur">
+        <option value="60">1 min</option><option value="300" selected>5 min</option>
+        <option value="900">15 min</option><option value="0">permanent</option>
+      </select>
+      <button class="btn stop" id="blclear" style="padding:4px 12px">clear zones</button>
     </div>
     <div id="pad">
       <span></span><button data-c="0.15,0">▲</button><span></span>
@@ -706,6 +1032,15 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
   </section>
 
   <div class="right">
+    <section class="card">
+      <h2>System</h2>
+      <div id="sysgrid"></div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:10px">
+        <input id="mapname" placeholder="map name (blank = timestamp)">
+        <button class="btn" id="savemap">💾 Save map</button>
+      </div>
+    </section>
+
     <section class="card">
       <h2>System status</h2>
       <div id="nodes"></div>
@@ -740,6 +1075,15 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
           <button class="btn" data-tool="drive_distance">Drive</button>
         </div>
       </div>
+
+      <div class="tool"><h3>🎥 Semantic vision</h3>
+        <p>YOLO-World camera detections + LiDAR depth → labelled objects on the
+        map (needs the camera connected). Runs alongside the tools above.</p>
+        <div class="row">
+          <button class="btn" id="visionbtn">Start</button>
+          <span id="yolodet" style="color:var(--dim);font-size:12px"></span>
+        </div>
+      </div>
     </section>
   </div>
 
@@ -763,6 +1107,7 @@ es.onmessage=e=>{
     if(!lt||Math.hypot(p[0]-lt[0],p[1]-lt[1])>0.02){trail.push([p[0],p[1]]);if(trail.length>600)trail.shift();}
     updatePanels(m);
   } else if(m.t==="log"){addLog(m);}
+  else if(m.t==="map"){loadMap(m);}
 };
 es.onerror=()=>{$("overall").textContent="DISCONNECTED";$("overall").className="pill bad";};
 
@@ -797,6 +1142,25 @@ function updatePanels(m){
       `<tr><td><span class="dot ${v.ok?"ok":"bad"}"></span>TF ${k}</td>
        <td class="num">${v.ok?("age "+v.age+"s"):"MISSING"}</td></tr>`).join("");
   }
+  if(m.sys&&Object.keys(m.sys).length){
+    const s=m.sys,pct=(v,mx)=>Math.min(100,Math.round(100*v/mx));
+    const bar=(p,w,c)=>`<div class="bar"><i style="width:${p}%;background:var(${p>=c?"--err":p>=w?"--warn":"--ok"})"></i></div>`;
+    const t=[];
+    if(s.cpu!=null)t.push(`<div class="sys"><b>CPU</b><span>${s.cpu}%</span>${bar(s.cpu,70,90)}</div>`);
+    if(s.temp!=null)t.push(`<div class="sys"><b>SoC temp</b><span>${s.temp}°C</span>${bar(pct(s.temp,90),67,84)}</div>`);
+    if(s.mem)t.push(`<div class="sys"><b>RAM</b><span>${s.mem[0]} / ${s.mem[1]} GB</span>${bar(pct(s.mem[0],s.mem[1]),75,90)}</div>`);
+    if(s.disk)t.push(`<div class="sys"><b>Disk /</b><span>${s.disk[0]} / ${s.disk[1]} GB</span>${bar(pct(s.disk[0],s.disk[1]),80,95)}</div>`);
+    if(s.load!=null)t.push(`<div class="sys"><b>load 1m</b><span>${s.load}</span></div>`);
+    if(s.up)t.push(`<div class="sys"><b>uptime</b><span>${s.up}</span></div>`);
+    if(s.throttled)t.push(`<div class="sys" style="border-color:var(--err)"><b>⚠ PI THROTTLED</b><span style="color:var(--err)">0x${s.throttled.toString(16)}</span></div>`);
+    $("sysgrid").innerHTML=t.join("");
+  }
+
+  const vb=$("visionbtn");
+  vb.textContent=m.vision?"Stop":"Start";
+  vb.className=m.vision?"btn stop":"btn";
+  $("yolodet").textContent=(m.yolo_det&&m.yolo_det.length)?("👁 "+m.yolo_det.join(", ")):"";
+
   const run=$("running"), pill=$("toolpill");
   if(m.tool){run.style.display="flex";$("runname").textContent=m.tool;
     pill.style.display="";pill.textContent="⏳ "+m.tool;}
@@ -814,19 +1178,65 @@ function addLog(m){
   box.scrollTop=box.scrollHeight;
 }
 
+// ── Live SLAM map layer ──────────────────────────────────────────────────────
+let MAP=null;
+async function loadMap(m){
+  try{
+    const raw=Uint8Array.from(atob(m.data),c=>c.charCodeAt(0));
+    const ds=new DecompressionStream("deflate");
+    const buf=await new Response(new Blob([raw]).stream().pipeThrough(ds)).arrayBuffer();
+    const cells=new Uint8Array(buf);
+    const off=document.createElement("canvas");off.width=m.w;off.height=m.h;
+    const ictx=off.getContext("2d");
+    const img=ictx.createImageData(m.w,m.h);
+    for(let i=0;i<cells.length;i++){
+      const v=cells[i],o=i*4;
+      if(v===1){img.data[o]=25;img.data[o+1]=36;img.data[o+2]=48;img.data[o+3]=210;}       // free
+      else if(v===2){img.data[o]=176;img.data[o+1]=196;img.data[o+2]=212;img.data[o+3]=255;} // occupied
+    }                                                                                        // 0 = unknown → transparent
+    ictx.putImageData(img,0,0);
+    MAP={img:off,res:m.res,origin:m.origin,tf:m.tf};
+  }catch(e){/* old browser without DecompressionStream — no map layer */}
+}
+// map-frame point → odom-frame point (using the map→odom TF sent with the map)
+function mapToOdom(mx,my){
+  const[tx,ty,th]=MAP.tf;
+  return [tx+mx*Math.cos(th)-my*Math.sin(th), ty+mx*Math.sin(th)+my*Math.cos(th)];
+}
+
 // ── Canvas ───────────────────────────────────────────────────────────────────
 const cv=$("cv"),ctx=cv.getContext("2d");
 if(!ctx.roundRect){ctx.roundRect=function(x,y,w,h){this.rect(x,y,w,h);};}
 cv.addEventListener("wheel",e=>{e.preventDefault();
   scale=Math.max(25,Math.min(220,scale*(e.deltaY<0?1.12:0.89)));},{passive:false});
-cv.addEventListener("click",e=>{
-  if(!$("navarm").checked||!S)return;
+function canvasToWorld(e){
   const r=cv.getBoundingClientRect();
   const px=(e.clientX-r.left)*(cv.width/r.width), py=(e.clientY-r.top)*(cv.height/r.height);
-  const wx=S.pose[0]+(px-cv.width/2)/scale, wy=S.pose[1]-(py-cv.height/2)/scale;
+  return [S.pose[0]+(px-cv.width/2)/scale, S.pose[1]-(py-cv.height/2)/scale];
+}
+cv.addEventListener("click",e=>{
+  if(!$("navarm").checked||$("blarm").checked||!S)return;
+  const[wx,wy]=canvasToWorld(e);
   // Optimistic flag so the marker appears on the first click, every time.
   S.goal=[+wx.toFixed(2),+wy.toFixed(2)]; S.path=[];
   post("/api/nav_goal",{x:wx,y:wy});
+});
+// no-go zones: press = centre, drag = radius, release = send
+let blDrag=null;   // [cx, cy, r] in odom-frame metres
+cv.addEventListener("mousedown",e=>{
+  if(!$("blarm").checked||!S)return;
+  const[wx,wy]=canvasToWorld(e);blDrag=[wx,wy,0];e.preventDefault();
+});
+cv.addEventListener("mousemove",e=>{
+  if(!blDrag)return;
+  const[wx,wy]=canvasToWorld(e);
+  blDrag[2]=Math.hypot(wx-blDrag[0],wy-blDrag[1]);
+});
+window.addEventListener("mouseup",()=>{
+  if(!blDrag)return;
+  const[zx,zy,zr]=blDrag;blDrag=null;
+  if(zr<0.05)return;   // accidental click, not a drag
+  post("/api/blacklist",{x:zx,y:zy,radius:zr,duration:parseFloat($("bldur").value)});
 });
 
 function draw(){
@@ -845,6 +1255,36 @@ function draw(){
   ctx.stroke();
   // origin marker
   const[ox,oy]=W(0,0);ctx.fillStyle="#31465c";ctx.fillRect(ox-3,oy-3,6,6);
+
+  // SLAM occupancy map (drawn in map frame, placed via map→odom TF)
+  if(MAP){
+    const[mx,my]=mapToOdom(MAP.origin[0],MAP.origin[1]);
+    const[px,py]=W(mx,my);
+    ctx.save();ctx.translate(px,py);ctx.rotate(-MAP.tf[2]);
+    ctx.imageSmoothingEnabled=false;
+    ctx.scale(MAP.res*scale,-MAP.res*scale);   // flip y: image row 0 = map origin row
+    ctx.drawImage(MAP.img,0,0);
+    ctx.restore();
+  }
+
+  // frontier explorer overlays (map frame): blacklist / perm / manual zones + queue
+  if(MAP&&S.frontier){
+    const fill={bl:"rgba(255,60,60,.22)",perm:"rgba(15,15,15,.55)",manual:"rgba(199,146,234,.28)"};
+    const edge={bl:"#ff5d5d",perm:"#777",manual:"#c792ea"};
+    for(const[zx,zy,zr,k] of (S.frontier.zones||[])){
+      const[wx2,wy2]=mapToOdom(zx,zy),[px,py]=W(wx2,wy2);
+      ctx.beginPath();ctx.arc(px,py,zr*scale,0,6.2832);
+      ctx.fillStyle=fill[k]||fill.bl;ctx.fill();
+      ctx.strokeStyle=edge[k]||edge.bl;ctx.lineWidth=1.5;ctx.stroke();
+    }
+    ctx.font="11px system-ui";ctx.textAlign="center";
+    (S.frontier.queue||[]).forEach(([qx,qy],i)=>{
+      const[wx2,wy2]=mapToOdom(qx,qy),[px,py]=W(wx2,wy2);
+      ctx.fillStyle="rgba(61,220,132,.9)";
+      ctx.beginPath();ctx.arc(px,py,7,0,6.2832);ctx.fill();
+      ctx.fillStyle="#04270f";ctx.fillText(String(i+1),px,py+4);
+    });
+  }
 
   // trail
   if(trail.length>1){ctx.strokeStyle="rgba(79,195,247,.45)";ctx.lineWidth=2;ctx.beginPath();
@@ -871,6 +1311,28 @@ function draw(){
   for(const [a,r] of S.scan){
     const th=yaw+a, [px,py]=W(rx+r*Math.cos(th), ry+r*Math.sin(th));
     ctx.fillRect(px-1.5,py-1.5,3,3);
+  }
+
+  // no-go drag preview
+  if(blDrag&&blDrag[2]>0){
+    const[px,py]=W(blDrag[0],blDrag[1]);
+    ctx.beginPath();ctx.arc(px,py,blDrag[2]*scale,0,6.2832);
+    ctx.fillStyle="rgba(199,146,234,.20)";ctx.fill();
+    ctx.strokeStyle="#c792ea";ctx.lineWidth=2;ctx.stroke();
+    ctx.font="12px system-ui";ctx.fillStyle="#c792ea";ctx.textAlign="center";
+    ctx.fillText(blDrag[2].toFixed(2)+" m",px,py-blDrag[2]*scale-6);
+  }
+
+  // semantic objects (map frame → odom via map TF)
+  if(MAP&&S.sem&&S.sem.length){
+    ctx.font="11px system-ui";ctx.textAlign="center";
+    for(const[mx,my,label] of S.sem){
+      const[wx2,wy2]=mapToOdom(mx,my);
+      const[px,py]=W(wx2,wy2);
+      ctx.fillStyle="#ffb74d";
+      ctx.beginPath();ctx.moveTo(px,py-5);ctx.lineTo(px+5,py);ctx.lineTo(px,py+5);ctx.lineTo(px-5,py);ctx.closePath();ctx.fill();
+      ctx.fillStyle="#ffd9a0";ctx.fillText(label,px,py-8);
+    }
   }
 
   // robot body 0.50×0.36 m
@@ -908,6 +1370,9 @@ document.querySelectorAll("#pad button[data-c]").forEach(b=>{
   if(b.id==="padstop")return;
   b.onclick=()=>{const[l,a]=b.dataset.c.split(",").map(Number);post("/api/nudge",{lin:l,ang:a});};
 });
+$("visionbtn").onclick=()=>post("/api/vision",{on:!(S&&S.vision)});
+$("savemap").onclick=()=>post("/api/save_map",{name:$("mapname").value});
+$("blclear").onclick=()=>post("/api/blacklist",{action:"clear"});
 document.querySelectorAll("[data-tool]").forEach(b=>{
   b.onclick=()=>{
     const t=b.dataset.tool,params={};
