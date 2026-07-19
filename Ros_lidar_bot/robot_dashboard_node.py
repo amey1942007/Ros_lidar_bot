@@ -43,7 +43,7 @@ from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry, OccupancyGrid, Path
 from rclpy.action import ActionClient
 from rclpy.node import Node
-from rclpy.qos import QoSDurabilityPolicy, QoSProfile
+from rclpy.qos import QoSDurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from sensor_msgs.msg import Imu, LaserScan
 
 try:
@@ -179,7 +179,7 @@ class Dashboard(Node):
         self.create_subscription(Odometry, "/odom", self._odom_cb, 10)
         self.create_subscription(Odometry, "/odom_raw", self._mk_rate_cb("/odom_raw"), 10)
         self.create_subscription(Imu, "/imu", self._imu_cb, 20)
-        self.create_subscription(LaserScan, "/scan", self._scan_cb, 5)
+        self.create_subscription(LaserScan, "/scan", self._scan_cb, qos_profile_sensor_data)
         self.create_subscription(Twist, "/cmd_vel", self._cmd_cb, 10)
         self.create_subscription(Path, "/plan", self._plan_cb, 5)
         map_qos = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)

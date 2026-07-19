@@ -163,7 +163,7 @@ def _launch_setup(context, *args, **kwargs):
         respawn_delay=5.0,
         # Raw hardware scan — chassis/mast returns still present. Filtered to
         # /scan by scan_min_range_filter so RViz/SLAM/Nav2 never see them.
-        remappings=[("scan", "scan_raw")],
+        remappings=[("scan", "scan_raw"), ("/scan", "/scan_raw")],
         parameters=[{
             "channel_type":      "udp",
             "udp_ip":            "192.168.11.2",   # S2E factory default

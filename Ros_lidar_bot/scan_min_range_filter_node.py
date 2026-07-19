@@ -11,7 +11,12 @@ import math
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import (
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sensor_msgs.msg import LaserScan
 
 
@@ -19,18 +24,29 @@ class ScanMinRangeFilter(Node):
     def __init__(self) -> None:
         super().__init__("scan_min_range_filter")
         self._min = float(self.declare_parameter("min_range", 0.45).value)
-        qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+        # Lidar drivers use SensorData (BEST_EFFORT). RViz / ros2 topic echo /
+        # the dashboard default to RELIABLE — so publish RELIABLE or they see
+        # an "empty" /scan even though we are publishing.
+        pub_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
-            depth=5,
+            depth=10,
         )
-        self._pub = self.create_publisher(LaserScan, "scan", qos)
-        self.create_subscription(LaserScan, "scan_raw", self._cb, qos)
+        self._pub = self.create_publisher(LaserScan, "scan", pub_qos)
+        self.create_subscription(
+            LaserScan, "scan_raw", self._cb, qos_profile_sensor_data
+        )
+        self._got_raw = False
         self.get_logger().info(
             f"Filtering /scan_raw → /scan: drop ranges < {self._min:.2f} m"
         )
 
     def _cb(self, msg: LaserScan) -> None:
+        if not self._got_raw:
+            self._got_raw = True
+            self.get_logger().info(
+                f"Receiving /scan_raw ({len(msg.ranges)} beams) — publishing /scan"
+            )
         out = LaserScan()
         out.header = msg.header
         out.angle_min = msg.angle_min
@@ -40,14 +56,18 @@ class ScanMinRangeFilter(Node):
         out.scan_time = msg.scan_time
         out.range_min = max(float(msg.range_min), self._min)
         out.range_max = msg.range_max
-        out.intensities = list(msg.intensities)
-        ranges = []
-        for r in msg.ranges:
-            if math.isfinite(r) and r < self._min:
-                ranges.append(float("inf"))
-            else:
-                ranges.append(r)
-        out.ranges = ranges
+        # Keep intensities only when length matches (some drivers leave it empty).
+        if len(msg.intensities) == len(msg.ranges):
+            out.intensities = [
+                0.0 if (math.isfinite(r) and r < self._min) else i
+                for r, i in zip(msg.ranges, msg.intensities)
+            ]
+        else:
+            out.intensities = []
+        out.ranges = [
+            float("inf") if (math.isfinite(r) and r < self._min) else r
+            for r in msg.ranges
+        ]
         self._pub.publish(out)
 
 
