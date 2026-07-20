@@ -128,6 +128,11 @@ class YoloWorldPublisher(Node):
         self.log_file = open(args.log, "a") if args.log else None
         self.frame_id = 0
         self._dash_warned = False
+        # Throttle the dashboard preview push independently of inference rate.
+        # Default 5 Hz means only ~5 JPEG encodes+POSTs per second regardless
+        # of how fast YOLO runs. This keeps CPU and loopback traffic tiny.
+        self._dash_interval = 1.0 / max(0.1, args.dash_fps)
+        self._next_dash_push = 0.0
 
         # Timer-driven loop so rclpy stays responsive (Ctrl+C, ros2 node info, etc.)
         period = 1.0 / args.rate if args.rate > 0 else 0.0
@@ -141,10 +146,17 @@ class YoloWorldPublisher(Node):
     def push_dashboard_frame(self, frame):
         """Best-effort JPEG push to the dashboard's local HTTP server so the
         browser can see the camera feed. Loopback-only, never touches ROS --
-        no image topic, no subscribers, no DDS bandwidth."""
+        no image topic, no subscribers, no DDS bandwidth.
+
+        Rate is capped at --dash-fps (default 5 Hz) independently of the YOLO
+        inference rate so the preview costs almost no extra CPU."""
         if not self.args.dash_url:
             return
-        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
+        now = time.monotonic()
+        if now < self._next_dash_push:
+            return   # not yet time for the next preview frame
+        self._next_dash_push = now + self._dash_interval
+        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 55])
         if not ok:
             return
         try:
@@ -238,6 +250,9 @@ def parse_args():
     p.add_argument("--dash-url", dest="dash_url", default="http://127.0.0.1:8080/api/camera_frame",
                     help="dashboard camera-frame endpoint (loopback JPEG POST, not a ROS topic); "
                          "empty string disables the preview push")
+    p.add_argument("--dash-fps", dest="dash_fps", type=float, default=5.0,
+                    help="how many JPEG frames per second to push to the dashboard preview "
+                         "(default 5 Hz, independent of --rate; lower = less CPU)")
     # argparse will choke on ROS2's own --ros-args passthrough if used; strip those first.
     return p.parse_args(rclpy.utilities.remove_ros_args(sys.argv)[1:])
 

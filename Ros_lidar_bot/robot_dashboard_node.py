@@ -1061,6 +1061,9 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
 .ln .t{color:var(--dim);margin-right:8px}
 .ln.info{color:var(--tx)} .ln.error{color:var(--err)} .ln.run{color:var(--run)} .ln.tool{color:#9fb8cc}
 @media (max-width:900px){main{grid-template-columns:1fr}}
+#camcard{flex-shrink:0}
+#camfeed{width:100%;border-radius:8px;background:#0a0f14;display:block}
+#campause{color:var(--dim);font-size:12px;padding:14px 0;text-align:center}
 </style></head><body>
 
 <header>
@@ -1105,6 +1108,12 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
   </section>
 
   <div class="right">
+    <section class="card" id="camcard">
+      <h2>📷 Camera feed</h2>
+      <img id="camfeed" style="display:none">
+      <p id="campause">Vision off — start vision to see camera feed</p>
+    </section>
+
     <section class="card">
       <h2>System</h2>
       <div id="sysgrid"></div>
@@ -1156,8 +1165,6 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
           <button class="btn" id="visionbtn">Start</button>
           <span id="yolodet" style="color:var(--dim);font-size:12px"></span>
         </div>
-        <img id="camimg" style="display:none;width:100%;margin-top:8px;
-          border-radius:8px;background:#0a0f14">
       </div>
 
       <div style="color:var(--dim);font-size:12px;margin-top:10px">
@@ -1239,11 +1246,13 @@ function updatePanels(m){
   vb.textContent=m.vision?"Stop":"Start";
   vb.className=m.vision?"btn stop":"btn";
   $("visionpill").style.display=m.vision?"":"none";
-  const cam=$("camimg");
+  const cam=$("camfeed"),pause=$("campause");
   if(m.vision){
     if(cam.style.display==="none"){cam.src="/camera.mjpg?ts="+Date.now();cam.style.display="block";}
+    pause.style.display="none";
   }else if(cam.style.display!=="none"){
     cam.style.display="none";cam.removeAttribute("src");   // closes the mjpeg connection
+    pause.style.display="";
   }
   $("savepill").style.display=m.saving?"":"none";
   $("yolodet").textContent=(m.yolo_det&&m.yolo_det.length)?("👁 "+m.yolo_det.join(", ")):"";
