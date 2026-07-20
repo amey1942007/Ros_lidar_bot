@@ -653,6 +653,7 @@ class Dashboard(Node):
         rc = proc.wait()
         with self._lock:
             self._state["yolo_det"] = []
+            self._state["sem"] = []
         with self._cam_cond:
             self._cam_frame = None
             self._cam_seq += 1
@@ -695,6 +696,7 @@ class Dashboard(Node):
         self._vision_proc = None
         with self._lock:
             self._state["yolo_det"] = []
+            self._state["sem"] = []
         with self._cam_cond:
             self._cam_frame = None
             self._cam_seq += 1

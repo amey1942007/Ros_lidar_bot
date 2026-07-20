@@ -119,8 +119,12 @@ class SemanticSLAM(Node):
         self.objects:            List[SemanticObject] = []
         self._last_process_time: float = 0.0
 
-        # Load previously saved semantic map
-        self._load_map()
+        # Do NOT auto-load /tmp/semantic_map.json — that re-paints last session's
+        # markers on the live map and looks like "ghost" objects. Persistence is
+        # still written during a run; pass load_saved_map:=true to restore.
+        self.declare_parameter("load_saved_map", False)
+        if bool(self.get_parameter("load_saved_map").value):
+            self._load_map()
 
         # ── TF ────────────────────────────────────────────────────────────────
         self.tf_buffer   = Buffer()
