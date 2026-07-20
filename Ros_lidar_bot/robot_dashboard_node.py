@@ -1482,11 +1482,51 @@ document.querySelectorAll("[data-tool]").forEach(b=>{
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+class _DashboardHTTPServer(ThreadingHTTPServer):
+    # Survives TIME_WAIT after Ctrl-C so a quick relaunch can rebind.
+    allow_reuse_address = True
+
+
+def _reclaim_tcp_port(port: int) -> None:
+    """Kill any leftover process still listening on our HTTP port.
+
+    Common after a previous launch was SIGKILL'd / crashed: the old
+    robot_dashboard holds :8080 and the next bringup dies with
+    'Address already in use' until reboot. Same-user fuser -k is enough
+    on the Pi; no sudo required for our own orphan.
+    """
+    try:
+        subprocess.run(
+            ["fuser", "-k", f"{port}/tcp"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+    time.sleep(0.4)
+
+
 def main(args=None):
     rclpy.init(args=args)
     node = Dashboard()
 
-    server = ThreadingHTTPServer(("0.0.0.0", node.port), Handler)
+    try:
+        server = _DashboardHTTPServer(("0.0.0.0", node.port), Handler)
+    except OSError as exc:
+        if getattr(exc, "errno", None) != 98:  # EADDRINUSE
+            raise
+        print(f"  ⚠ port {node.port} busy — reclaiming leftover dashboard…",
+              flush=True)
+        _reclaim_tcp_port(node.port)
+        try:
+            server = _DashboardHTTPServer(("0.0.0.0", node.port), Handler)
+        except OSError as exc2:
+            print(f"  ✖ still cannot bind :{node.port}: {exc2}\n"
+                  f"    Run:  bash kill_program.bash   then relaunch.",
+                  flush=True)
+            node.destroy_node()
+            if rclpy.ok():
+                rclpy.shutdown()
+            raise SystemExit(1) from exc2
+
     server.dash = node
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
@@ -1498,8 +1538,10 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node.stop_vision()
         node.stop_tool()
         server.shutdown()
+        server.server_close()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

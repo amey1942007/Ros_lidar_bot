@@ -37,6 +37,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -124,21 +125,36 @@ class YoloWorldPublisher(Node):
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             self.get_logger().info(f"Capturing via OpenCV VideoCapture(index={args.camera})")
 
-        self.get_logger().info("Loading YOLO-World model...")
-        self.model = load_model(args.model, CLASSES)
-
+        # Model load on a Pi takes 30–90s+. Stream the dashboard preview as
+        # soon as the camera is open; run detections once the model is ready.
+        self.model = None
+        self._model_error = None
         self.log_file = open(args.log, "a") if args.log else None
         self.frame_id = 0
         self._dash_warned = False
+        self._dash_ok_logged = False
         # Throttle the dashboard preview push independently of inference rate.
         # Default 5 Hz means only ~5 JPEG encodes+POSTs per second regardless
         # of how fast YOLO runs. This keeps CPU and loopback traffic tiny.
         self._dash_interval = 1.0 / max(0.1, args.dash_fps)
         self._next_dash_push = 0.0
 
+        self.get_logger().info(
+            "Loading YOLO-World model in background (camera preview starts now)...")
+        threading.Thread(target=self._load_model_bg, daemon=True).start()
+
         # Timer-driven loop so rclpy stays responsive (Ctrl+C, ros2 node info, etc.)
         period = 1.0 / args.rate if args.rate > 0 else 0.0
         self.timer = self.create_timer(period, self.on_timer)
+
+    def _load_model_bg(self):
+        try:
+            model = load_model(self.args.model, CLASSES)
+            self.model = model
+            self.get_logger().info("YOLO-World model ready — detections starting")
+        except Exception as exc:  # noqa: BLE001 — surface any load failure in logs
+            self._model_error = exc
+            self.get_logger().error(f"YOLO-World model load failed: {exc}")
 
     def read_frame(self):
         if self.backend == "picamera2":
@@ -166,6 +182,10 @@ class YoloWorldPublisher(Node):
                 self.args.dash_url, data=buf.tobytes(),
                 headers={"Content-Type": "image/jpeg"}, method="POST")
             urllib.request.urlopen(req, timeout=0.5).close()
+            if not self._dash_ok_logged:
+                self.get_logger().info(
+                    f"camera preview → dashboard at {self.args.dash_url}")
+                self._dash_ok_logged = True
         except (urllib.error.URLError, OSError):
             if not self._dash_warned:
                 self.get_logger().warn(
@@ -179,9 +199,20 @@ class YoloWorldPublisher(Node):
             self.get_logger().warn("Failed to grab frame, retrying...")
             return
 
+        model = self.model
+        if model is None:
+            # Still loading — keep the dashboard feed alive with a status overlay.
+            preview = frame.copy()
+            label = ("Model load failed — see logs" if self._model_error
+                     else "Loading YOLO model…")
+            cv2.putText(preview, label, (16, 36),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2, cv2.LINE_AA)
+            self.push_dashboard_frame(preview)
+            return
+
         self.push_dashboard_frame(frame)
 
-        results = self.model.predict(frame, conf=self.args.conf, verbose=False)
+        results = model.predict(frame, conf=self.args.conf, verbose=False)
         r = results[0]
 
         detections = []
@@ -190,7 +221,7 @@ class YoloWorldPublisher(Node):
             w = x2 - x1
             h = y2 - y1
             cls_id = int(box.cls[0])
-            cls_name = self.model.names[cls_id]
+            cls_name = model.names[cls_id]
             conf = float(box.conf[0])
 
             detections.append({

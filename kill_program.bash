@@ -10,8 +10,9 @@ echo "Stopping ROS 2 daemon..."
 ros2 daemon stop &>/dev/null || true
 
 echo "Killing ROS 2 nodes and python processes..."
-# Kill specific executables
-PID_LIST=$(pgrep -f "driver_node|imu_node|odom_node|lidar_node|safety_stop|ekf_node|slam_toolbox|robot_state_publisher|joint_state_publisher|rviz2|xterm|teleop|joy_node")
+# Kill specific executables (include dashboard / vision — leftover :8080 is
+# the usual reason relaunch fails without a reboot)
+PID_LIST=$(pgrep -f "driver_node|imu_node|odom_node|lidar_node|safety_stop|ekf_node|slam_toolbox|robot_state_publisher|joint_state_publisher|robot_dashboard|yolo|semantic_slam|rviz2|xterm|teleop|joy_node|nav2_|controller_server|bt_navigator|lifecycle_manager")
 if [ -n "$PID_LIST" ]; then
     echo "Found running nodes: $PID_LIST"
     kill -9 $PID_LIST &>/dev/null || true
@@ -23,6 +24,13 @@ pkill -9 -f "ros2 launch" || true
 pkill -9 -f "rviz2" || true
 pkill -9 -f "xterm" || true
 pkill -9 -f "async_slam_toolbox" || true
+pkill -9 -f "vision.launch" || true
+pkill -9 -f "libcamerify" || true
+
+# Free dashboard HTTP port (and lidar S2E UDP if stuck)
+echo "Releasing ports 8080/tcp (dashboard) and 8089/udp (lidar S2E)..."
+fuser -k -9 8080/tcp &>/dev/null || true
+fuser -k -9 8089/udp &>/dev/null || true
 
 # 2. Free up Serial Ports (/dev/ttyACM* and /dev/ttyUSB*)
 echo "Releasing USB/Serial ports..."
@@ -30,7 +38,7 @@ for dev in /dev/ttyACM* /dev/ttyUSB*; do
     if [ -e "$dev" ]; then
         echo "Freeing $dev..."
         # Use fuser to kill any processes holding the port open
-        sudo fuser -k -9 "$dev" &>/dev/null || true
+        fuser -k -9 "$dev" &>/dev/null || sudo fuser -k -9 "$dev" &>/dev/null || true
     fi
 done
 
