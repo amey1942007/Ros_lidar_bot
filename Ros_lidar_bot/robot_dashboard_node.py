@@ -32,6 +32,7 @@ websocket dependency, no CDN, works offline.
 """
 
 import base64
+import glob
 import json
 import math
 import os
@@ -573,9 +574,39 @@ class Dashboard(Node):
         return {"ok": True}
 
     # ── Semantic vision pipeline (independent of the one-shot tool slot) ─────
+    def _reclaim_csi_camera(self):
+        """Free the CSI camera from leftover YOLO / libcamera holders.
+
+        A previous vision toggle that didn't fully die (or a hung Picamera2)
+        keeps the PiSP pipeline open → next start fails with
+        'Device or resource busy' / 'Pipeline handler in use by another process'
+        and the dashboard camera feed stays blank while old markers linger.
+        """
+        patterns = (
+            r"/lib/Ros_lidar_bot/yolo(\s|$)",
+            r"yolo_world_publisher",
+            r"vision\.launch\.py",
+            r"semantic_slam_node",
+            r"rpicam-(hello|vid|still|jpeg)",
+            r"libcamerify",
+        )
+        for pat in patterns:
+            subprocess.run(
+                ["pkill", "-9", "-f", pat],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Pi CSI (imx708) shows up on /dev/media* — free those only.
+        # Don't blanket-kill /dev/video* (can include unrelated V4L devices).
+        for path in sorted(glob.glob("/dev/media*")):
+            subprocess.run(
+                ["fuser", "-k", "-9", path],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.6)
+
     def start_vision(self):
         if self._vision_proc and self._vision_proc.poll() is None:
             return {"ok": True, "note": "already running"}
+        # Always clear orphans before open — camera is exclusive on the Pi.
+        self._reclaim_csi_camera()
         cmd = ["ros2", "launch", "Ros_lidar_bot", "vision.launch.py"]
         # libcamerify LD_PRELOADs a CameraManager so OpenCV/V4L2 can talk to
         # CSI cameras when picamera2 is missing (e.g. plain Ubuntu). It is
@@ -621,16 +652,28 @@ class Dashboard(Node):
 
     def stop_vision(self):
         proc = self._vision_proc
-        if not proc or proc.poll() is not None:
-            return {"ok": True, "note": "not running"}
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+        if proc and proc.poll() is None:
             try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+                os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    try:
+                        proc.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        pass
+            except ProcessLookupError:
+                pass
+        # SIGINT doesn't always release the CSI pipeline — force-free it.
+        self._reclaim_csi_camera()
+        self._vision_proc = None
+        with self._lock:
+            self._state["yolo_det"] = []
+        with self._cam_cond:
+            self._cam_frame = None
+            self._cam_seq += 1
+            self._cam_cond.notify_all()
         return {"ok": True}
 
     # ── Camera preview frame (from yolo.py, loopback only) ──────────────────

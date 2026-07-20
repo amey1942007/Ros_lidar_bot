@@ -106,15 +106,7 @@ class YoloWorldPublisher(Node):
                 self.get_logger().error(
                     "picamera2 not installed (sudo apt install -y python3-picamera2)")
                 sys.exit(1)
-            self.picam2 = Picamera2(camera_num=args.camera)
-            # semantic_slam_node converts bbox pixels → bearing using IMG_W=640,
-            # IMG_H=480 — the capture MUST match or every object angle is wrong.
-            # "RGB888" is a Picamera2 naming quirk -- it actually delivers
-            # BGR-ordered frames, which is exactly what OpenCV/YOLO expect.
-            config = self.picam2.create_video_configuration(
-                main={"size": (640, 480), "format": "RGB888"})
-            self.picam2.configure(config)
-            self.picam2.start()
+            self.picam2 = self._open_picamera(args.camera)
             self.get_logger().info(f"Capturing via Picamera2 (camera_num={args.camera})")
         else:
             self.cap = cv2.VideoCapture(args.camera)
@@ -146,6 +138,37 @@ class YoloWorldPublisher(Node):
         # Timer-driven loop so rclpy stays responsive (Ctrl+C, ros2 node info, etc.)
         period = 1.0 / args.rate if args.rate > 0 else 0.0
         self.timer = self.create_timer(period, self.on_timer)
+
+    def _open_picamera(self, camera_num):
+        """Open Picamera2; one retry if a leftover process still holds the CSI bus."""
+        last_err = None
+        for attempt in range(2):
+            try:
+                picam2 = Picamera2(camera_num=camera_num)
+                # semantic_slam_node converts bbox pixels → bearing using IMG_W=640,
+                # IMG_H=480 — the capture MUST match or every object angle is wrong.
+                # "RGB888" is a Picamera2 naming quirk -- it actually delivers
+                # BGR-ordered frames, which is exactly what OpenCV/YOLO expect.
+                config = picam2.create_video_configuration(
+                    main={"size": (640, 480), "format": "RGB888"})
+                picam2.configure(config)
+                picam2.start()
+                return picam2
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                msg = str(exc).lower()
+                busy = ("busy" in msg or "in use" in msg
+                        or "did not complete" in msg)
+                if attempt == 0 and busy:
+                    self.get_logger().warn(
+                        "Camera busy (another process holds it) — retrying in 1.5s…")
+                    time.sleep(1.5)
+                    continue
+                break
+        self.get_logger().error(
+            f"Failed to open CSI camera: {last_err}. "
+            "Stop vision (or run kill_program.bash) to free the camera, then retry.")
+        sys.exit(1)
 
     def _load_model_bg(self):
         try:

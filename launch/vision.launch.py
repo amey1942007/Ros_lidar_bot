@@ -13,7 +13,9 @@ NOT part of the always-on bringup: started/stopped from the web dashboard's
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, EmitEvent, RegisterEventHandler
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -23,6 +25,34 @@ DEFAULT_MODEL = os.path.expanduser("~/.cache/Ros_lidar_bot/yolov8s-world.pt")
 
 
 def generate_launch_description():
+    yolo = Node(
+        package="Ros_lidar_bot",
+        executable="yolo",
+        name="yolo_world_publisher",
+        output="screen",
+        arguments=[
+            "--camera", LaunchConfiguration("camera"),
+            "--conf", LaunchConfiguration("conf"),
+            "--rate", LaunchConfiguration("rate"),
+            "--model", LaunchConfiguration("model"),
+            "--backend", LaunchConfiguration("backend"),
+        ],
+    )
+    semantic = Node(
+        package="Ros_lidar_bot",
+        executable="semantic_slam_node",
+        name="semantic_slam",
+        output="screen",
+    )
+    # If the camera node dies (busy device, crash), tear down the whole
+    # vision launch so the dashboard clears VISION ON instead of sitting
+    # on a half-dead pipeline with stale markers and a blank feed.
+    shutdown_on_yolo_exit = RegisterEventHandler(
+        OnProcessExit(
+            target_action=yolo,
+            on_exit=[EmitEvent(event=Shutdown(reason="yolo exited"))],
+        )
+    )
     return LaunchDescription([
         DeclareLaunchArgument("camera", default_value="0",
                               description="camera index (Picamera2 camera_num or OpenCV index)"),
@@ -37,23 +67,7 @@ def generate_launch_description():
         DeclareLaunchArgument("backend", default_value="auto",
                               description="capture backend: auto|picamera2|cv2 "
                                           "(RPi CSI cameras need picamera2)"),
-        Node(
-            package="Ros_lidar_bot",
-            executable="yolo",
-            name="yolo_world_publisher",
-            output="screen",
-            arguments=[
-                "--camera", LaunchConfiguration("camera"),
-                "--conf", LaunchConfiguration("conf"),
-                "--rate", LaunchConfiguration("rate"),
-                "--model", LaunchConfiguration("model"),
-                "--backend", LaunchConfiguration("backend"),
-            ],
-        ),
-        Node(
-            package="Ros_lidar_bot",
-            executable="semantic_slam_node",
-            name="semantic_slam",
-            output="screen",
-        ),
+        yolo,
+        semantic,
+        shutdown_on_yolo_exit,
     ])
