@@ -88,12 +88,11 @@ class YoloWorldPublisher(Node):
         self.pub = self.create_publisher(String, args.topic, 10)
         self.get_logger().info(f"Publishing detections on topic '{args.topic}' (std_msgs/String, JSON payload)")
 
-        self.get_logger().info("Loading YOLO-World model...")
-        self.model = load_model(args.model, CLASSES)
-
         # Camera Module 3 (and other RPi CSI cameras) only speak libcamera on
         # Bookworm -- cv2.VideoCapture's V4L2 backend can't open them. USB
         # webcams still work fine through OpenCV, so pick per --backend.
+        # Open the camera BEFORE the (slow) model load so a CameraManager
+        # conflict or missing device fails in seconds, not after a minute.
         backend = args.backend
         if backend == "auto":
             backend = "picamera2" if Picamera2 is not None else "cv2"
@@ -124,6 +123,9 @@ class YoloWorldPublisher(Node):
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             self.get_logger().info(f"Capturing via OpenCV VideoCapture(index={args.camera})")
+
+        self.get_logger().info("Loading YOLO-World model...")
+        self.model = load_model(args.model, CLASSES)
 
         self.log_file = open(args.log, "a") if args.log else None
         self.frame_id = 0

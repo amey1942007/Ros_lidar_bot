@@ -577,12 +577,18 @@ class Dashboard(Node):
         if self._vision_proc and self._vision_proc.poll() is None:
             return {"ok": True, "note": "already running"}
         cmd = ["ros2", "launch", "Ros_lidar_bot", "vision.launch.py"]
-        # On Ubuntu (no python3-picamera2 package) the CSI camera still works
-        # through plain OpenCV if the whole process tree runs under
-        # libcamerify, which LD_PRELOAD-intercepts V4L2 calls and routes them
-        # through libcamera. Harmless if picamera2 IS available (its bindings
-        # don't go through V4L2 at all) -- so wrap whenever the tool exists.
-        if shutil.which("libcamerify"):
+        # libcamerify LD_PRELOADs a CameraManager so OpenCV/V4L2 can talk to
+        # CSI cameras when picamera2 is missing (e.g. plain Ubuntu). It is
+        # NOT harmless alongside picamera2: Picamera2 creates its own
+        # CameraManager, and libcamera aborts with
+        # "Multiple CameraManager objects are not allowed". Only wrap when
+        # picamera2 is unavailable.
+        try:
+            import picamera2  # noqa: F401
+            has_picamera2 = True
+        except ImportError:
+            has_picamera2 = False
+        if shutil.which("libcamerify") and not has_picamera2:
             cmd = ["libcamerify"] + cmd
         self.log("▶ starting semantic vision (YOLO-World + semantic SLAM)", "run")
         try:
