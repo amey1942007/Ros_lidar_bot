@@ -91,10 +91,14 @@ class SemanticSLAM(Node):
     DETECT_HZ      = 5.0    # max rate to process /yolo messages (Hz)
     CONF_THRESHOLD = 0.25   # minimum detection confidence to accept
     MERGE_RADIUS   = 0.60   # merge two detections within this distance (m)
-    MIN_SIGHTINGS  = 3      # don't publish marker until seen this many times
+    MIN_SIGHTINGS  = 2      # publish after this many successful depth fixes
     MIN_DEPTH      = 0.20   # ignore LiDAR readings closer than this (m)
     MAX_DEPTH      = 8.0    # ignore LiDAR readings farther than this (m)
     SAVE_PATH      = "/tmp/semantic_map.json"
+    DEPTH_RAY_SPAN = 3      # sample ±N lidar beams around the bearing (median)
+    # Must match description/lidar.xacro laser_yaw. Slamtec 0° is cable-opposite;
+    # with yaw=π, LaserScan angle 0 is robot REAR — convert base→scan below.
+    LASER_YAW      = math.pi
 
     def __init__(self) -> None:
         super().__init__("semantic_slam")
@@ -102,9 +106,11 @@ class SemanticSLAM(Node):
         # ── ROS parameters ────────────────────────────────────────────────────
         self.declare_parameter("conf",      self.CONF_THRESHOLD)
         self.declare_parameter("max_depth", self.MAX_DEPTH)
+        self.declare_parameter("laser_yaw", self.LASER_YAW)
 
         self.CONF_THRESHOLD = float(self.get_parameter("conf").value)
         self.MAX_DEPTH      = float(self.get_parameter("max_depth").value)
+        self.LASER_YAW      = float(self.get_parameter("laser_yaw").value)
 
         # ── State ─────────────────────────────────────────────────────────────
         # Latest raw detections from /yolo (list of dicts)
@@ -135,8 +141,11 @@ class SemanticSLAM(Node):
         # ── Publishers ────────────────────────────────────────────────────────
         self.marker_pub = self.create_publisher(MarkerArray, "/semantic_markers", 10)
 
-        # ── Processing timer ──────────────────────────────────────────────────
+        # ── Processing timers ─────────────────────────────────────────────────
         self.create_timer(1.0 / self.DETECT_HZ, self._process)
+        # Markers use a short lifetime — republish even when YOLO is quiet so
+        # the dashboard/RViz don't go blank, and newly confirmed objects appear.
+        self.create_timer(0.5, self._publish_markers)
 
         self.get_logger().info(
             "Semantic SLAM node ready.\n"
@@ -188,7 +197,7 @@ class SemanticSLAM(Node):
         robot_pose = self._get_robot_pose()
         if robot_pose is None:
             self.get_logger().warn(
-                "Cannot get robot pose from TF (map → base_link) — is SLAM running?",
+                "Cannot get robot pose from TF (map → base_footprint/base_link) — is SLAM running?",
                 throttle_duration_sec=10.0,
             )
             return
@@ -199,6 +208,8 @@ class SemanticSLAM(Node):
         detections = self._latest_detections
         self._latest_detections = []
 
+        placed = 0
+        skipped_depth = 0
         for det in detections:
             # ── Extract detection fields ──────────────────────────────────────
             label = str(det.get("class", "unknown"))
@@ -221,8 +232,10 @@ class SemanticSLAM(Node):
             lidar_angle = -angle   # camera X-right → robot -Y
 
             # ── Step 2: LiDAR depth at that angle ────────────────────────────
-            depth = self._lidar_depth(scan, lidar_angle)
+            # Scan is in laser_frame (yawed vs base_link) — convert bearing.
+            depth = self._lidar_depth(scan, lidar_angle - self.LASER_YAW)
             if depth is None:
+                skipped_depth += 1
                 continue
 
             # ── Step 3: object position in base_link frame ────────────────────
@@ -243,44 +256,60 @@ class SemanticSLAM(Node):
 
             self._update_objects(label, obj_x_map, obj_y_map,
                                  phys_width, phys_depth, conf)
+            placed += 1
 
-        self._publish_markers()
+        if detections and placed == 0 and skipped_depth:
+            self.get_logger().warn(
+                f"Got {len(detections)} YOLO dets but no LiDAR depth "
+                f"({skipped_depth} rays empty/OOR) — no new map positions.",
+                throttle_duration_sec=8.0,
+            )
+
         self._save_map()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _lidar_depth(self, scan: LaserScan, angle: float) -> Optional[float]:
-        """Return LiDAR range at the given angle (radians), or None."""
+        """Median LiDAR range near the given bearing (radians), or None."""
         while angle > math.pi:  angle -= 2 * math.pi
         while angle < -math.pi: angle += 2 * math.pi
 
         if not (scan.angle_min <= angle <= scan.angle_max):
             return None
 
-        idx   = int(round((angle - scan.angle_min) / scan.angle_increment))
-        idx   = max(0, min(idx, len(scan.ranges) - 1))
-        depth = scan.ranges[idx]
-
-        if math.isnan(depth) or math.isinf(depth):
+        idx = int(round((angle - scan.angle_min) / scan.angle_increment))
+        idx = max(0, min(idx, len(scan.ranges) - 1))
+        span = self.DEPTH_RAY_SPAN
+        samples = []
+        for i in range(idx - span, idx + span + 1):
+            if i < 0 or i >= len(scan.ranges):
+                continue
+            depth = scan.ranges[i]
+            if math.isnan(depth) or math.isinf(depth):
+                continue
+            if self.MIN_DEPTH <= depth <= self.MAX_DEPTH:
+                samples.append(depth)
+        if not samples:
             return None
-        if not (self.MIN_DEPTH <= depth <= self.MAX_DEPTH):
-            return None
-        return depth
+        samples.sort()
+        return samples[len(samples) // 2]
 
     def _get_robot_pose(self) -> Optional[Tuple[float, float, float]]:
         """Return (x, y, yaw) of the robot in the map frame."""
-        try:
-            tf = self.tf_buffer.lookup_transform(
-                "map", "base_link", rclpy.time.Time()
-            )
-        except TransformException:
-            return None
-        x   = tf.transform.translation.x
-        y   = tf.transform.translation.y
-        qz  = tf.transform.rotation.z
-        qw  = tf.transform.rotation.w
-        yaw = 2.0 * math.atan2(qz, qw)
-        return x, y, yaw
+        for frame in ("base_footprint", "base_link"):
+            try:
+                tf = self.tf_buffer.lookup_transform(
+                    "map", frame, rclpy.time.Time()
+                )
+            except TransformException:
+                continue
+            x = tf.transform.translation.x
+            y = tf.transform.translation.y
+            qz = tf.transform.rotation.z
+            qw = tf.transform.rotation.w
+            yaw = 2.0 * math.atan2(qz, qw)
+            return x, y, yaw
+        return None
 
     def _update_objects(self, label: str, mx: float, my: float,
                         width: float, depth_size: float, conf: float) -> None:
@@ -339,7 +368,7 @@ class SemanticSLAM(Node):
             box.scale.z           = 1.0
             box.color             = obj.colour
             box.color.a           = 0.35
-            box.lifetime.sec      = 3
+            box.lifetime.sec      = 5
             array.markers.append(box)
 
             # Text label
@@ -355,7 +384,7 @@ class SemanticSLAM(Node):
             txt.text              = f"{obj.label} ({obj.confidence:.0%})"
             txt.color.r = txt.color.g = txt.color.b = 1.0
             txt.color.a           = 1.0
-            txt.lifetime.sec      = 3
+            txt.lifetime.sec      = 5
             array.markers.append(txt)
 
         self.marker_pub.publish(array)

@@ -194,6 +194,8 @@ class Dashboard(Node):
         self._tool_proc = None
         self._tool_name = None
         self._vision_proc = None
+        self._vision_lock = threading.Lock()
+        self._vision_starting = False
         self._map_saves_pending = 0   # >0 while save_map service calls in flight
         self._latest_map = None
         self._map_dirty = False
@@ -603,35 +605,43 @@ class Dashboard(Node):
         time.sleep(0.6)
 
     def start_vision(self):
-        if self._vision_proc and self._vision_proc.poll() is None:
-            return {"ok": True, "note": "already running"}
-        # Always clear orphans before open — camera is exclusive on the Pi.
-        self._reclaim_csi_camera()
-        cmd = ["ros2", "launch", "Ros_lidar_bot", "vision.launch.py"]
-        # libcamerify LD_PRELOADs a CameraManager so OpenCV/V4L2 can talk to
-        # CSI cameras when picamera2 is missing (e.g. plain Ubuntu). It is
-        # NOT harmless alongside picamera2: Picamera2 creates its own
-        # CameraManager, and libcamera aborts with
-        # "Multiple CameraManager objects are not allowed". Only wrap when
-        # picamera2 is unavailable.
+        with self._vision_lock:
+            if self._vision_proc and self._vision_proc.poll() is None:
+                return {"ok": True, "note": "already running"}
+            if self._vision_starting:
+                return {"ok": True, "note": "start already in progress"}
+            self._vision_starting = True
         try:
-            import picamera2  # noqa: F401
-            has_picamera2 = True
-        except ImportError:
-            has_picamera2 = False
-        if shutil.which("libcamerify") and not has_picamera2:
-            cmd = ["libcamerify"] + cmd
-        self.log("▶ starting semantic vision (YOLO-World + semantic SLAM)", "run")
-        try:
-            self._vision_proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1, start_new_session=True)
-        except OSError as exc:
-            self.log(f"failed to start vision: {exc}", "error")
-            return {"ok": False, "error": str(exc)}
-        threading.Thread(target=self._pump_vision, args=(self._vision_proc,),
-                         daemon=True).start()
-        return {"ok": True}
+            # Always clear orphans before open — camera is exclusive on the Pi.
+            self._reclaim_csi_camera()
+            cmd = ["ros2", "launch", "Ros_lidar_bot", "vision.launch.py"]
+            # libcamerify LD_PRELOADs a CameraManager so OpenCV/V4L2 can talk to
+            # CSI cameras when picamera2 is missing (e.g. plain Ubuntu). It is
+            # NOT harmless alongside picamera2: Picamera2 creates its own
+            # CameraManager, and libcamera aborts with
+            # "Multiple CameraManager objects are not allowed". Only wrap when
+            # picamera2 is unavailable.
+            try:
+                import picamera2  # noqa: F401
+                has_picamera2 = True
+            except ImportError:
+                has_picamera2 = False
+            if shutil.which("libcamerify") and not has_picamera2:
+                cmd = ["libcamerify"] + cmd
+            self.log("▶ starting semantic vision (YOLO-World + semantic SLAM)", "run")
+            try:
+                self._vision_proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1, start_new_session=True)
+            except OSError as exc:
+                self.log(f"failed to start vision: {exc}", "error")
+                return {"ok": False, "error": str(exc)}
+            threading.Thread(target=self._pump_vision, args=(self._vision_proc,),
+                             daemon=True).start()
+            return {"ok": True}
+        finally:
+            with self._vision_lock:
+                self._vision_starting = False
 
     def _pump_vision(self, proc):
         for line in proc.stdout:
@@ -647,11 +657,26 @@ class Dashboard(Node):
             self._cam_frame = None
             self._cam_seq += 1
             self._cam_cond.notify_all()   # wakes streamers so the <img> clears
-        lvl = "info" if rc == 0 else "error"
+        # -2 SIGINT / -15 SIGTERM = intentional stop (e.g. second X press)
+        lvl = "info" if rc in (0, -2, -15) else "error"
         self.log(f"■ semantic vision exited (code {rc})", lvl)
 
     def stop_vision(self):
-        proc = self._vision_proc
+        with self._vision_lock:
+            proc = self._vision_proc
+            starting = self._vision_starting
+        if starting and (not proc or proc.poll() is not None):
+            # Still inside reclaim/Popen — a rapid second X; wait briefly then kill.
+            self.log("vision start in progress — cancelling…", "info")
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                with self._vision_lock:
+                    if not self._vision_starting:
+                        proc = self._vision_proc
+                        break
+                time.sleep(0.1)
+            with self._vision_lock:
+                proc = self._vision_proc
         if proc and proc.poll() is None:
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGINT)
@@ -914,14 +939,17 @@ class Handler(BaseHTTPRequestHandler):
         return self.server.dash
 
     def do_GET(self):
-        if self.path in ("/", "/index.html"):
+        # BaseHTTPRequestHandler keeps ?query on self.path — strip it so
+        # /camera.mjpg?ts=… matches (otherwise the <img> gets 404 / broken icon).
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/index.html"):
             body = PAGE.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-        elif self.path == "/events":
+        elif path == "/events":
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
@@ -944,7 +972,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             finally:
                 self.dash.hub.detach(q)
-        elif self.path == "/camera.mjpg":
+        elif path == "/camera.mjpg":
             self.send_response(200)
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
             self.send_header("Cache-Control", "no-cache")
@@ -1507,7 +1535,10 @@ document.querySelectorAll("#pad button[data-c]").forEach(b=>{
   if(b.id==="padstop")return;
   b.onclick=()=>{const[l,a]=b.dataset.c.split(",").map(Number);post("/api/nudge",{lin:l,ang:a});};
 });
-$("visionbtn").onclick=()=>post("/api/vision",{on:!(S&&S.vision)});
+$("visionbtn").onclick=(()=>{let busy=0;return()=>{
+  if(Date.now()<busy)return;busy=Date.now()+4000;
+  post("/api/vision",{on:!(S&&S.vision)});
+};})();
 $("savemap").onclick=()=>post("/api/save_map",{name:$("mapname").value});
 $("blclear").onclick=()=>post("/api/blacklist",{action:"clear"});
 document.querySelectorAll("[data-tool]").forEach(b=>{

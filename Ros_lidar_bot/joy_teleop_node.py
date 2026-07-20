@@ -207,7 +207,10 @@ class JoyTeleop(Node):
 
     def _fire_action(self, name):
         now = time.monotonic()
-        if now - self._action_last.get(name, 0.0) < 2.0:
+        # Vision launch needs several seconds (reclaim + ros2 launch + camera);
+        # a second X within the generic 2s window still aborts mid-start.
+        cooldown = 5.0 if name == 'vision' else 2.0
+        if now - self._action_last.get(name, 0.0) < cooldown:
             return
         self._action_last[name] = now
         endpoint, payload, desc = self._ACTIONS[name]
