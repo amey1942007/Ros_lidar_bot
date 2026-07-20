@@ -10,24 +10,30 @@ NOT part of the always-on bringup: started/stopped from the web dashboard's
   ros2 launch Ros_lidar_bot vision.launch.py camera:=0 conf:=0.25).
 """
 
+import os
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+# Same cache path yolo.py defaults to -- kept identical so a manual `ros2 run`
+# and a dashboard-launched vision.launch.py always share one downloaded copy.
+DEFAULT_MODEL = os.path.expanduser("~/.cache/Ros_lidar_bot/yolov8s-world.pt")
+
 
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("camera", default_value="0",
-                              description="OpenCV camera index"),
+                              description="camera index (Picamera2 camera_num or OpenCV index)"),
         DeclareLaunchArgument("conf", default_value="0.25",
                               description="YOLO confidence threshold"),
         # semantic_slam consumes detections at max 5 Hz (DETECT_HZ) — running
         # inference faster than that on the Pi is pure wasted CPU.
         DeclareLaunchArgument("rate", default_value="5.0",
                               description="Max YOLO inference FPS"),
-        DeclareLaunchArgument("model", default_value="yolov8s-world.pt",
-                              description="YOLO-World weights (auto-downloads)"),
+        DeclareLaunchArgument("model", default_value=DEFAULT_MODEL,
+                              description="YOLO-World weights path (auto-downloads on first run, cached after)"),
         DeclareLaunchArgument("backend", default_value="auto",
                               description="capture backend: auto|picamera2|cv2 "
                                           "(RPi CSI cameras need picamera2)"),

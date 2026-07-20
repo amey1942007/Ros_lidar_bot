@@ -35,6 +35,7 @@ To prevent blocking and system latency during heavier inference cycles:
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -63,11 +64,19 @@ CLASSES = [
 # "keyboard" appeared twice in your original list; duplicates removed here.
 CLASSES = list(dict.fromkeys(CLASSES))
 
+# Weights cache lives outside the workspace (~/.cache, not the git repo) so:
+#  - a bare filename like "yolov8s-world.pt" always resolves to ONE place,
+#    no matter whether this is launched from a terminal or as a dashboard
+#    subprocess (different CWDs) -- one download, not one per launch style.
+#  - `git pull` / `colcon build` never touches it -- it survives both.
+DEFAULT_MODEL = os.path.expanduser("~/.cache/Ros_lidar_bot/yolov8s-world.pt")
+
 
 def load_model(model_path, classes):
     from ultralytics import YOLO
 
-    model = YOLO(model_path)    # e.g. "yolov8s-world.pt" (auto-downloads)
+    os.makedirs(os.path.dirname(model_path) or ".", exist_ok=True)
+    model = YOLO(model_path)    # downloads to model_path on first run, cached after
     model.set_classes(classes)  # restrict YOLO-World's open vocabulary to your list
     return model
 
@@ -214,7 +223,9 @@ class YoloWorldPublisher(Node):
 
 def parse_args():
     p = argparse.ArgumentParser(description="YOLO-World webcam detector -> ROS2 /yolo publisher")
-    p.add_argument("--model", default="yolov8s-world.pt", help="YOLO-World weights (auto-downloads if not present)")
+    p.add_argument("--model", default=DEFAULT_MODEL,
+                    help=f"YOLO-World weights path (auto-downloads on first run, cached after; "
+                         f"default {DEFAULT_MODEL})")
     p.add_argument("--camera", type=int, default=0, help="camera index (Picamera2 camera_num, or OpenCV index)")
     p.add_argument("--backend", choices=["auto", "picamera2", "cv2"], default="auto",
                     help="capture backend: auto picks Picamera2 if installed (RPi CSI cameras "

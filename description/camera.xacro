@@ -10,9 +10,9 @@
          - Y: distance left from the center of the chassis bottom (positive left, negative right).
          - Z: height upwards from the center of the chassis bottom face.
        ======================================================================= -->
-  <xacro:property name="cam_x"  value="0.0"/>  <!-- forward/back  -->
-  <xacro:property name="cam_y"  value="0.0"/>  <!-- left/right    -->
-  <xacro:property name="cam_z"  value="0.0"/>  <!-- height        -->
+  <xacro:property name="cam_x"  value="0.22"/>  <!-- forward/back  -->
+  <xacro:property name="cam_y"  value="0.0"/>   <!-- left/right    -->
+  <xacro:property name="cam_z"  value="0.26"/>  <!-- height        -->
 
   <!-- Camera box size  -->
   <xacro:property name="cam_size_x" value="0.025"/>  <!-- depth         -->
