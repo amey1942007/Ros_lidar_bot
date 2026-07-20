@@ -1062,8 +1062,8 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
 .ln.info{color:var(--tx)} .ln.error{color:var(--err)} .ln.run{color:var(--run)} .ln.tool{color:#9fb8cc}
 @media (max-width:900px){main{grid-template-columns:1fr}}
 #camcard{flex-shrink:0}
-#camfeed{width:100%;border-radius:8px;background:#0a0f14;display:block}
-#campause{color:var(--dim);font-size:12px;padding:14px 0;text-align:center}
+#camfeed{width:100%;border-radius:8px;background:#0a0f14;display:block;max-height:220px;object-fit:contain}
+#campause{color:var(--dim);font-size:12px;padding:10px 0;text-align:center}
 </style></head><body>
 
 <header>
@@ -1108,12 +1108,6 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
   </section>
 
   <div class="right">
-    <section class="card" id="camcard">
-      <h2>📷 Camera feed</h2>
-      <img id="camfeed" style="display:none">
-      <p id="campause">Vision off — start vision to see camera feed</p>
-    </section>
-
     <section class="card">
       <h2>System</h2>
       <div id="sysgrid"></div>
@@ -1170,6 +1164,12 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
       <div style="color:var(--dim);font-size:12px;margin-top:10px">
         🎮 Gamepad: <b>B</b> save map · <b>X</b> vision on/off ·
         <b>LT+RT+LB+RB</b> IMU calibration</div>
+    </section>
+
+    <section class="card" id="camcard">
+      <h2>📷 Camera feed</h2>
+      <img id="camfeed" style="display:none">
+      <p id="campause">Vision off — start vision to see camera feed</p>
     </section>
   </div>
 
