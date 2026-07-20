@@ -28,6 +28,9 @@ def generate_launch_description():
                               description="Max YOLO inference FPS"),
         DeclareLaunchArgument("model", default_value="yolov8s-world.pt",
                               description="YOLO-World weights (auto-downloads)"),
+        DeclareLaunchArgument("backend", default_value="auto",
+                              description="capture backend: auto|picamera2|cv2 "
+                                          "(RPi CSI cameras need picamera2)"),
         Node(
             package="Ros_lidar_bot",
             executable="yolo",
@@ -38,6 +41,7 @@ def generate_launch_description():
                 "--conf", LaunchConfiguration("conf"),
                 "--rate", LaunchConfiguration("rate"),
                 "--model", LaunchConfiguration("model"),
+                "--backend", LaunchConfiguration("backend"),
             ],
         ),
         Node(

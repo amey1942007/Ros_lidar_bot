@@ -1,0 +1,14 @@
+---
+description: Always push to origin after creating a git commit
+alwaysApply: true
+---
+
+# Push after every commit
+
+When the user asks to commit (or when a commit is created at their request):
+
+1. Complete the commit following the normal git commit protocol.
+2. Immediately push to the tracked remote branch (`git push -u origin HEAD` if upstream is missing, otherwise `git push`).
+3. Do not wait to be asked to push — push is part of the commit workflow for this repo.
+4. Report the remote result (branch + short SHA) after the push.
+5. Still never force-push unless the user explicitly requests it.

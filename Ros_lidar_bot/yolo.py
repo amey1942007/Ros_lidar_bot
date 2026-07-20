@@ -5,7 +5,8 @@
 UNDERLYING SYSTEM & DATA FLOW
 ================================================================================
 This node handles open-vocabulary object detection using Ultralytics YOLO-World.
-- Subscribes to: Direct OpenCV USB webcam stream capture (e.g. index 0)
+- Subscribes to: camera frames via Picamera2 (RPi CSI camera, e.g. Camera Module 3)
+  or OpenCV VideoCapture (USB webcam) -- see --backend.
 - Publishes to: /yolo (std_msgs/String carrying a JSON payload)
   Format of published string:
   {
@@ -36,11 +37,18 @@ import argparse
 import json
 import sys
 import time
+import urllib.error
+import urllib.request
 
 import cv2
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
+
+try:
+    from picamera2 import Picamera2
+except ImportError:
+    Picamera2 = None
 
 # ---------------------------------------------------------------------------
 # Your class list
@@ -74,27 +82,81 @@ class YoloWorldPublisher(Node):
         self.get_logger().info("Loading YOLO-World model...")
         self.model = load_model(args.model, CLASSES)
 
-        self.cap = cv2.VideoCapture(args.camera)
-        if not self.cap.isOpened():
-            self.get_logger().error(f"Could not open camera index {args.camera}")
-            sys.exit(1)
-        # semantic_slam_node converts bbox pixels → bearing using IMG_W=640,
-        # IMG_H=480 — the capture MUST match or every object angle is wrong.
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        # Camera Module 3 (and other RPi CSI cameras) only speak libcamera on
+        # Bookworm -- cv2.VideoCapture's V4L2 backend can't open them. USB
+        # webcams still work fine through OpenCV, so pick per --backend.
+        backend = args.backend
+        if backend == "auto":
+            backend = "picamera2" if Picamera2 is not None else "cv2"
+        self.backend = backend
+
+        self.cap = None
+        self.picam2 = None
+        if backend == "picamera2":
+            if Picamera2 is None:
+                self.get_logger().error(
+                    "picamera2 not installed (sudo apt install -y python3-picamera2)")
+                sys.exit(1)
+            self.picam2 = Picamera2(camera_num=args.camera)
+            # semantic_slam_node converts bbox pixels → bearing using IMG_W=640,
+            # IMG_H=480 — the capture MUST match or every object angle is wrong.
+            # "RGB888" is a Picamera2 naming quirk -- it actually delivers
+            # BGR-ordered frames, which is exactly what OpenCV/YOLO expect.
+            config = self.picam2.create_video_configuration(
+                main={"size": (640, 480), "format": "RGB888"})
+            self.picam2.configure(config)
+            self.picam2.start()
+            self.get_logger().info(f"Capturing via Picamera2 (camera_num={args.camera})")
+        else:
+            self.cap = cv2.VideoCapture(args.camera)
+            if not self.cap.isOpened():
+                self.get_logger().error(f"Could not open camera index {args.camera}")
+                sys.exit(1)
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self.get_logger().info(f"Capturing via OpenCV VideoCapture(index={args.camera})")
 
         self.log_file = open(args.log, "a") if args.log else None
         self.frame_id = 0
+        self._dash_warned = False
 
         # Timer-driven loop so rclpy stays responsive (Ctrl+C, ros2 node info, etc.)
         period = 1.0 / args.rate if args.rate > 0 else 0.0
         self.timer = self.create_timer(period, self.on_timer)
 
+    def read_frame(self):
+        if self.backend == "picamera2":
+            return True, self.picam2.capture_array()
+        return self.cap.read()
+
+    def push_dashboard_frame(self, frame):
+        """Best-effort JPEG push to the dashboard's local HTTP server so the
+        browser can see the camera feed. Loopback-only, never touches ROS --
+        no image topic, no subscribers, no DDS bandwidth."""
+        if not self.args.dash_url:
+            return
+        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
+        if not ok:
+            return
+        try:
+            req = urllib.request.Request(
+                self.args.dash_url, data=buf.tobytes(),
+                headers={"Content-Type": "image/jpeg"}, method="POST")
+            urllib.request.urlopen(req, timeout=0.5).close()
+        except (urllib.error.URLError, OSError):
+            if not self._dash_warned:
+                self.get_logger().warn(
+                    f"dashboard not reachable at {self.args.dash_url} "
+                    "(camera preview won't show; detection still runs)")
+                self._dash_warned = True
+
     def on_timer(self):
-        ok, frame = self.cap.read()
+        ok, frame = self.read_frame()
         if not ok:
             self.get_logger().warn("Failed to grab frame, retrying...")
             return
+
+        self.push_dashboard_frame(frame)
 
         results = self.model.predict(frame, conf=self.args.conf, verbose=False)
         r = results[0]
@@ -139,7 +201,10 @@ class YoloWorldPublisher(Node):
         self.frame_id += 1
 
     def destroy(self):
-        self.cap.release()
+        if self.backend == "picamera2":
+            self.picam2.stop()
+        else:
+            self.cap.release()
         if self.args.show:
             cv2.destroyAllWindows()
         if self.log_file:
@@ -150,12 +215,18 @@ class YoloWorldPublisher(Node):
 def parse_args():
     p = argparse.ArgumentParser(description="YOLO-World webcam detector -> ROS2 /yolo publisher")
     p.add_argument("--model", default="yolov8s-world.pt", help="YOLO-World weights (auto-downloads if not present)")
-    p.add_argument("--camera", type=int, default=0, help="webcam index")
+    p.add_argument("--camera", type=int, default=0, help="camera index (Picamera2 camera_num, or OpenCV index)")
+    p.add_argument("--backend", choices=["auto", "picamera2", "cv2"], default="auto",
+                    help="capture backend: auto picks Picamera2 if installed (RPi CSI cameras "
+                         "need it), else falls back to OpenCV (USB webcams)")
     p.add_argument("--conf", type=float, default=0.25, help="confidence threshold")
     p.add_argument("--topic", default="/yolo", help="ROS2 topic name to publish on")
     p.add_argument("--rate", type=float, default=30.0, help="max publish rate in Hz (0 = as fast as possible)")
     p.add_argument("--show", action="store_true", help="show annotated video window")
     p.add_argument("--log", default=None, help="optional path to append JSON lines to, e.g. detections.jsonl")
+    p.add_argument("--dash-url", dest="dash_url", default="http://127.0.0.1:8080/api/camera_frame",
+                    help="dashboard camera-frame endpoint (loopback JPEG POST, not a ROS topic); "
+                         "empty string disables the preview push")
     # argparse will choke on ROS2's own --ros-args passthrough if used; strip those first.
     return p.parse_args(rclpy.utilities.remove_ros_args(sys.argv)[1:])
 

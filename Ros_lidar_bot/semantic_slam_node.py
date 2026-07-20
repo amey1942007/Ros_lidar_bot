@@ -50,10 +50,11 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 
 # ── Camera constants ──────────────────────────────────────────────────────────
-# RPi Camera Module 3: 66° horizontal FOV, 2304×1296 native (streamed at 640×480)
+# RPi Camera Module 3 WIDE: 102° horizontal FOV, 2304x1296 native (streamed at 640x480)
+# (non-Wide Module 3 is 66deg -- change this back if the camera is ever swapped)
 IMG_W   = 640
 IMG_H   = 480
-FOV_H   = math.radians(66)                          # horizontal FOV in radians
+FOV_H   = math.radians(102)                         # horizontal FOV in radians
 FOCAL_LEN = IMG_W / (2 * math.tan(FOV_H / 2))       # ≈ 514 px
 
 

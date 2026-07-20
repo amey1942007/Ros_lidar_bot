@@ -205,6 +205,14 @@ class Dashboard(Node):
         # cannot revive a superseded or cancelled NavigateToPose goal.
         self._nav_gen = 0
 
+        # Camera preview: yolo.py (when vision is running) POSTs JPEG frames
+        # to /api/camera_frame over loopback -- never a ROS topic/publisher,
+        # so it costs nothing when nobody has the dashboard open. Browsers
+        # pull it back out via the /camera.mjpg multipart stream below.
+        self._cam_cond = threading.Condition()
+        self._cam_frame = None
+        self._cam_seq = 0
+
         self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self.create_subscription(Odometry, "/odom", self._odom_cb, 10)
         self.create_subscription(Odometry, "/odom_raw", self._mk_rate_cb("/odom_raw"), 10)
@@ -591,6 +599,10 @@ class Dashboard(Node):
         rc = proc.wait()
         with self._lock:
             self._state["yolo_det"] = []
+        with self._cam_cond:
+            self._cam_frame = None
+            self._cam_seq += 1
+            self._cam_cond.notify_all()   # wakes streamers so the <img> clears
         lvl = "info" if rc == 0 else "error"
         self.log(f"■ semantic vision exited (code {rc})", lvl)
 
@@ -607,6 +619,13 @@ class Dashboard(Node):
         except ProcessLookupError:
             pass
         return {"ok": True}
+
+    # ── Camera preview frame (from yolo.py, loopback only) ──────────────────
+    def set_camera_frame(self, data: bytes):
+        with self._cam_cond:
+            self._cam_frame = data
+            self._cam_seq += 1
+            self._cam_cond.notify_all()
 
     # ── Nudge / E-stop pulse publisher ───────────────────────────────────────
     def _motion_tick(self):
@@ -869,10 +888,41 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             finally:
                 self.dash.hub.detach(q)
+        elif self.path == "/camera.mjpg":
+            self.send_response(200)
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            last_seq = -1
+            try:
+                while True:
+                    with self.dash._cam_cond:
+                        self.dash._cam_cond.wait_for(
+                            lambda: self.dash._cam_seq != last_seq, timeout=5.0)
+                        frame, last_seq = self.dash._cam_frame, self.dash._cam_seq
+                    if frame is None:
+                        continue
+                    self.wfile.write(
+                        b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " +
+                        str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n")
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
         else:
             self.send_error(404)
 
     def do_POST(self):
+        if self.path == "/api/camera_frame":
+            length = int(self.headers.get("Content-Length", 0))
+            self.dash.set_camera_frame(self.rfile.read(length))
+            body = b'{"ok":true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         length = int(self.headers.get("Content-Length", 0))
         try:
             payload = json.loads(self.rfile.read(length) or b"{}")
@@ -1099,6 +1149,8 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
           <button class="btn" id="visionbtn">Start</button>
           <span id="yolodet" style="color:var(--dim);font-size:12px"></span>
         </div>
+        <img id="camimg" style="display:none;width:100%;margin-top:8px;
+          border-radius:8px;background:#0a0f14">
       </div>
 
       <div style="color:var(--dim);font-size:12px;margin-top:10px">
@@ -1180,6 +1232,12 @@ function updatePanels(m){
   vb.textContent=m.vision?"Stop":"Start";
   vb.className=m.vision?"btn stop":"btn";
   $("visionpill").style.display=m.vision?"":"none";
+  const cam=$("camimg");
+  if(m.vision){
+    if(cam.style.display==="none"){cam.src="/camera.mjpg?ts="+Date.now();cam.style.display="block";}
+  }else if(cam.style.display!=="none"){
+    cam.style.display="none";cam.removeAttribute("src");   // closes the mjpeg connection
+  }
   $("savepill").style.display=m.saving?"":"none";
   $("yolodet").textContent=(m.yolo_det&&m.yolo_det.length)?("👁 "+m.yolo_det.join(", ")):"";
 
