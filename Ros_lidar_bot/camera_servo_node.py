@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+"""
+camera_servo_node.py — Pan/tilt camera head driver.
+
+Drives a two-servo camera mount, controlled from the gamepad's RIGHT stick
+(joy_teleop publishes normalised rates on /camera_cmd):
+
+  SC-15  (base / PAN)  — Feetech serial BUS servo (STS/SMS class), position
+                         control over a TTL/RS485 UART. 360°, 20 kg.
+  SG90   (head / TILT) — hobby PWM micro servo on an RPi GPIO pin.
+
+This node is a PARALLEL control path — it never touches /cmd_vel, Nav2 or
+frontier exploration. It only:
+  • subscribes  /camera_cmd   (geometry_msgs/Twist: angular.z = pan rate,
+                               angular.y = tilt rate, each normalised -1..1)
+  • integrates those rates into pan/tilt angle setpoints (rate control, so a
+    centred stick HOLDS the current heading), clamped to the mechanical limits
+  • writes the setpoints to the two servos every tick
+  • publishes /camera_joint_states (sensor_msgs/JointState) so RViz/TF and the
+    semantic-marker placement know where the camera actually points. This topic
+    is merged by joint_state_publisher (see rsp.launch.py source_list).
+
+HARDWARE ASSUMPTIONS (override via parameters if your setup differs):
+  • The SC-15 is an STS/SMS-class Feetech bus servo → uses scservo_sdk.sms_sts
+    with a 0..4095 tick range over 360°. If yours is an older SCS/SCSCL-class
+    servo (0..1023 range) tell me and I'll switch the handler + tick range.
+  • Needs `pip3 install feetech-servo-sdk` (module: scservo_sdk) on the Pi.
+  • SG90 tilt uses gpiozero.AngularServo (lgpio backend, works on the RPi5).
+
+Both hardware layers degrade gracefully: if the library or device is missing
+the node still runs, publishes joint states, and logs the reason once — so the
+rest of the robot is never blocked by a missing servo.
+"""
+
+import math
+import threading
+import time
+
+import rclpy
+from geometry_msgs.msg import Twist
+from rclpy.node import Node
+from sensor_msgs.msg import JointState
+
+# Feetech bus-servo SDK (SC-15 pan). Optional — see module docstring.
+try:
+    from scservo_sdk import PortHandler, sms_sts
+    _SCS_OK = True
+except Exception:                       # ImportError or lib load failure
+    _SCS_OK = False
+
+# gpiozero PWM servo (SG90 tilt). Optional.
+try:
+    from gpiozero import AngularServo
+    _GPIO_OK = True
+except Exception:
+    _GPIO_OK = False
+
+
+def _clamp(v, lo, hi):
+    return lo if v < lo else hi if v > hi else v
+
+
+class _PanBus:
+    """SC-15 pan via a Feetech STS/SMS bus servo (position control)."""
+
+    def __init__(self, node, port, baud, servo_id, ticks_per_rev,
+                 center_tick, speed, acc):
+        self._log = node.get_logger()
+        self._id = int(servo_id)
+        self._tpr = int(ticks_per_rev)
+        self._center = int(center_tick)
+        self._speed = int(speed)
+        self._acc = int(acc)
+        self._packet = None
+        self._port = None
+        if not _SCS_OK:
+            self._log.warn("scservo_sdk not installed — pan servo DISABLED "
+                           "(pip3 install feetech-servo-sdk). Joint states "
+                           "still published.")
+            return
+        try:
+            self._port = PortHandler(port)
+            self._packet = sms_sts(self._port)
+            if not self._port.openPort():
+                raise RuntimeError(f"cannot open {port}")
+            if not self._port.setBaudRate(int(baud)):
+                raise RuntimeError(f"cannot set baud {baud}")
+            self._log.info(f"Pan bus servo ready: id={self._id} on {port}@{baud}")
+        except Exception as exc:
+            self._log.error(f"pan bus init failed ({exc}) — pan DISABLED")
+            self._packet = None
+
+    @property
+    def enabled(self):
+        return self._packet is not None
+
+    def write_deg(self, deg):
+        """deg is relative to centre (0 = camera forward)."""
+        if self._packet is None:
+            return
+        tick = int(round(self._center + (deg / 360.0) * self._tpr))
+        tick = _clamp(tick, 0, self._tpr - 1)
+        try:
+            self._packet.WritePosEx(self._id, tick, self._speed, self._acc)
+        except Exception as exc:
+            self._log.warn(f"pan write failed: {exc}",
+                           throttle_duration_sec=2.0)
+
+    def close(self):
+        if self._port is not None:
+            try:
+                self._port.closePort()
+            except Exception:
+                pass
+
+
+class _TiltPwm:
+    """SG90 tilt via a gpiozero PWM servo (angle control)."""
+
+    def __init__(self, node, pin, min_deg, max_deg, min_pulse_us, max_pulse_us):
+        self._log = node.get_logger()
+        self._servo = None
+        if not _GPIO_OK:
+            self._log.warn("gpiozero not available — tilt servo DISABLED. "
+                           "Joint states still published.")
+            return
+        try:
+            self._servo = AngularServo(
+                int(pin),
+                min_angle=float(min_deg), max_angle=float(max_deg),
+                min_pulse_width=float(min_pulse_us) / 1e6,
+                max_pulse_width=float(max_pulse_us) / 1e6,
+            )
+            self._log.info(f"Tilt PWM servo ready on GPIO{int(pin)}")
+        except Exception as exc:
+            self._log.error(f"tilt PWM init failed ({exc}) — tilt DISABLED")
+            self._servo = None
+
+    @property
+    def enabled(self):
+        return self._servo is not None
+
+    def write_deg(self, deg):
+        if self._servo is None:
+            return
+        try:
+            self._servo.angle = float(deg)
+        except Exception as exc:
+            self._log.warn(f"tilt write failed: {exc}",
+                           throttle_duration_sec=2.0)
+
+    def close(self):
+        if self._servo is not None:
+            try:
+                self._servo.detach()
+            except Exception:
+                pass
+
+
+class CameraServo(Node):
+    def __init__(self):
+        super().__init__("camera_servo")
+
+        d = self.declare_parameter
+        # ── Topics / joints ─────────────────────────────────────────────────
+        self._cmd_topic = d("cmd_topic", "/camera_cmd").value
+        self._js_topic = d("joint_state_topic", "/camera_joint_states").value
+        self._pan_joint = d("pan_joint_name", "camera_pan_joint").value
+        self._tilt_joint = d("tilt_joint_name", "camera_tilt_joint").value
+        self._rate_hz = float(d("rate_hz", 30.0).value)
+
+        # ── Pan (SC-15 bus servo) ───────────────────────────────────────────
+        self._pan_min = float(d("pan_min_deg", -150.0).value)
+        self._pan_max = float(d("pan_max_deg", 150.0).value)
+        self._pan_rate = float(d("pan_max_rate_dps", 90.0).value)
+        self._pan_inv = bool(d("invert_pan", False).value)
+        bus_port = d("bus_port", "/dev/ttyUSB0").value
+        bus_baud = int(d("bus_baud", 1000000).value)
+        pan_id = int(d("pan_servo_id", 1).value)
+        pan_tpr = int(d("pan_ticks_per_rev", 4096).value)
+        pan_center = int(d("pan_center_tick", 2048).value)
+        pan_speed = int(d("pan_speed", 2400).value)
+        pan_acc = int(d("pan_accel", 50).value)
+
+        # ── Tilt (SG90 PWM servo) ───────────────────────────────────────────
+        self._tilt_min = float(d("tilt_min_deg", -80.0).value)
+        self._tilt_max = float(d("tilt_max_deg", 80.0).value)
+        self._tilt_rate = float(d("tilt_max_rate_dps", 90.0).value)
+        self._tilt_inv = bool(d("invert_tilt", False).value)
+        tilt_pin = int(d("tilt_pwm_pin", 18).value)
+        tilt_min_us = float(d("tilt_min_pulse_us", 500.0).value)
+        tilt_max_us = float(d("tilt_max_pulse_us", 2500.0).value)
+
+        # ── State ───────────────────────────────────────────────────────────
+        self._pan_deg = float(_clamp(d("pan_center_deg", 0.0).value,
+                                     self._pan_min, self._pan_max))
+        self._tilt_deg = float(_clamp(d("tilt_center_deg", 0.0).value,
+                                      self._tilt_min, self._tilt_max))
+        self._pan_cmd = 0.0     # normalised rate -1..1
+        self._tilt_cmd = 0.0
+        self._lock = threading.Lock()
+        self._last = time.monotonic()
+
+        self._pan = _PanBus(self, bus_port, bus_baud, pan_id, pan_tpr,
+                            pan_center, pan_speed, pan_acc)
+        self._tilt = _TiltPwm(self, tilt_pin, self._tilt_min, self._tilt_max,
+                             tilt_min_us, tilt_max_us)
+
+        self.create_subscription(Twist, self._cmd_topic, self._cmd_cb, 10)
+        self._js_pub = self.create_publisher(JointState, self._js_topic, 10)
+        self.create_timer(1.0 / self._rate_hz, self._tick)
+
+        # Drive servos to their start pose immediately.
+        self._pan.write_deg(-self._pan_deg if self._pan_inv else self._pan_deg)
+        self._tilt.write_deg(-self._tilt_deg if self._tilt_inv else self._tilt_deg)
+        self.get_logger().info(
+            f"Camera pan/tilt ready — pan {'ON' if self._pan.enabled else 'off'}, "
+            f"tilt {'ON' if self._tilt.enabled else 'off'}. "
+            f"Cmd on {self._cmd_topic} (right stick).")
+
+    def _cmd_cb(self, msg: Twist):
+        with self._lock:
+            self._pan_cmd = _clamp(msg.angular.z, -1.0, 1.0)
+            self._tilt_cmd = _clamp(msg.angular.y, -1.0, 1.0)
+
+    def _tick(self):
+        now = time.monotonic()
+        dt = now - self._last
+        self._last = now
+        # Guard against a stalled timer producing a huge integration step.
+        if dt <= 0.0 or dt > 0.5:
+            dt = 1.0 / self._rate_hz
+
+        with self._lock:
+            pan_cmd, tilt_cmd = self._pan_cmd, self._tilt_cmd
+
+        self._pan_deg = _clamp(self._pan_deg + pan_cmd * self._pan_rate * dt,
+                               self._pan_min, self._pan_max)
+        self._tilt_deg = _clamp(self._tilt_deg + tilt_cmd * self._tilt_rate * dt,
+                                self._tilt_min, self._tilt_max)
+
+        self._pan.write_deg(-self._pan_deg if self._pan_inv else self._pan_deg)
+        self._tilt.write_deg(-self._tilt_deg if self._tilt_inv else self._tilt_deg)
+
+        js = JointState()
+        js.header.stamp = self.get_clock().now().to_msg()
+        js.name = [self._pan_joint, self._tilt_joint]
+        js.position = [math.radians(self._pan_deg), math.radians(self._tilt_deg)]
+        self._js_pub.publish(js)
+
+    def close(self):
+        self._pan.close()
+        self._tilt.close()
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = CameraServo()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.close()
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

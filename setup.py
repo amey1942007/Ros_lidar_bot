@@ -33,6 +33,7 @@ setup(
             'frontier_explorer_node = Ros_lidar_bot.frontier_explorer_node:main',
             'yolo = Ros_lidar_bot.yolo:main',
             'joy_teleop = Ros_lidar_bot.joy_teleop_node:main',
+            'camera_servo = Ros_lidar_bot.camera_servo_node:main',
             'check_qos_mismatch = Ros_lidar_bot.check_qos_mismatch:main',
             'imu_test_node = Ros_lidar_bot.imu_test_node:main',
             'imu_calibration_node = Ros_lidar_bot.imu_calibration_node:main',

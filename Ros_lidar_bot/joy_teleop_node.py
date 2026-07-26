@@ -9,6 +9,7 @@ into /cmd_vel (geometry_msgs/Twist).
 Controls (Xbox-style layout, xpad driver mapping):
   Left stick up/down    — forward / reverse at current linear speed
   Left stick left/right — turn left / right at current angular speed
+  Right stick           — pan / tilt the camera head (→ /camera_cmd)
   RT (right trigger)    — increase linear speed by lin_step per press
   LT (left trigger)     — decrease linear speed by lin_step per press
   RB (right bumper)     — increase angular speed by ang_step per press
@@ -85,6 +86,14 @@ class JoyTeleop(Node):
         self.declare_parameter('publish_hz', 20.0)
         self.declare_parameter('joy_timeout', 0.5)   # s without /joy → stop
 
+        # ── Right stick → camera pan/tilt (camera_servo_node) ─────────────────
+        # Publishes normalised rate cmds on /camera_cmd; drive path is untouched.
+        self.declare_parameter('axis_cam_pan', 2)    # RX (BT layout)
+        self.declare_parameter('axis_cam_tilt', 3)   # RY
+        self.declare_parameter('cam_deadzone', 0.15)
+        self.declare_parameter('invert_cam_pan', False)
+        self.declare_parameter('invert_cam_tilt', False)
+
         gp = lambda n: self.get_parameter(n).value
         self._ax_lin = gp('axis_linear')
         self._ax_ang = gp('axis_angular')
@@ -103,6 +112,14 @@ class JoyTeleop(Node):
         self._ang_min, self._ang_max = gp('ang_min'), gp('ang_max')
         self._deadzone = gp('deadzone')
         self._joy_timeout = gp('joy_timeout')
+        self._ax_cam_pan = gp('axis_cam_pan')
+        self._ax_cam_tilt = gp('axis_cam_tilt')
+        self._cam_deadzone = gp('cam_deadzone')
+        self._cam_pan_sign = -1.0 if gp('invert_cam_pan') else 1.0
+        # Stick up reads negative on SDL, so default maps up → tilt-up (+).
+        self._cam_tilt_sign = 1.0 if gp('invert_cam_tilt') else -1.0
+        self._cam_pan = 0.0
+        self._cam_tilt = 0.0
 
         self._cmd_lin = 0.0
         self._cmd_ang = 0.0
@@ -125,6 +142,7 @@ class JoyTeleop(Node):
         self._action_last = {}   # action name → monotonic time of last fire
 
         self._pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self._cam_pub = self.create_publisher(Twist, '/camera_cmd', 10)
         self._rumble_pub = self.create_publisher(
             JoyFeedbackArray, '/joy/set_feedback', 10)
         self._rumble_off_timer = None
@@ -191,6 +209,16 @@ class JoyTeleop(Node):
 
         self._cmd_lin = lin_in * self._lin_speed
         self._cmd_ang = ang_in * self._ang_speed
+
+        # Right stick → camera pan/tilt rate (normalised -1..1).
+        pan_in = axis(self._ax_cam_pan)
+        tilt_in = axis(self._ax_cam_tilt)
+        if abs(pan_in) < self._cam_deadzone:
+            pan_in = 0.0
+        if abs(tilt_in) < self._cam_deadzone:
+            tilt_in = 0.0
+        self._cam_pan = pan_in * self._cam_pan_sign
+        self._cam_tilt = tilt_in * self._cam_tilt_sign
 
     # ── Gamepad → dashboard actions ────────────────────────────────────────────
     # Fired through the dashboard HTTP API so tool management stays in one
@@ -297,6 +325,16 @@ class JoyTeleop(Node):
         if (time.monotonic() - self._last_joy_time) > self._joy_timeout:
             self._cmd_lin = 0.0
             self._cmd_ang = 0.0
+            self._cam_pan = 0.0
+            self._cam_tilt = 0.0
+
+        # Camera pan/tilt rate — published every tick regardless of drive/yield
+        # state (separate topic, never interferes with /cmd_vel). A centred
+        # stick sends zero rate, so camera_servo_node holds its heading.
+        cam = Twist()
+        cam.angular.z = float(self._cam_pan)
+        cam.angular.y = float(self._cam_tilt)
+        self._cam_pub.publish(cam)
 
         moving = abs(self._cmd_lin) > 1e-6 or abs(self._cmd_ang) > 1e-6
         if not moving:

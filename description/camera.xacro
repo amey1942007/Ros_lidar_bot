@@ -19,13 +19,48 @@
   <xacro:property name="cam_size_y" value="0.090"/>  <!-- width         -->
   <xacro:property name="cam_size_z" value="0.025"/>  <!-- height        -->
 
+  <!-- Servo-stack heights: base link of the SC-15 pan servo to the tilt axis,
+       and tilt axis to the camera optical centre (metres). Adjust to match the
+       manufactured mount. -->
+  <xacro:property name="pan_stack_h"  value="0.03"/>  <!-- SC-15 body height  -->
+  <xacro:property name="tilt_stack_h" value="0.03"/>  <!-- SG90 to camera     -->
+
+  <!-- Pan/tilt travel limits (radians) — keep in sync with camera_servo_node's
+       pan_min/max_deg and tilt_min/max_deg parameters. -->
+  <xacro:property name="pan_limit"  value="2.62"/>   <!-- ±150° -->
+  <xacro:property name="tilt_limit" value="1.40"/>   <!-- ±80°  -->
+
   <!-- ============================================================
-       CAMERA JOINT & LINK
+       CAMERA PAN/TILT CHAIN
+         base_link ─(fixed)─ camera_mount ─(pan, Z)─ camera_pan
+                   ─(tilt, Y)─ camera_link ─(fixed)─ camera_link_optical
        ============================================================ -->
-  <joint name="camera_joint" type="fixed">
+
+  <!-- Fixed mount: bottom of the SC-15 pan servo on the chassis -->
+  <joint name="camera_mount_joint" type="fixed">
     <parent link="base_link"/>
-    <child  link="camera_link"/>
+    <child  link="camera_mount_link"/>
     <origin xyz="${cam_x} ${cam_y} ${cam_z}" rpy="0 0 0"/>
+  </joint>
+  <link name="camera_mount_link"/>
+
+  <!-- PAN — SC-15 bus servo, rotates about Z -->
+  <joint name="camera_pan_joint" type="revolute">
+    <parent link="camera_mount_link"/>
+    <child  link="camera_pan_link"/>
+    <origin xyz="0 0 ${pan_stack_h}" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="${-pan_limit}" upper="${pan_limit}" effort="20.0" velocity="6.0"/>
+  </joint>
+  <link name="camera_pan_link"/>
+
+  <!-- TILT — SG90 micro servo, rotates about Y -->
+  <joint name="camera_tilt_joint" type="revolute">
+    <parent link="camera_pan_link"/>
+    <child  link="camera_link"/>
+    <origin xyz="0 0 ${tilt_stack_h}" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="${-tilt_limit}" upper="${tilt_limit}" effort="1.5" velocity="6.0"/>
   </joint>
 
   <link name="camera_link">

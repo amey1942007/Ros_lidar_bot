@@ -262,6 +262,30 @@ def _launch_setup(context, *args, **kwargs):
         arguments=log_args,
     )
 
+    # ── 6c. Camera pan/tilt head (SC-15 bus servo + SG90 PWM) ────────────────
+    # Right stick → /camera_cmd → camera_servo_node → servos. Parallel control
+    # path: never touches /cmd_vel, Nav2 or frontier exploration. Degrades
+    # gracefully if the servo libs/devices are missing (still publishes joints).
+    #   SC-15 pan  : Feetech STS/SMS bus servo — pip3 install feetech-servo-sdk
+    #   SG90 tilt  : gpiozero PWM on a GPIO pin
+    # Verify the bus port (ls /dev/serial/by-id/ or /dev/ttyUSB*) and the tilt
+    # GPIO pin, then override the params below to match the wiring.
+    camera_servo = Node(
+        package=package_name,
+        executable="camera_servo",
+        name="camera_servo",
+        output=out,
+        arguments=log_args,
+        respawn=True,
+        respawn_delay=3.0,
+        parameters=[{
+            "bus_port": "/dev/ttyUSB0",   # SC-15 TTL/RS485 adapter
+            "bus_baud": 1000000,
+            "pan_servo_id": 1,
+            "tilt_pwm_pin": 18,           # SG90 signal GPIO (BCM)
+        }],
+    )
+
     # ── 7. EKF Node (Fuses Odom & IMU) ───────────────────────────────────────
     ekf_node = Node(
         package="robot_localization",
@@ -322,6 +346,7 @@ def _launch_setup(context, *args, **kwargs):
         scan_filter,
         joy_node,
         joy_teleop,
+        camera_servo,
         ekf_node,
         # ── Stage 2 (T=5s): SLAM ──────────────────────────────────────────────
         TimerAction(period=5.0, actions=[slam_toolbox]),

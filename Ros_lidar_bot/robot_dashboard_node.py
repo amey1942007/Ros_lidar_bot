@@ -51,6 +51,8 @@ import rclpy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry, OccupancyGrid, Path
 from rclpy.action import ActionClient
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from sensor_msgs.msg import Imu, LaserScan
@@ -129,7 +131,7 @@ TOOLS = {
 EXPECTED_NODES = [
     "robot_state_publisher", "imu_node", "driver_node", "odom_node",
     "rplidar_node", "scan_min_range_filter", "ekf_filter_node", "slam_toolbox", "joy_node",
-    "joy_teleop", "bt_navigator", "controller_server", "planner_server",
+    "joy_teleop", "camera_servo", "bt_navigator", "controller_server", "planner_server",
     "behavior_server", "velocity_smoother", "collision_monitor",
 ]
 
@@ -216,19 +218,33 @@ class Dashboard(Node):
         self._cam_frame = None
         self._cam_seq = 0
 
+        # Every callback runs in one reentrant group so the MultiThreadedExecutor
+        # (see main) can service them in parallel — a slow TF/costmap tick can no
+        # longer starve the 10 Hz browser push or an incoming nav goal. Shared
+        # state stays guarded by self._lock; nav bookkeeping by self._nav_lock.
+        cbg = ReentrantCallbackGroup()
+        self._cbg = cbg
+        self._nav_lock = threading.Lock()
+
+        # Map compression (zlib + base64 of the whole grid) is the single
+        # heaviest job on the RPi5 — run it on its own thread, event-driven,
+        # so it never blocks a ROS callback. _map_cb just flags + wakes it.
+        self._map_event = threading.Event()
+        self._map_worker = threading.Thread(target=self._map_compress_loop, daemon=True)
+
         self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
-        self.create_subscription(Odometry, "/odom", self._odom_cb, 10)
-        self.create_subscription(Odometry, "/odom_raw", self._mk_rate_cb("/odom_raw"), 10)
-        self.create_subscription(Imu, "/imu", self._imu_cb, 20)
-        self.create_subscription(LaserScan, "/scan", self._scan_cb, qos_profile_sensor_data)
-        self.create_subscription(Twist, "/cmd_vel", self._cmd_cb, 10)
-        self.create_subscription(Path, "/plan", self._plan_cb, 5)
+        self.create_subscription(Odometry, "/odom", self._odom_cb, 10, callback_group=cbg)
+        self.create_subscription(Odometry, "/odom_raw", self._mk_rate_cb("/odom_raw"), 10, callback_group=cbg)
+        self.create_subscription(Imu, "/imu", self._imu_cb, 20, callback_group=cbg)
+        self.create_subscription(LaserScan, "/scan", self._scan_cb, qos_profile_sensor_data, callback_group=cbg)
+        self.create_subscription(Twist, "/cmd_vel", self._cmd_cb, 10, callback_group=cbg)
+        self.create_subscription(Path, "/plan", self._plan_cb, 5, callback_group=cbg)
         map_qos = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
-        self.create_subscription(OccupancyGrid, "/map", self._map_cb, map_qos)
-        self.create_subscription(String, "/yolo", self._yolo_cb, 10)
+        self.create_subscription(OccupancyGrid, "/map", self._map_cb, map_qos, callback_group=cbg)
+        self.create_subscription(String, "/yolo", self._yolo_cb, 10, callback_group=cbg)
         if _MARKERS_OK:
-            self.create_subscription(MarkerArray, "/semantic_markers", self._sem_cb, 10)
-            self.create_subscription(MarkerArray, "/frontier_debug", self._frontier_cb, 10)
+            self.create_subscription(MarkerArray, "/semantic_markers", self._sem_cb, 10, callback_group=cbg)
+            self.create_subscription(MarkerArray, "/frontier_debug", self._frontier_cb, 10, callback_group=cbg)
 
         # manual no-go zones → frontier_explorer (map frame, JSON)
         self._bl_pub = self.create_publisher(String, "/manual_blacklist", 10)
@@ -241,7 +257,7 @@ class Dashboard(Node):
 
         self._prev_cpu = None
         self._vcgencmd_ok = True
-        self.create_timer(5.0, self._sys_tick)
+        self.create_timer(5.0, self._sys_tick, callback_group=cbg)
 
         self._tf_buffer = None
         if _TF2_OK:
@@ -250,12 +266,14 @@ class Dashboard(Node):
 
         self._nav_client = None
         if _NAV2_OK:
-            self._nav_client = ActionClient(self, NavigateToPose, "/navigate_to_pose")
+            self._nav_client = ActionClient(
+                self, NavigateToPose, "/navigate_to_pose", callback_group=cbg)
 
-        self.create_timer(0.1, self._tick)        # 10 Hz state → browser
-        self.create_timer(2.0, self._slow_tick)   # node list, TF, rates
-        self.create_timer(0.05, self._motion_tick)  # nudge / e-stop pulses
+        self.create_timer(0.1, self._tick, callback_group=cbg)        # 10 Hz state → browser
+        self.create_timer(2.0, self._slow_tick, callback_group=cbg)   # node list, TF, rates
+        self.create_timer(0.05, self._motion_tick, callback_group=cbg)  # nudge / e-stop pulses
 
+        self._map_worker.start()
         self.log(f"Dashboard up — open http://{_local_ip()}:{self.port}")
 
     # ── Logging to the browser console panel ─────────────────────────────────
@@ -304,6 +322,7 @@ class Dashboard(Node):
         with self._lock:
             self._latest_map = m
             self._map_dirty = True
+        self._map_event.set()   # wake the off-thread compressor
 
     def _yolo_cb(self, m):
         self._mark("/yolo")
@@ -407,10 +426,20 @@ class Dashboard(Node):
             self._state["tf"] = tf_state
             self._state["map_pose"] = map_pose
 
-        self._push_map()
-
     # ── Live map → browser ───────────────────────────────────────────────────
     MAP_MAX_CELLS = 220   # per-side cap after downsampling (browser payload)
+
+    def _map_compress_loop(self):
+        # Dedicated thread: blocks until _map_cb flags a new grid, then does the
+        # zlib/base64 compression here instead of on a ROS callback. Daemon —
+        # dies with the process on shutdown.
+        while True:
+            self._map_event.wait()
+            self._map_event.clear()
+            try:
+                self._push_map()
+            except Exception:
+                pass
 
     def _push_map(self):
         with self._lock:
@@ -842,10 +871,13 @@ class Dashboard(Node):
         yaw = math.atan2(y_odom - ry, x_odom - rx) + th  # face travel direction
 
         # Preempt any in-flight goal so a second click always sticks.
-        prev = self._nav_goal_handle
-        self._nav_goal_handle = None
-        self._nav_gen += 1
-        gen = self._nav_gen
+        # Locked: the action-client callbacks now run on parallel executor
+        # threads, so the gen bump + handle swap must be atomic vs them.
+        with self._nav_lock:
+            prev = self._nav_goal_handle
+            self._nav_goal_handle = None
+            self._nav_gen += 1
+            gen = self._nav_gen
         if prev is not None:
             try:
                 prev.cancel_goal_async()
@@ -915,9 +947,10 @@ class Dashboard(Node):
 
     def cancel_nav(self):
         """Cancel immediately — UI clears now; Nav2 cancel is async."""
-        self._nav_gen += 1
-        gh = self._nav_goal_handle
-        self._nav_goal_handle = None
+        with self._nav_lock:
+            self._nav_gen += 1
+            gh = self._nav_goal_handle
+            self._nav_goal_handle = None
         self._clear_nav_viz()
         if gh is not None:
             try:
@@ -1609,8 +1642,14 @@ def main(args=None):
     # print() (not logger): visible even when bringup runs at FATAL log level.
     print(f"\n  🌐 Robot dashboard:  http://{_local_ip()}:{node.port}\n", flush=True)
 
+    # MultiThreadedExecutor: heavy TF/costmap ticks, sensor callbacks, the SSE
+    # push and the nav action client all share one reentrant callback group, so
+    # they run concurrently instead of serializing on one thread (the old
+    # rclpy.spin) — that serialization was the dashboard lag.
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
