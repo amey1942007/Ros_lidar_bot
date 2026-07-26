@@ -254,14 +254,14 @@ velocity_smoother:
 collision_monitor:
   ros__parameters:
     use_sim_time: false
-    # DISABLED per user request (2026-07-17): both polygons below are
-    # enabled: false, so this node just relays cmd_vel_smoothed → cmd_vel
-    # untouched. It cannot be removed from the chain — navigation_launch.py
-    # starts it unconditionally and a failed configure wedges the whole
-    # lifecycle bringup — so polygons stay defined but inert.
-    # ⚠ Nothing in the Nav2 chain stops for obstacles now (RPP
-    # use_collision_detection is also false); costmap inflation steering is
-    # the only avoidance. Re-enable by flipping the two polygon flags.
+    # PolygonSlow ENABLED (2026-07-26 per user): graceful decel is now the
+    # PRIMARY obstacle response — the robot eases to 50% speed as it nears a
+    # person (0.30–0.65 m box), well before safety_stop's hard cutoff. This
+    # node sits BEFORE safety_stop in the chain (collision_monitor → /cmd_vel
+    # → safety_stop → /cmd_vel_safe), so the two never fight: collision_monitor
+    # slows the command, safety_stop independently hard-stops the already-slowed
+    # command only if something gets truly close head-on. PolygonStop stays OFF
+    # (safety_stop is the hard-stop backstop; two stop gates would double-halt).
     enabled: true
     base_frame_id: "base_footprint"
     odom_frame_id: "odom"
@@ -291,7 +291,7 @@ collision_monitor:
       min_points: 4
       visualize: false
       polygon_pub_topic: "polygon_slow"
-      enabled: false
+      enabled: true
     PolygonStop:
       type: "polygon"
       points: "[[0.40, 0.20], [0.40, -0.20], [0.30, -0.20], [0.30, 0.20]]"
