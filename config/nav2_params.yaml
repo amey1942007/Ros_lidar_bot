@@ -33,7 +33,11 @@ controller_server:
     controller_frequency: 15.0
     min_x_velocity_threshold: 0.001
     min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.5
+    # 1.0 s (was 0.5): how long the controller tolerates being unable to
+    # produce a valid command before aborting. In a crowd a person briefly
+    # blocking the path used to abort the whole goal in 0.5 s; 1.0 s rides
+    # out short pauses so the goal survives.
+    failure_tolerance: 1.0
     progress_checker_plugin: "progress_checker"
     goal_checker_plugins: ["goal_checker"]
     controller_plugins: ["FollowPath"]
@@ -45,7 +49,10 @@ controller_server:
       plugin: "nav2_controller::PoseProgressChecker"
       required_movement_radius: 0.08
       required_movement_angle: 0.3
-      movement_time_allowance: 15.0
+      # 25 s (was 15): a crowd can pin the robot in place longer than 15 s while
+      # people clear. This is how long it may make no progress before the goal
+      # aborts — give it more patience to wait the crowd out rather than giving up.
+      movement_time_allowance: 25.0
 
     goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
@@ -205,7 +212,11 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.45
+        # 0.35 (was 0.45): with 0.45 a single person inflated to a ~0.9 m-wide
+        # wall, so one bystander in a corridor made the global planner fail →
+        # goal aborted. 0.35 still keeps clearance from real walls but lets the
+        # planner thread a route past a person. Local layer (0.28) unchanged.
+        inflation_radius: 0.35
       always_send_full_costmap: true
 
 # ── Jazzy velocity pipeline ──────────────────────────────────────────────────

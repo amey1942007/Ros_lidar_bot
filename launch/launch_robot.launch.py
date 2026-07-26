@@ -217,8 +217,13 @@ def _launch_setup(context, *args, **kwargs):
             "min_safe_distance": 0.35,
             # /scan is already clipped at 0.30 m; keep ignore in sync.
             "ignore_below": 0.30,
-            "front_opening_deg": 90.0,
+            # 50° (was 90°): only a head-on obstacle blocks forward drive, so a
+            # crowd standing beside the robot no longer freezes it.
+            "front_opening_deg": 50.0,
             "rear_opening_deg": 50.0,
+            # Hysteresis: release only once clear past 0.35 + 0.10 m — kills the
+            # stop-go chatter at the threshold in a crowd.
+            "clear_margin": 0.10,
             # Hard-stop if wheel odometry dies (prevents Nav2 circle-on-stale-pose).
             "odom_raw_timeout_sec": 0.5,
         }],
