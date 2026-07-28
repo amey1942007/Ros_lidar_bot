@@ -355,9 +355,11 @@ class CameraServo(Node):
         # freely at both ends.
         pan_min_us = float(d("pan_min_pulse_us", 1000.0).value)
         pan_max_us = float(d("pan_max_pulse_us", 2000.0).value)
-        # Pan turns about a vertical axis, so gravity holds it — safe to
-        # release. 0.0 disables the release and holds torque forever.
-        pan_idle = float(d("pan_idle_release_sec", 1.5).value)
+        # Releasing pan when idle was a workaround for software-PWM hunting
+        # burning current. With hardware PWM there is nothing to hunt, and a
+        # released servo just goes limp and drifts with the robot's motion, so
+        # hold by default. Set >0 to trade holding torque for current draw.
+        pan_idle = float(d("pan_idle_release_sec", 0.0).value)
         bus_port = d("bus_port", "/dev/ttyUSB0").value
         bus_baud = int(d("bus_baud", 1000000).value)
         pan_id = int(d("pan_servo_id", 1).value)
