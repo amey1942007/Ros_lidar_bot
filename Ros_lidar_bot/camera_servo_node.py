@@ -131,10 +131,17 @@ class _PwmServo:
     """A standard hobby PWM servo (OT5320M, SG90, …) via gpiozero."""
 
     def __init__(self, node, label, pin, min_deg, max_deg,
-                 min_pulse_us, max_pulse_us):
+                 min_pulse_us, max_pulse_us, idle_release_sec=1.5):
         self._log = node.get_logger()
         self._label = label
         self._servo = None
+        # Rewriting an unchanged angle every tick keeps the servo actively
+        # driving and, with software PWM, re-jitters the pulse — the head
+        # hunts and the supply browns out. Write only on a real change, then
+        # let the servo go limp once it has had time to arrive.
+        self._last_deg = None
+        self._idle_release = float(idle_release_sec)
+        self._idle_since = None
         if not _GPIO_OK:
             self._log.warn(f"gpiozero not available — {label} servo DISABLED. "
                            "Joint states still published.")
@@ -158,8 +165,21 @@ class _PwmServo:
     def write_deg(self, deg):
         if self._servo is None:
             return
+        deg = float(deg)
         try:
-            self._servo.angle = float(deg)
+            # Unchanged setpoint: hold briefly so the servo reaches it, then
+            # detach. A detached servo stops drawing holding current, which is
+            # what keeps the supply out of over-current protection.
+            if self._last_deg is not None and abs(deg - self._last_deg) < 0.25:
+                if (self._idle_release > 0.0 and self._idle_since is not None
+                        and time.monotonic() - self._idle_since
+                        >= self._idle_release):
+                    self._servo.detach()
+                    self._idle_since = None
+                return
+            self._servo.angle = deg
+            self._last_deg = deg
+            self._idle_since = time.monotonic()
         except Exception as exc:
             self._log.warn(f"{self._label} write failed: {exc}",
                            throttle_duration_sec=2.0)
@@ -196,6 +216,9 @@ class CameraServo(Node):
         pan_pin = int(d("pan_pwm_pin", 13).value)
         pan_min_us = float(d("pan_min_pulse_us", 500.0).value)
         pan_max_us = float(d("pan_max_pulse_us", 2500.0).value)
+        # Pan turns about a vertical axis, so gravity holds it — safe to
+        # release. 0.0 disables the release and holds torque forever.
+        pan_idle = float(d("pan_idle_release_sec", 1.5).value)
         bus_port = d("bus_port", "/dev/ttyUSB0").value
         bus_baud = int(d("bus_baud", 1000000).value)
         pan_id = int(d("pan_servo_id", 1).value)
@@ -212,6 +235,9 @@ class CameraServo(Node):
         tilt_pin = int(d("tilt_pwm_pin", 12).value)
         tilt_min_us = float(d("tilt_min_pulse_us", 500.0).value)
         tilt_max_us = float(d("tilt_max_pulse_us", 2500.0).value)
+        # Tilt carries the camera against gravity — releasing it makes the head
+        # droop, so hold by default. Set >0 if your mount is balanced.
+        tilt_idle = float(d("tilt_idle_release_sec", 0.0).value)
 
         # ── State ───────────────────────────────────────────────────────────
         self._pan_deg = float(_clamp(d("pan_center_deg", 0.0).value,
@@ -228,9 +254,11 @@ class CameraServo(Node):
                                 pan_center, pan_speed, pan_acc)
         else:
             self._pan = _PwmServo(self, "pan", pan_pin, self._pan_min,
-                                  self._pan_max, pan_min_us, pan_max_us)
+                                  self._pan_max, pan_min_us, pan_max_us,
+                                  pan_idle)
         self._tilt = _PwmServo(self, "tilt", tilt_pin, self._tilt_min,
-                               self._tilt_max, tilt_min_us, tilt_max_us)
+                               self._tilt_max, tilt_min_us, tilt_max_us,
+                               tilt_idle)
 
         self.create_subscription(Twist, self._cmd_topic, self._cmd_cb, 10)
         self._js_pub = self.create_publisher(JointState, self._js_topic, 10)
