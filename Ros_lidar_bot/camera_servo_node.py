@@ -5,9 +5,16 @@ camera_servo_node.py — Pan/tilt camera head driver.
 Drives a two-servo camera mount, controlled from the gamepad's RIGHT stick
 (joy_teleop publishes normalised rates on /camera_cmd):
 
-  SC-15  (base / PAN)  — Feetech serial BUS servo (STS/SMS class), position
-                         control over a TTL/RS485 UART. 360°, 20 kg.
-  SG90   (head / TILT) — hobby PWM micro servo on an RPi GPIO pin.
+  OT5320M (base / PAN)  — 20 kg hobby PWM servo (JR plug, 4-8.4 V, ~180°)
+                          on an RPi GPIO pin. This is the default.
+  SG90    (head / TILT) — hobby PWM micro servo on an RPi GPIO pin.
+
+The pan axis is pluggable via the `pan_driver` parameter:
+  "pwm" (default) — any standard hobby servo (OT5320M, MG996R, …) on a GPIO.
+  "bus"           — a Feetech STS/SMS serial BUS servo (ST3215 and friends)
+                    on a TTL bus adapter. NOTE: a bus adapter cannot drive a
+                    PWM servo like the OT5320M — the two are different
+                    protocols, not different connectors.
 
 This node is a PARALLEL control path — it never touches /cmd_vel, Nav2 or
 frontier exploration. It only:
@@ -21,11 +28,14 @@ frontier exploration. It only:
     is merged by joint_state_publisher (see rsp.launch.py source_list).
 
 HARDWARE ASSUMPTIONS (override via parameters if your setup differs):
-  • The SC-15 is an STS/SMS-class Feetech bus servo → uses scservo_sdk.sms_sts
-    with a 0..4095 tick range over 360°. If yours is an older SCS/SCSCL-class
-    servo (0..1023 range) tell me and I'll switch the handler + tick range.
-  • Needs `pip3 install feetech-servo-sdk` (module: scservo_sdk) on the Pi.
-  • SG90 tilt uses gpiozero.AngularServo (lgpio backend, works on the RPi5).
+  • Both PWM axes use gpiozero.AngularServo (lgpio backend, works on the RPi5).
+    Pan defaults to GPIO13, tilt to GPIO18.
+  • The OT5320M's usable travel is ~±85° — hence the tighter default pan limits
+    when pan_driver == "pwm" (the bus path keeps the old ±150°).
+  • pan_driver == "bus" needs `pip3 install feetech-servo-sdk` (module:
+    scservo_sdk) and an STS/SMS-class servo with a 0..4095 tick range over
+    360°. For an older SCS/SCSCL-class servo (0..1023) the handler must switch
+    from sms_sts to scscl.
 
 Both hardware layers degrade gracefully: if the library or device is missing
 the node still runs, publishes joint states, and logs the reason once — so the
@@ -114,14 +124,16 @@ class _PanBus:
                 pass
 
 
-class _TiltPwm:
-    """SG90 tilt via a gpiozero PWM servo (angle control)."""
+class _PwmServo:
+    """A standard hobby PWM servo (OT5320M, SG90, …) via gpiozero."""
 
-    def __init__(self, node, pin, min_deg, max_deg, min_pulse_us, max_pulse_us):
+    def __init__(self, node, label, pin, min_deg, max_deg,
+                 min_pulse_us, max_pulse_us):
         self._log = node.get_logger()
+        self._label = label
         self._servo = None
         if not _GPIO_OK:
-            self._log.warn("gpiozero not available — tilt servo DISABLED. "
+            self._log.warn(f"gpiozero not available — {label} servo DISABLED. "
                            "Joint states still published.")
             return
         try:
@@ -131,9 +143,9 @@ class _TiltPwm:
                 min_pulse_width=float(min_pulse_us) / 1e6,
                 max_pulse_width=float(max_pulse_us) / 1e6,
             )
-            self._log.info(f"Tilt PWM servo ready on GPIO{int(pin)}")
+            self._log.info(f"{label} PWM servo ready on GPIO{int(pin)}")
         except Exception as exc:
-            self._log.error(f"tilt PWM init failed ({exc}) — tilt DISABLED")
+            self._log.error(f"{label} PWM init failed ({exc}) — {label} DISABLED")
             self._servo = None
 
     @property
@@ -146,7 +158,7 @@ class _TiltPwm:
         try:
             self._servo.angle = float(deg)
         except Exception as exc:
-            self._log.warn(f"tilt write failed: {exc}",
+            self._log.warn(f"{self._label} write failed: {exc}",
                            throttle_duration_sec=2.0)
 
     def close(self):
@@ -169,11 +181,18 @@ class CameraServo(Node):
         self._tilt_joint = d("tilt_joint_name", "camera_tilt_joint").value
         self._rate_hz = float(d("rate_hz", 30.0).value)
 
-        # ── Pan (SC-15 bus servo) ───────────────────────────────────────────
-        self._pan_min = float(d("pan_min_deg", -150.0).value)
-        self._pan_max = float(d("pan_max_deg", 150.0).value)
+        # ── Pan ─────────────────────────────────────────────────────────────
+        # "pwm" = hobby servo on a GPIO (OT5320M); "bus" = Feetech STS/SMS.
+        pan_driver = str(d("pan_driver", "pwm").value).lower()
+        # A PWM servo only has ~±85° of travel; a bus servo has the full turn.
+        pan_limit = 150.0 if pan_driver == "bus" else 85.0
+        self._pan_min = float(d("pan_min_deg", -pan_limit).value)
+        self._pan_max = float(d("pan_max_deg", pan_limit).value)
         self._pan_rate = float(d("pan_max_rate_dps", 90.0).value)
         self._pan_inv = bool(d("invert_pan", False).value)
+        pan_pin = int(d("pan_pwm_pin", 13).value)
+        pan_min_us = float(d("pan_min_pulse_us", 500.0).value)
+        pan_max_us = float(d("pan_max_pulse_us", 2500.0).value)
         bus_port = d("bus_port", "/dev/ttyUSB0").value
         bus_baud = int(d("bus_baud", 1000000).value)
         pan_id = int(d("pan_servo_id", 1).value)
@@ -201,10 +220,14 @@ class CameraServo(Node):
         self._lock = threading.Lock()
         self._last = time.monotonic()
 
-        self._pan = _PanBus(self, bus_port, bus_baud, pan_id, pan_tpr,
-                            pan_center, pan_speed, pan_acc)
-        self._tilt = _TiltPwm(self, tilt_pin, self._tilt_min, self._tilt_max,
-                             tilt_min_us, tilt_max_us)
+        if pan_driver == "bus":
+            self._pan = _PanBus(self, bus_port, bus_baud, pan_id, pan_tpr,
+                                pan_center, pan_speed, pan_acc)
+        else:
+            self._pan = _PwmServo(self, "pan", pan_pin, self._pan_min,
+                                  self._pan_max, pan_min_us, pan_max_us)
+        self._tilt = _PwmServo(self, "tilt", tilt_pin, self._tilt_min,
+                               self._tilt_max, tilt_min_us, tilt_max_us)
 
         self.create_subscription(Twist, self._cmd_topic, self._cmd_cb, 10)
         self._js_pub = self.create_publisher(JointState, self._js_topic, 10)
@@ -214,7 +237,8 @@ class CameraServo(Node):
         self._pan.write_deg(-self._pan_deg if self._pan_inv else self._pan_deg)
         self._tilt.write_deg(-self._tilt_deg if self._tilt_inv else self._tilt_deg)
         self.get_logger().info(
-            f"Camera pan/tilt ready — pan {'ON' if self._pan.enabled else 'off'}, "
+            f"Camera pan/tilt ready — pan[{pan_driver}] "
+            f"{'ON' if self._pan.enabled else 'off'}, "
             f"tilt {'ON' if self._tilt.enabled else 'off'}. "
             f"Cmd on {self._cmd_topic} (right stick).")
 

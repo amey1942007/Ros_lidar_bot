@@ -267,14 +267,15 @@ def _launch_setup(context, *args, **kwargs):
         arguments=log_args,
     )
 
-    # ── 6c. Camera pan/tilt head (SC-15 bus servo + SG90 PWM) ────────────────
+    # ── 6c. Camera pan/tilt head (OT5320M pan + SG90 tilt, both PWM) ─────────
     # Right stick → /camera_cmd → camera_servo_node → servos. Parallel control
     # path: never touches /cmd_vel, Nav2 or frontier exploration. Degrades
     # gracefully if the servo libs/devices are missing (still publishes joints).
-    #   SC-15 pan  : Feetech STS/SMS bus servo — pip3 install feetech-servo-sdk
-    #   SG90 tilt  : gpiozero PWM on a GPIO pin
-    # Verify the bus port (ls /dev/serial/by-id/ or /dev/ttyUSB*) and the tilt
-    # GPIO pin, then override the params below to match the wiring.
+    #   OT5320M pan : 20 kg hobby PWM servo, JR plug, 7.4 V external supply
+    #   SG90 tilt   : PWM micro servo, 5 V external supply
+    # Both are gpiozero PWM on a GPIO (BCM numbering) — no bus adapter involved.
+    # For a Feetech STS/SMS serial bus servo instead, set pan_driver:="bus" and
+    # give bus_port/bus_baud/pan_servo_id (see camera_servo_node.py docstring).
     camera_servo = Node(
         package=package_name,
         executable="camera_servo",
@@ -284,9 +285,8 @@ def _launch_setup(context, *args, **kwargs):
         respawn=True,
         respawn_delay=3.0,
         parameters=[{
-            "bus_port": "/dev/ttyUSB0",   # SC-15 TTL/RS485 adapter
-            "bus_baud": 1000000,
-            "pan_servo_id": 1,
+            "pan_driver": "pwm",
+            "pan_pwm_pin": 13,            # OT5320M signal GPIO (BCM)
             "tilt_pwm_pin": 18,           # SG90 signal GPIO (BCM)
         }],
     )
