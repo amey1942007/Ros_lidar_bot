@@ -274,6 +274,8 @@ def _launch_setup(context, *args, **kwargs):
     #   OT5320M pan : 20 kg hobby PWM servo, JR plug, 7.4 V external supply
     #   SG90 tilt   : PWM micro servo, 5 V external supply
     # Both are gpiozero PWM on a GPIO (BCM numbering) — no bus adapter involved.
+    # Pins are the RPi5's two hardware-PWM channels, next to the pin-34 ground:
+    #   GPIO13 = PWM1 = header pin 33 (pan) | GPIO12 = PWM0 = pin 32 (tilt)
     # For a Feetech STS/SMS serial bus servo instead, set pan_driver:="bus" and
     # give bus_port/bus_baud/pan_servo_id (see camera_servo_node.py docstring).
     camera_servo = Node(
@@ -286,8 +288,8 @@ def _launch_setup(context, *args, **kwargs):
         respawn_delay=3.0,
         parameters=[{
             "pan_driver": "pwm",
-            "pan_pwm_pin": 13,            # OT5320M signal GPIO (BCM)
-            "tilt_pwm_pin": 18,           # SG90 signal GPIO (BCM)
+            "pan_pwm_pin": 13,            # OT5320M signal — header pin 33
+            "tilt_pwm_pin": 12,           # SG90 signal     — header pin 32
         }],
     )
 

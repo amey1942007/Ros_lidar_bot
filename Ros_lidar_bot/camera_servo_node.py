@@ -29,7 +29,10 @@ frontier exploration. It only:
 
 HARDWARE ASSUMPTIONS (override via parameters if your setup differs):
   • Both PWM axes use gpiozero.AngularServo (lgpio backend, works on the RPi5).
-    Pan defaults to GPIO13, tilt to GPIO18.
+    Pan defaults to GPIO13 (PWM1, header pin 33), tilt to GPIO12 (PWM0, pin
+    32) — the RPi5's two hardware-PWM channels, sharing the ground on pin 34.
+    gpiozero drives them with SOFTWARE PWM regardless; the pin choice keeps
+    the door open to `rpi-hardware-pwm` if the big servo jitters at rest.
   • The OT5320M's usable travel is ~±85° — hence the tighter default pan limits
     when pan_driver == "pwm" (the bus path keeps the old ±150°).
   • pan_driver == "bus" needs `pip3 install feetech-servo-sdk` (module:
@@ -206,7 +209,7 @@ class CameraServo(Node):
         self._tilt_max = float(d("tilt_max_deg", 80.0).value)
         self._tilt_rate = float(d("tilt_max_rate_dps", 90.0).value)
         self._tilt_inv = bool(d("invert_tilt", False).value)
-        tilt_pin = int(d("tilt_pwm_pin", 18).value)
+        tilt_pin = int(d("tilt_pwm_pin", 12).value)
         tilt_min_us = float(d("tilt_min_pulse_us", 500.0).value)
         tilt_max_us = float(d("tilt_max_pulse_us", 2500.0).value)
 
