@@ -51,6 +51,7 @@ import time
 
 import rclpy
 from geometry_msgs.msg import Twist
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 
@@ -448,7 +449,9 @@ def main(args=None):
     node = CameraServo()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
+        # SIGINT from a terminal, SIGTERM from `ros2 launch` shutting down.
+        # Both are normal; close() below still releases the servos.
         pass
     finally:
         node.close()
