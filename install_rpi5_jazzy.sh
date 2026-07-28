@@ -249,11 +249,15 @@ log "Additional ROS packages installed."
 # ---------------------------------------------------------------------------
 section "10. Python Dependencies"
 
-# System Python packages first
+# System Python packages first.
+# python3-lgpio is REQUIRED on the RPi5 — it is the only gpiozero backend that
+# talks to the RP1 southbridge. RPi.GPIO silently fails on Pi 5 hardware.
 sudo apt-get install -y \
     python3-numpy \
     python3-opencv \
-    python3-serial
+    python3-serial \
+    python3-gpiozero \
+    python3-lgpio
 
 # pip packages (use --break-system-packages for Ubuntu 24.04)
 PIP_FLAGS="--break-system-packages"
@@ -452,7 +456,7 @@ done
 echo ""
 echo "--- Python Packages ---"
 # Note: pyrplidar is imported as 'pyrplidar'
-PY_PACKAGES=("pyrplidar" "serial" "cv2" "numpy" "ultralytics")
+PY_PACKAGES=("pyrplidar" "serial" "cv2" "numpy" "ultralytics" "gpiozero" "lgpio")
 for pkg in "${PY_PACKAGES[@]}"; do
     if python3 -c "import $pkg" 2>/dev/null; then
         echo -e "  ${GREEN}✓${NC} python3: $pkg"
