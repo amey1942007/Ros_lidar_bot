@@ -270,6 +270,13 @@ pip3 install $PIP_FLAGS pyrplidar
 log "Installing pyserial (UART driver)..."
 pip3 install $PIP_FLAGS pyserial
 
+log "Installing rpi-hardware-pwm (camera pan/tilt servos)..."
+# The RP1 generates the servo pulses in silicon. Software PWM edges get
+# scheduled late once SLAM/Nav2/YOLO load the cores, and the servos hunt.
+# Also needs, in /boot/firmware/config.txt, followed by a reboot:
+#     dtoverlay=pwm-2chan,pin=12,func=4,pin2=13,func2=4
+pip3 install $PIP_FLAGS rpi-hardware-pwm
+
 log "Installing OpenCV extras..."
 pip3 install $PIP_FLAGS \
     opencv-python-headless \

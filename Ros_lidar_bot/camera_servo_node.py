@@ -61,12 +61,25 @@ try:
 except Exception:                       # ImportError or lib load failure
     _SCS_OK = False
 
-# gpiozero PWM servo (SG90 tilt). Optional.
+# gpiozero PWM servo. Optional. SOFTWARE PWM — the pulse edges are timed by a
+# Python thread, so under heavy CPU load (SLAM + Nav2 + YOLO) they land late
+# and the servo hunts. Fine on an idle Pi, not on a working robot.
 try:
     from gpiozero import AngularServo
     _GPIO_OK = True
 except Exception:
     _GPIO_OK = False
+
+# rpi-hardware-pwm. Optional but STRONGLY preferred: the RP1 generates the
+# pulses in silicon, so they stay exact no matter what the CPU is doing.
+# Needs `pip3 install rpi-hardware-pwm --break-system-packages` AND this line
+# in /boot/firmware/config.txt followed by a reboot:
+#     dtoverlay=pwm-2chan,pin=12,func=4,pin2=13,func2=4
+try:
+    from rpi_hardware_pwm import HardwarePWM
+    _HWPWM_OK = True
+except Exception:
+    _HWPWM_OK = False
 
 
 def _clamp(v, lo, hi):
@@ -192,6 +205,102 @@ class _PwmServo:
                 pass
 
 
+class _HwPwmServo:
+    """Same servo, driven by the RP1's hardware PWM instead of the CPU.
+
+    Immune to scheduling jitter, so the head holds still while SLAM and Nav2
+    are saturating the cores. Requires the pwm-2chan overlay (see the import
+    block at the top of this file); without it, construction fails and the
+    caller falls back to _PwmServo.
+    """
+
+    # Channel order follows `dtoverlay=pwm-2chan,pin=12,...,pin2=13,...`.
+    _CHANNEL = {12: 0, 13: 1, 18: 0, 19: 1}
+    _PERIOD_US = 20000.0                    # 50 Hz servo frame
+
+    def __init__(self, node, label, pin, min_deg, max_deg,
+                 min_pulse_us, max_pulse_us, idle_release_sec=1.5, chip=2):
+        self._log = node.get_logger()
+        self._label = label
+        self._pwm = None
+        self._min_deg, self._max_deg = float(min_deg), float(max_deg)
+        self._min_us, self._max_us = float(min_pulse_us), float(max_pulse_us)
+        self._last_deg = None
+        self._idle_release = float(idle_release_sec)
+        self._idle_since = None
+        if not _HWPWM_OK:
+            return
+        channel = self._CHANNEL.get(int(pin))
+        if channel is None:
+            self._log.warn(f"GPIO{int(pin)} is not a hardware-PWM pin — "
+                           f"{label} falls back to software PWM")
+            return
+        try:
+            self._pwm = HardwarePWM(pwm_channel=channel,
+                                    hz=int(1e6 / self._PERIOD_US),
+                                    chip=int(chip))
+            self._pwm.start(0.0)            # 0% = no pulse = servo released
+            self._log.info(f"{label} HARDWARE PWM on GPIO{int(pin)} "
+                           f"(chip {chip} channel {channel})")
+        except Exception as exc:
+            self._log.warn(f"{label} hardware PWM unavailable ({exc}) — "
+                           "falling back to software PWM")
+            self._pwm = None
+
+    @property
+    def enabled(self):
+        return self._pwm is not None
+
+    def _duty(self, deg):
+        span = self._max_deg - self._min_deg
+        frac = 0.5 if span == 0 else (deg - self._min_deg) / span
+        us = self._min_us + _clamp(frac, 0.0, 1.0) * (self._max_us - self._min_us)
+        return us / self._PERIOD_US * 100.0
+
+    def write_deg(self, deg):
+        if self._pwm is None:
+            return
+        deg = _clamp(float(deg), self._min_deg, self._max_deg)
+        try:
+            if self._last_deg is not None and abs(deg - self._last_deg) < 0.25:
+                if (self._idle_release > 0.0 and self._idle_since is not None
+                        and time.monotonic() - self._idle_since
+                        >= self._idle_release):
+                    self._pwm.change_duty_cycle(0.0)
+                    self._idle_since = None
+                return
+            self._pwm.change_duty_cycle(self._duty(deg))
+            self._last_deg = deg
+            self._idle_since = time.monotonic()
+        except Exception as exc:
+            self._log.warn(f"{self._label} write failed: {exc}",
+                           throttle_duration_sec=2.0)
+
+    def close(self):
+        if self._pwm is not None:
+            try:
+                self._pwm.stop()
+            except Exception:
+                pass
+
+
+def _make_pwm_servo(node, backend, label, pin, min_deg, max_deg,
+                    min_us, max_us, idle_release, chip):
+    """Hardware PWM if we can get it, software PWM if we can't."""
+    if backend in ("auto", "hardware"):
+        servo = _HwPwmServo(node, label, pin, min_deg, max_deg,
+                            min_us, max_us, idle_release, chip)
+        if servo.enabled:
+            return servo
+        if backend == "hardware":
+            node.get_logger().error(
+                f"{label}: pwm_backend=hardware was requested but is "
+                "unavailable — check the pwm-2chan overlay in "
+                "/boot/firmware/config.txt, then reboot.")
+    return _PwmServo(node, label, pin, min_deg, max_deg,
+                     min_us, max_us, idle_release)
+
+
 class CameraServo(Node):
     def __init__(self):
         super().__init__("camera_servo")
@@ -203,6 +312,10 @@ class CameraServo(Node):
         self._pan_joint = d("pan_joint_name", "camera_pan_joint").value
         self._tilt_joint = d("tilt_joint_name", "camera_tilt_joint").value
         self._rate_hz = float(d("rate_hz", 30.0).value)
+        # "auto" prefers the RP1's hardware PWM and silently falls back to
+        # gpiozero; "hardware" or "gpiozero" force one of them.
+        pwm_backend = str(d("pwm_backend", "auto").value).lower()
+        pwm_chip = int(d("pwm_chip", 2).value)      # RPi5 = 2, RPi4 = 0
 
         # ── Pan ─────────────────────────────────────────────────────────────
         # "pwm" = hobby servo on a GPIO (OT5320M); "bus" = Feetech STS/SMS.
@@ -253,12 +366,14 @@ class CameraServo(Node):
             self._pan = _PanBus(self, bus_port, bus_baud, pan_id, pan_tpr,
                                 pan_center, pan_speed, pan_acc)
         else:
-            self._pan = _PwmServo(self, "pan", pan_pin, self._pan_min,
-                                  self._pan_max, pan_min_us, pan_max_us,
-                                  pan_idle)
-        self._tilt = _PwmServo(self, "tilt", tilt_pin, self._tilt_min,
-                               self._tilt_max, tilt_min_us, tilt_max_us,
-                               tilt_idle)
+            self._pan = _make_pwm_servo(self, pwm_backend, "pan", pan_pin,
+                                        self._pan_min, self._pan_max,
+                                        pan_min_us, pan_max_us, pan_idle,
+                                        pwm_chip)
+        self._tilt = _make_pwm_servo(self, pwm_backend, "tilt", tilt_pin,
+                                     self._tilt_min, self._tilt_max,
+                                     tilt_min_us, tilt_max_us, tilt_idle,
+                                     pwm_chip)
 
         self.create_subscription(Twist, self._cmd_topic, self._cmd_cb, 10)
         self._js_pub = self.create_publisher(JointState, self._js_topic, 10)
