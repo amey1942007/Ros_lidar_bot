@@ -348,8 +348,13 @@ class CameraServo(Node):
         self._pan_rate = float(d("pan_max_rate_dps", 90.0).value)
         self._pan_inv = bool(d("invert_pan", False).value)
         pan_pin = int(d("pan_pwm_pin", 13).value)
-        pan_min_us = float(d("pan_min_pulse_us", 500.0).value)
-        pan_max_us = float(d("pan_max_pulse_us", 2500.0).value)
+        # 1000-2000 us is the standard range every hobby servo accepts. Wider
+        # values (500/2500) reach further on servos that support them but drive
+        # the rest into their mechanical stops, where they stall, buzz and pull
+        # locked-rotor current. Widen only after checking the servo still moves
+        # freely at both ends.
+        pan_min_us = float(d("pan_min_pulse_us", 1000.0).value)
+        pan_max_us = float(d("pan_max_pulse_us", 2000.0).value)
         # Pan turns about a vertical axis, so gravity holds it — safe to
         # release. 0.0 disables the release and holds torque forever.
         pan_idle = float(d("pan_idle_release_sec", 1.5).value)
@@ -367,8 +372,9 @@ class CameraServo(Node):
         self._tilt_rate = float(d("tilt_max_rate_dps", 90.0).value)
         self._tilt_inv = bool(d("invert_tilt", False).value)
         tilt_pin = int(d("tilt_pwm_pin", 12).value)
-        tilt_min_us = float(d("tilt_min_pulse_us", 500.0).value)
-        tilt_max_us = float(d("tilt_max_pulse_us", 2500.0).value)
+        # SG90's usable range really is 1000-2000 us — see the pan note above.
+        tilt_min_us = float(d("tilt_min_pulse_us", 1000.0).value)
+        tilt_max_us = float(d("tilt_max_pulse_us", 2000.0).value)
         # Tilt carries the camera against gravity — releasing it makes the head
         # droop, so hold by default. Set >0 if your mount is balanced.
         tilt_idle = float(d("tilt_idle_release_sec", 0.0).value)
