@@ -241,6 +241,10 @@ class _HwPwmServo:
         self._idle_release = float(idle_release_sec)
         self._idle_since = None
         if not _HWPWM_OK:
+            self._log.warn(
+                f"{label}: rpi-hardware-pwm not installed — falling back to "
+                "software PWM (pip3 install rpi-hardware-pwm "
+                "--break-system-packages)")
             return
         channel = self._CHANNEL.get(int(pin))
         if channel is None:
