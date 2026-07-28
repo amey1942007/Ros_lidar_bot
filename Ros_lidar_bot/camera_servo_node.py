@@ -120,6 +120,10 @@ class _PanBus:
     def enabled(self):
         return self._packet is not None
 
+    @property
+    def backend(self):
+        return "bus"
+
     def write_deg(self, deg):
         """deg is relative to centre (0 = camera forward)."""
         if self._packet is None:
@@ -166,7 +170,11 @@ class _PwmServo:
                 min_pulse_width=float(min_pulse_us) / 1e6,
                 max_pulse_width=float(max_pulse_us) / 1e6,
             )
-            self._log.info(f"{label} PWM servo ready on GPIO{int(pin)}")
+            self._log.warn(
+                f"{label}: using SOFTWARE PWM on GPIO{int(pin)}. The pulse is "
+                "timed by the CPU, so the servo will hunt once SLAM/Nav2 load "
+                "the cores. See the rpi-hardware-pwm notes at the top of "
+                "camera_servo_node.py.")
         except Exception as exc:
             self._log.error(f"{label} PWM init failed ({exc}) — {label} DISABLED")
             self._servo = None
@@ -174,6 +182,10 @@ class _PwmServo:
     @property
     def enabled(self):
         return self._servo is not None
+
+    @property
+    def backend(self):
+        return "software"
 
     def write_deg(self, deg):
         if self._servo is None:
@@ -250,6 +262,10 @@ class _HwPwmServo:
     @property
     def enabled(self):
         return self._pwm is not None
+
+    @property
+    def backend(self):
+        return "hardware"
 
     def _duty(self, deg):
         span = self._max_deg - self._min_deg
@@ -383,9 +399,9 @@ class CameraServo(Node):
         self._pan.write_deg(-self._pan_deg if self._pan_inv else self._pan_deg)
         self._tilt.write_deg(-self._tilt_deg if self._tilt_inv else self._tilt_deg)
         self.get_logger().info(
-            f"Camera pan/tilt ready — pan[{pan_driver}] "
-            f"{'ON' if self._pan.enabled else 'off'}, "
-            f"tilt {'ON' if self._tilt.enabled else 'off'}. "
+            f"Camera pan/tilt ready — "
+            f"pan[{self._pan.backend}] {'ON' if self._pan.enabled else 'off'}, "
+            f"tilt[{self._tilt.backend}] {'ON' if self._tilt.enabled else 'off'}. "
             f"Cmd on {self._cmd_topic} (right stick).")
 
     def _cmd_cb(self, msg: Twist):
