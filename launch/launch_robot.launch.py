@@ -272,8 +272,11 @@ def _launch_setup(context, *args, **kwargs):
     # Parallel control path: never touches /cmd_vel, Nav2 or frontier
     # exploration. Degrades gracefully if the Uno is unplugged — the node keeps
     # running, publishes joint states, and reconnects on its own.
-    #   OT5320M pan : 20 kg hobby PWM servo, Uno D6, 7.4 V external supply
-    #   SG90 tilt   : PWM micro servo,       Uno D5, 5 V external supply
+    #   OT5320M pan : 20 kg PWM servo, Uno D6, 7.4 V external supply — this one
+    #                 is CONTINUOUS-ROTATION (confirmed on the bench: a fixed
+    #                 pulse spins it forever). Stick position = speed/
+    #                 direction, not a target angle, hence pan_continuous.
+    #   SG90 tilt   : positional PWM micro servo, Uno D5, 5 V external supply
     # The Uno makes the pulses in hardware timers, so the head does not hunt
     # when SLAM/Nav2/YOLO load the Pi. Flash arduino/camera_head/camera_head.ino
     # (wiring + protocol documented at the top of that sketch).
@@ -292,6 +295,7 @@ def _launch_setup(context, *args, **kwargs):
         respawn_delay=3.0,
         parameters=[{
             "pan_driver": "arduino",
+            "pan_continuous": True,
             "arduino_port": "/dev/ttyUSB0",
             "arduino_baud": 115200,
         }],

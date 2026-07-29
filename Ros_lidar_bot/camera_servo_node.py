@@ -5,9 +5,11 @@ camera_servo_node.py — Pan/tilt camera head driver.
 Drives a two-servo camera mount, controlled from the gamepad's RIGHT stick
 (joy_teleop publishes normalised rates on /camera_cmd):
 
-  OT5320M (base / PAN)  — 20 kg hobby PWM servo (JR plug, 4-8.4 V, ~180°)
-                          on an RPi GPIO pin. This is the default.
-  SG90    (head / TILT) — hobby PWM micro servo on an RPi GPIO pin.
+  OT5320M (base / PAN)  — 20 kg hobby PWM servo (JR plug, 4-8.4 V). Confirmed
+                          on the bench to be CONTINUOUS-ROTATION (a fixed
+                          pulse spins it forever, not to an angle) — set
+                          `pan_continuous:=true` when pan_driver=="arduino".
+  SG90    (head / TILT) — hobby PWM micro servo, positional, ~180°.
 
 The drive path is pluggable via the `pan_driver` parameter:
   "pwm" (default) — any standard hobby servo (OT5320M, MG996R, …) on a GPIO.
@@ -242,6 +244,41 @@ class _PwmServo:
                 self._servo.detach()
             except Exception:
                 pass
+
+
+class _ArduinoContinuousPan:
+    """Continuous-rotation ("360") PWM pan axis driven by the Uno over UART.
+
+    The OT5320M turns out to be continuous-rotation, not positional: a FIXED
+    pulse width makes it spin forever instead of settling on an angle. Pulse
+    width here sets speed/direction (midpoint = stop), not a target angle, and
+    there is no feedback wire, so this class tracks no position at all —
+    camera_servo_node dead-reckons an angle estimate itself, for joint_state/
+    RViz only.
+    """
+
+    def __init__(self, link, label, tag, min_us, max_us):
+        self._link = link
+        self._label = label
+        self._tag = tag
+        self._center_us = (float(min_us) + float(max_us)) / 2.0
+        self._half_us = (float(max_us) - float(min_us)) / 2.0
+
+    @property
+    def enabled(self):
+        return self._link.enabled
+
+    @property
+    def backend(self):
+        return "arduino-continuous"
+
+    def write_rate(self, cmd):
+        cmd = _clamp(float(cmd), -1.0, 1.0)
+        us = self._center_us + cmd * self._half_us
+        self._link.send(f"{self._tag}{int(round(us))}\n")
+
+    def close(self):
+        self._link.close()      # idempotent — both axes share the one link
 
 
 class _HwPwmServo:
@@ -495,6 +532,11 @@ class CameraServo(Node):
         # "pwm" = hobby servo on a GPIO (OT5320M); "arduino" = both axes on an
         # Uno over UART; "bus" = Feetech STS/SMS.
         pan_driver = str(d("pan_driver", "pwm").value).lower()
+        # The OT5320M turns out to be continuous-rotation (a fixed pulse spins
+        # it forever, confirmed on the bench) — only meaningful with
+        # pan_driver=="arduino". No position feedback exists, so pan_min/max
+        # don't apply; the angle tracked is a dead-reckoned estimate only.
+        self._pan_continuous = bool(d("pan_continuous", False).value)
         # A PWM servo only has ~±85° of travel; a bus servo has the full turn.
         pan_limit = 150.0 if pan_driver == "bus" else 85.0
         self._pan_min = float(d("pan_min_deg", -pan_limit).value)
@@ -553,11 +595,15 @@ class CameraServo(Node):
         self._last = time.monotonic()
 
         if pan_driver == "arduino":
-            # One serial link, both axes — the Uno drives pan on D9, tilt D10.
+            # One serial link, both axes — the Uno drives pan on D6, tilt D5.
             link = _ArduinoLink(self, ard_port, ard_baud, ard_boot)
-            self._pan = _ArduinoServo(link, "pan", "P",
-                                      self._pan_min, self._pan_max,
-                                      pan_min_us, pan_max_us, pan_idle)
+            if self._pan_continuous:
+                self._pan = _ArduinoContinuousPan(link, "pan", "P",
+                                                  pan_min_us, pan_max_us)
+            else:
+                self._pan = _ArduinoServo(link, "pan", "P",
+                                          self._pan_min, self._pan_max,
+                                          pan_min_us, pan_max_us, pan_idle)
             self._tilt = _ArduinoServo(link, "tilt", "T",
                                        self._tilt_min, self._tilt_max,
                                        tilt_min_us, tilt_max_us, tilt_idle)
@@ -579,8 +625,12 @@ class CameraServo(Node):
         self._js_pub = self.create_publisher(JointState, self._js_topic, 10)
         self.create_timer(1.0 / self._rate_hz, self._tick)
 
-        # Drive servos to their start pose immediately.
-        self._pan.write_deg(-self._pan_deg if self._pan_inv else self._pan_deg)
+        # Drive servos to their start pose immediately (pan: send "stop" — a
+        # continuous-rotation axis has no pose to go to).
+        if self._pan_continuous:
+            self._pan.write_rate(0.0)
+        else:
+            self._pan.write_deg(-self._pan_deg if self._pan_inv else self._pan_deg)
         self._tilt.write_deg(-self._tilt_deg if self._tilt_inv else self._tilt_deg)
         self.get_logger().info(
             f"Camera pan/tilt ready — "
@@ -604,13 +654,20 @@ class CameraServo(Node):
         with self._lock:
             pan_cmd, tilt_cmd = self._pan_cmd, self._tilt_cmd
 
-        self._pan_deg = _clamp(self._pan_deg + pan_cmd * self._pan_rate * dt,
-                               self._pan_min, self._pan_max)
         self._tilt_deg = _clamp(self._tilt_deg + tilt_cmd * self._tilt_rate * dt,
                                 self._tilt_min, self._tilt_max)
-
-        self._pan.write_deg(-self._pan_deg if self._pan_inv else self._pan_deg)
         self._tilt.write_deg(-self._tilt_deg if self._tilt_inv else self._tilt_deg)
+
+        if self._pan_continuous:
+            # No feedback wire — this is a dead-reckoned estimate for
+            # joint_state/RViz only, wrapped since it can spin forever.
+            self._pan_deg = (self._pan_deg + pan_cmd * self._pan_rate * dt
+                             + 180.0) % 360.0 - 180.0
+            self._pan.write_rate(-pan_cmd if self._pan_inv else pan_cmd)
+        else:
+            self._pan_deg = _clamp(self._pan_deg + pan_cmd * self._pan_rate * dt,
+                                   self._pan_min, self._pan_max)
+            self._pan.write_deg(-self._pan_deg if self._pan_inv else self._pan_deg)
 
         js = JointState()
         js.header.stamp = self.get_clock().now().to_msg()

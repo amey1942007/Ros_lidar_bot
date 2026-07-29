@@ -74,7 +74,7 @@ Nav2 recovery spins still work.
 | LiDAR | RPLidar S2E — **Ethernet/UDP** (`192.168.11.2:8089`), DenseBoost (~3200 pts/rev) |
 | IMU | BNO055 on Arduino Mega, streamed over USB serial `/dev/ttyACM1` at 500000 baud |
 | Camera (planned) | RPi Camera Module 3 for the semantic vision pipeline |
-| Camera head | Pan/tilt servos (OT5320M pan + SG90 tilt) driven by an Arduino Uno over UART on `/dev/ttyUSB0`, 115200 baud — flash `arduino/camera_head/camera_head.ino` |
+| Camera head | Pan/tilt servos (OT5320M pan, continuous-rotation — stick sets speed/direction; SG90 tilt, positional) driven by an Arduino Uno over UART on `/dev/ttyUSB0`, 115200 baud — flash `arduino/camera_head/camera_head.ino` |
 | Teleop | Any SDL gamepad (USB or Bluetooth) |
 
 **LiDAR network setup (one-time):** give `eth0` a static IP on the lidar's
