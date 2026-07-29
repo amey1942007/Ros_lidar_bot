@@ -9,8 +9,13 @@ Drives a two-servo camera mount, controlled from the gamepad's RIGHT stick
                           on an RPi GPIO pin. This is the default.
   SG90    (head / TILT) — hobby PWM micro servo on an RPi GPIO pin.
 
-The pan axis is pluggable via the `pan_driver` parameter:
+The drive path is pluggable via the `pan_driver` parameter:
   "pwm" (default) — any standard hobby servo (OT5320M, MG996R, …) on a GPIO.
+  "arduino"       — BOTH axes go to an Arduino Uno over UART; the Uno makes the
+                    pulses in hardware timers, so they never jitter when the
+                    Pi's cores are busy. Flash arduino/camera_head/camera_head.ino
+                    (wiring and protocol are documented at the top of it) and set
+                    `arduino_port`. This is the recommended setup.
   "bus"           — a Feetech STS/SMS serial BUS servo (ST3215 and friends)
                     on a TTL bus adapter. NOTE: a bus adapter cannot drive a
                     PWM servo like the OT5320M — the two are different
@@ -28,6 +33,12 @@ frontier exploration. It only:
     is merged by joint_state_publisher (see rsp.launch.py source_list).
 
 HARDWARE ASSUMPTIONS (override via parameters if your setup differs):
+  • pan_driver == "arduino" needs `pip3 install pyserial` and an Uno flashed
+    with arduino/camera_head/camera_head.ino (pan on D9, tilt on D10, servo
+    power from an EXTERNAL supply with a common ground). The default port is
+    /dev/ttyACM2 because ACM0/ACM1 are already the motor driver and the IMU
+    Mega — check `ls -l /dev/serial/by-id/` and set `arduino_port` to the
+    stable by-id path if the numbers shuffle on you.
   • Both PWM axes use gpiozero.AngularServo (lgpio backend, works on the RPi5).
     Pan defaults to GPIO13 (PWM1, header pin 33), tilt to GPIO12 (PWM0, pin
     32) — the RPi5's two hardware-PWM channels, sharing the ground on pin 34.
@@ -82,9 +93,23 @@ try:
 except Exception:
     _HWPWM_OK = False
 
+# pyserial, for the Arduino Uno pan/tilt backend. Optional.
+try:
+    import serial
+    _SERIAL_OK = True
+except Exception:
+    _SERIAL_OK = False
+
 
 def _clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
+
+
+def _deg_to_us(deg, min_deg, max_deg, min_us, max_us):
+    """Linear map from an angle within [min_deg, max_deg] to a pulse width."""
+    span = max_deg - min_deg
+    frac = 0.5 if span == 0 else (deg - min_deg) / span
+    return min_us + _clamp(frac, 0.0, 1.0) * (max_us - min_us)
 
 
 class _PanBus:
@@ -273,9 +298,8 @@ class _HwPwmServo:
         return "hardware"
 
     def _duty(self, deg):
-        span = self._max_deg - self._min_deg
-        frac = 0.5 if span == 0 else (deg - self._min_deg) / span
-        us = self._min_us + _clamp(frac, 0.0, 1.0) * (self._max_us - self._min_us)
+        us = _deg_to_us(deg, self._min_deg, self._max_deg,
+                        self._min_us, self._max_us)
         return us / self._PERIOD_US * 100.0
 
     def write_deg(self, deg):
@@ -303,6 +327,134 @@ class _HwPwmServo:
                 self._pwm.stop()
             except Exception:
                 pass
+
+
+class _ArduinoLink:
+    """Serial link to an Uno running arduino/camera_head/camera_head.ino.
+
+    One link, shared by both axes — the sketch takes a "P<us>" / "T<us>" line
+    per axis. Reconnects on its own: a replugged USB cable, or an Uno reset by
+    the reflash you just did, heals within `retry_sec` without restarting ROS.
+    """
+
+    _RETRY_SEC = 2.0
+
+    def __init__(self, node, port, baud, boot_delay_sec):
+        self._log = node.get_logger()
+        self._port = port
+        self._baud = int(baud)
+        self._boot = float(boot_delay_sec)
+        self._ser = None
+        self._ready_at = 0.0        # opening the port resets the Uno (DTR)
+        self._retry_at = 0.0
+        self._warned = False
+        if not _SERIAL_OK:
+            self._log.warn("pyserial not installed — camera servos DISABLED "
+                           "(pip3 install pyserial). Joint states still "
+                           "published.")
+            return
+        self._open()
+
+    @property
+    def enabled(self):
+        return self._ser is not None
+
+    def _open(self):
+        try:
+            self._ser = serial.Serial(self._port, self._baud, timeout=0)
+            self._ser.reset_input_buffer()      # drop the boot banner
+            # Opening the port toggles DTR, which resets the Uno. Writes sent
+            # while the bootloader is running are eaten, so wait it out.
+            self._ready_at = time.monotonic() + self._boot
+            self._log.info(f"Camera head Arduino on {self._port}@{self._baud} "
+                           f"(ready in {self._boot:.1f}s)")
+            self._warned = False
+        except Exception as exc:
+            self._ser = None
+            self._retry_at = time.monotonic() + self._RETRY_SEC
+            if not self._warned:
+                self._warned = True
+                self._log.error(
+                    f"camera head Arduino not on {self._port} ({exc}) — "
+                    "retrying in the background. Check "
+                    "`ls -l /dev/serial/by-id/` and the arduino_port param.")
+
+    def send(self, line):
+        now = time.monotonic()
+        if self._ser is None:
+            if now >= self._retry_at:
+                self._open()
+            return
+        if now < self._ready_at:
+            return
+        try:
+            self._ser.write(line.encode())
+        except Exception as exc:
+            self._log.warn(f"camera head serial write failed: {exc} — "
+                           "reconnecting", throttle_duration_sec=5.0)
+            self.close()
+            self._retry_at = now + self._RETRY_SEC
+
+    def close(self):
+        if self._ser is not None:
+            try:
+                self._ser.close()
+            except Exception:
+                pass
+            self._ser = None
+
+
+class _ArduinoServo:
+    """One axis of the pan/tilt head, driven by the Uno over UART.
+
+    Sends the setpoint every tick rather than only on change: it is ~7 bytes at
+    115200 baud, and it means a reconnected (hence reset, hence detached) Uno
+    picks the pose back up on the next tick instead of waiting for the stick.
+    """
+
+    def __init__(self, link, label, tag, min_deg, max_deg,
+                 min_us, max_us, idle_release_sec=0.0):
+        self._link = link
+        self._label = label
+        self._tag = tag                 # "P" for pan, "T" for tilt
+        self._min_deg, self._max_deg = float(min_deg), float(max_deg)
+        self._min_us, self._max_us = float(min_us), float(max_us)
+        self._idle_release = float(idle_release_sec)
+        self._last_deg = None
+        self._idle_since = None
+        self._released = False
+
+    @property
+    def enabled(self):
+        return self._link.enabled
+
+    @property
+    def backend(self):
+        return "arduino"
+
+    def write_deg(self, deg):
+        deg = _clamp(float(deg), self._min_deg, self._max_deg)
+        moved = self._last_deg is None or abs(deg - self._last_deg) >= 0.25
+        if moved:
+            self._last_deg = deg
+            self._idle_since = time.monotonic()
+            self._released = False
+        elif (self._idle_release > 0.0
+                and time.monotonic() - self._idle_since >= self._idle_release):
+            # Held long enough to have arrived: let it go limp so it stops
+            # drawing holding current. "0" is the sketch's detach command.
+            if not self._released:
+                self._released = True
+                self._link.send(f"{self._tag}0\n")
+            return
+        elif self._released:
+            return
+        us = _deg_to_us(deg, self._min_deg, self._max_deg,
+                        self._min_us, self._max_us)
+        self._link.send(f"{self._tag}{int(round(us))}\n")
+
+    def close(self):
+        self._link.close()      # idempotent — both axes share the one link
 
 
 def _make_pwm_servo(node, backend, label, pin, min_deg, max_deg,
@@ -339,7 +491,8 @@ class CameraServo(Node):
         pwm_chip = int(d("pwm_chip", 2).value)      # RPi5 = 2, RPi4 = 0
 
         # ── Pan ─────────────────────────────────────────────────────────────
-        # "pwm" = hobby servo on a GPIO (OT5320M); "bus" = Feetech STS/SMS.
+        # "pwm" = hobby servo on a GPIO (OT5320M); "arduino" = both axes on an
+        # Uno over UART; "bus" = Feetech STS/SMS.
         pan_driver = str(d("pan_driver", "pwm").value).lower()
         # A PWM servo only has ~±85° of travel; a bus servo has the full turn.
         pan_limit = 150.0 if pan_driver == "bus" else 85.0
@@ -367,6 +520,12 @@ class CameraServo(Node):
         pan_center = int(d("pan_center_tick", 2048).value)
         pan_speed = int(d("pan_speed", 2400).value)
         pan_acc = int(d("pan_accel", 50).value)
+        # ACM0 is the motor driver and ACM1 the IMU Mega, so the head's Uno
+        # lands on ACM2. Prefer a /dev/serial/by-id/... path if they shuffle.
+        ard_port = d("arduino_port", "/dev/ttyACM2").value
+        ard_baud = int(d("arduino_baud", 115200).value)
+        # Opening the port resets the Uno; its bootloader eats ~1.6 s of input.
+        ard_boot = float(d("arduino_boot_delay_sec", 2.0).value)
 
         # ── Tilt (SG90 PWM servo) ───────────────────────────────────────────
         self._tilt_min = float(d("tilt_min_deg", -80.0).value)
@@ -391,18 +550,28 @@ class CameraServo(Node):
         self._lock = threading.Lock()
         self._last = time.monotonic()
 
-        if pan_driver == "bus":
-            self._pan = _PanBus(self, bus_port, bus_baud, pan_id, pan_tpr,
-                                pan_center, pan_speed, pan_acc)
+        if pan_driver == "arduino":
+            # One serial link, both axes — the Uno drives pan on D9, tilt D10.
+            link = _ArduinoLink(self, ard_port, ard_baud, ard_boot)
+            self._pan = _ArduinoServo(link, "pan", "P",
+                                      self._pan_min, self._pan_max,
+                                      pan_min_us, pan_max_us, pan_idle)
+            self._tilt = _ArduinoServo(link, "tilt", "T",
+                                       self._tilt_min, self._tilt_max,
+                                       tilt_min_us, tilt_max_us, tilt_idle)
         else:
-            self._pan = _make_pwm_servo(self, pwm_backend, "pan", pan_pin,
-                                        self._pan_min, self._pan_max,
-                                        pan_min_us, pan_max_us, pan_idle,
-                                        pwm_chip)
-        self._tilt = _make_pwm_servo(self, pwm_backend, "tilt", tilt_pin,
-                                     self._tilt_min, self._tilt_max,
-                                     tilt_min_us, tilt_max_us, tilt_idle,
-                                     pwm_chip)
+            if pan_driver == "bus":
+                self._pan = _PanBus(self, bus_port, bus_baud, pan_id, pan_tpr,
+                                    pan_center, pan_speed, pan_acc)
+            else:
+                self._pan = _make_pwm_servo(self, pwm_backend, "pan", pan_pin,
+                                            self._pan_min, self._pan_max,
+                                            pan_min_us, pan_max_us, pan_idle,
+                                            pwm_chip)
+            self._tilt = _make_pwm_servo(self, pwm_backend, "tilt", tilt_pin,
+                                         self._tilt_min, self._tilt_max,
+                                         tilt_min_us, tilt_max_us, tilt_idle,
+                                         pwm_chip)
 
         self.create_subscription(Twist, self._cmd_topic, self._cmd_cb, 10)
         self._js_pub = self.create_publisher(JointState, self._js_topic, 10)

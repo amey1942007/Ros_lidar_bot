@@ -267,17 +267,21 @@ def _launch_setup(context, *args, **kwargs):
         arguments=log_args,
     )
 
-    # ── 6c. Camera pan/tilt head (OT5320M pan + SG90 tilt, both PWM) ─────────
-    # Right stick → /camera_cmd → camera_servo_node → servos. Parallel control
-    # path: never touches /cmd_vel, Nav2 or frontier exploration. Degrades
-    # gracefully if the servo libs/devices are missing (still publishes joints).
-    #   OT5320M pan : 20 kg hobby PWM servo, JR plug, 7.4 V external supply
-    #   SG90 tilt   : PWM micro servo, 5 V external supply
-    # Both are gpiozero PWM on a GPIO (BCM numbering) — no bus adapter involved.
-    # Pins are the RPi5's two hardware-PWM channels, next to the pin-34 ground:
-    #   GPIO13 = PWM1 = header pin 33 (pan) | GPIO12 = PWM0 = pin 32 (tilt)
-    # For a Feetech STS/SMS serial bus servo instead, set pan_driver:="bus" and
-    # give bus_port/bus_baud/pan_servo_id (see camera_servo_node.py docstring).
+    # ── 6c. Camera pan/tilt head (OT5320M pan + SG90 tilt, via Arduino Uno) ──
+    # Right stick → /camera_cmd → camera_servo_node → UART → Uno → servos.
+    # Parallel control path: never touches /cmd_vel, Nav2 or frontier
+    # exploration. Degrades gracefully if the Uno is unplugged — the node keeps
+    # running, publishes joint states, and reconnects on its own.
+    #   OT5320M pan : 20 kg hobby PWM servo, Uno D9,  7.4 V external supply
+    #   SG90 tilt   : PWM micro servo,       Uno D10, 5 V external supply
+    # The Uno makes the pulses in hardware timers, so the head does not hunt
+    # when SLAM/Nav2/YOLO load the Pi. Flash arduino/camera_head/camera_head.ino
+    # (wiring + protocol documented at the top of that sketch).
+    # ACM0 is the motor driver and ACM1 the IMU Mega, hence ACM2 here; use a
+    # /dev/serial/by-id/... path if the numbers shuffle on replug.
+    # Alternatives: pan_driver:="pwm" drives both servos straight off the Pi's
+    # GPIOs (pan_pwm_pin/tilt_pwm_pin), "bus" a Feetech STS/SMS bus servo —
+    # see the camera_servo_node.py docstring.
     camera_servo = Node(
         package=package_name,
         executable="camera_servo",
@@ -287,9 +291,9 @@ def _launch_setup(context, *args, **kwargs):
         respawn=True,
         respawn_delay=3.0,
         parameters=[{
-            "pan_driver": "pwm",
-            "pan_pwm_pin": 13,            # OT5320M signal — header pin 33
-            "tilt_pwm_pin": 12,           # SG90 signal     — header pin 32
+            "pan_driver": "arduino",
+            "arduino_port": "/dev/ttyACM2",
+            "arduino_baud": 115200,
         }],
     )
 

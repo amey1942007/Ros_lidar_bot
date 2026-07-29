@@ -74,6 +74,7 @@ Nav2 recovery spins still work.
 | LiDAR | RPLidar S2E — **Ethernet/UDP** (`192.168.11.2:8089`), DenseBoost (~3200 pts/rev) |
 | IMU | BNO055 on Arduino Mega, streamed over USB serial `/dev/ttyACM1` at 500000 baud |
 | Camera (planned) | RPi Camera Module 3 for the semantic vision pipeline |
+| Camera head | Pan/tilt servos (OT5320M pan + SG90 tilt) driven by an Arduino Uno over UART on `/dev/ttyACM2`, 115200 baud — flash `arduino/camera_head/camera_head.ino` |
 | Teleop | Any SDL gamepad (USB or Bluetooth) |
 
 **LiDAR network setup (one-time):** give `eth0` a static IP on the lidar's
@@ -154,6 +155,7 @@ Ros_lidar_bot/
 │   ├── frontier_explorer_node.py    # autonomous exploration (Nav2 action client)
 │   ├── robot_dashboard_node.py      # web GUI server (port 8080)
 │   ├── joy_teleop_node.py           # gamepad → /cmd_vel
+│   ├── camera_servo_node.py         # right stick → /camera_cmd → pan/tilt head
 │   ├── yolo.py                      # YOLO-World camera detector → /yolo
 │   ├── semantic_slam_node.py        # /yolo + lidar → object map
 │   ├── imu_test_node.py / imu_calibration_node.py / drive_distance_node.py
@@ -164,6 +166,7 @@ Ros_lidar_bot/
 │   ├── mapper_params_online_async.yaml  # SLAM Toolbox
 │   └── frontier_explorer.yaml       # exploration tuning
 ├── description/                     # URDF/Xacro
+├── arduino/camera_head/             # Uno sketch for the pan/tilt servos
 └── install_rpi5_jazzy.sh            # one-shot Pi setup script
 ```
 
@@ -253,7 +256,8 @@ The important, hardware-derived settings (change with care):
 - **`frontier_explorer.yaml`** — exploration scoring, blacklist radii and
   auto-calibration. Progress timeout must stay above Nav2's
   `movement_time_allowance`.
-- **Serial ports** — motors `/dev/ttyACM0`, IMU `/dev/ttyACM1` (set in
+- **Serial ports** — motors `/dev/ttyACM0`, IMU `/dev/ttyACM1`, camera-head
+  Arduino `/dev/ttyACM2` (set in
   `launch_robot.launch.py`). If USB re-enumeration swaps them, check
   `ls -l /dev/serial/by-id/`.
 
