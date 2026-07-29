@@ -34,11 +34,12 @@ frontier exploration. It only:
 
 HARDWARE ASSUMPTIONS (override via parameters if your setup differs):
   • pan_driver == "arduino" needs `pip3 install pyserial` and an Uno flashed
-    with arduino/camera_head/camera_head.ino (pan on D9, tilt on D10, servo
+    with arduino/camera_head/camera_head.ino (pan on D6, tilt on D5, servo
     power from an EXTERNAL supply with a common ground). The default port is
-    /dev/ttyACM2 because ACM0/ACM1 are already the motor driver and the IMU
-    Mega — check `ls -l /dev/serial/by-id/` and set `arduino_port` to the
-    stable by-id path if the numbers shuffle on you.
+    /dev/ttyUSB0 — the head's Uno is the only board on that port; the motor
+    driver and IMU Mega are on their own separate USB links — check
+    `ls -l /dev/serial/by-id/` and set `arduino_port` to the stable by-id
+    path if the numbers shuffle on you.
   • Both PWM axes use gpiozero.AngularServo (lgpio backend, works on the RPi5).
     Pan defaults to GPIO13 (PWM1, header pin 33), tilt to GPIO12 (PWM0, pin
     32) — the RPi5's two hardware-PWM channels, sharing the ground on pin 34.
@@ -520,9 +521,10 @@ class CameraServo(Node):
         pan_center = int(d("pan_center_tick", 2048).value)
         pan_speed = int(d("pan_speed", 2400).value)
         pan_acc = int(d("pan_accel", 50).value)
-        # ACM0 is the motor driver and ACM1 the IMU Mega, so the head's Uno
-        # lands on ACM2. Prefer a /dev/serial/by-id/... path if they shuffle.
-        ard_port = d("arduino_port", "/dev/ttyACM2").value
+        # The head's Uno is on its own USB0 link; the motor driver and IMU
+        # Mega are on separate ports. Prefer a /dev/serial/by-id/... path if
+        # the numbering shuffles.
+        ard_port = d("arduino_port", "/dev/ttyUSB0").value
         ard_baud = int(d("arduino_baud", 115200).value)
         # Opening the port resets the Uno; its bootloader eats ~1.6 s of input.
         ard_boot = float(d("arduino_boot_delay_sec", 2.0).value)

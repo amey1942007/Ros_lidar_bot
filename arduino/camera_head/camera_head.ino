@@ -8,8 +8,8 @@
  * the head stays put no matter how hard SLAM/Nav2/YOLO hammer the Pi's cores.
  *
  * WIRING
- *   D9  → pan servo signal  (OT5320M / MG996R class)
- *   D10 → tilt servo signal (SG90)
+ *   D6  → pan servo signal  (OT5320M / MG996R class)
+ *   D5  → tilt servo signal (SG90)
  *   Servo V+ → EXTERNAL supply (7.4 V pan, 5 V tilt). NEVER the Uno's 5V pin —
  *   a 20 kg servo's stall current will brown out the board mid-move.
  *   Servo GND, supply GND and Uno GND must all be tied together.
@@ -34,8 +34,8 @@
 
 #include <Servo.h>
 
-const uint8_t PAN_PIN  = 9;
-const uint8_t TILT_PIN = 10;
+const uint8_t PAN_PIN  = 6;
+const uint8_t TILT_PIN = 5;
 
 // Absolute travel guard. The Pi sends 1000-2000 us by default; anything wider
 // than this is either a typo or noise and would drive a servo into its stop,

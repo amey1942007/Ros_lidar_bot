@@ -272,13 +272,13 @@ def _launch_setup(context, *args, **kwargs):
     # Parallel control path: never touches /cmd_vel, Nav2 or frontier
     # exploration. Degrades gracefully if the Uno is unplugged — the node keeps
     # running, publishes joint states, and reconnects on its own.
-    #   OT5320M pan : 20 kg hobby PWM servo, Uno D9,  7.4 V external supply
-    #   SG90 tilt   : PWM micro servo,       Uno D10, 5 V external supply
+    #   OT5320M pan : 20 kg hobby PWM servo, Uno D6, 7.4 V external supply
+    #   SG90 tilt   : PWM micro servo,       Uno D5, 5 V external supply
     # The Uno makes the pulses in hardware timers, so the head does not hunt
     # when SLAM/Nav2/YOLO load the Pi. Flash arduino/camera_head/camera_head.ino
     # (wiring + protocol documented at the top of that sketch).
-    # ACM0 is the motor driver and ACM1 the IMU Mega, hence ACM2 here; use a
-    # /dev/serial/by-id/... path if the numbers shuffle on replug.
+    # The Uno is its own USB0 link; motors and IMU Mega are on separate ports.
+    # Use a /dev/serial/by-id/... path if the numbers shuffle on replug.
     # Alternatives: pan_driver:="pwm" drives both servos straight off the Pi's
     # GPIOs (pan_pwm_pin/tilt_pwm_pin), "bus" a Feetech STS/SMS bus servo —
     # see the camera_servo_node.py docstring.
@@ -292,7 +292,7 @@ def _launch_setup(context, *args, **kwargs):
         respawn_delay=3.0,
         parameters=[{
             "pan_driver": "arduino",
-            "arduino_port": "/dev/ttyACM2",
+            "arduino_port": "/dev/ttyUSB0",
             "arduino_baud": 115200,
         }],
     )
