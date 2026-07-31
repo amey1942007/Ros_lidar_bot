@@ -621,6 +621,13 @@ class CameraServo(Node):
                                       self._tilt_min, self._tilt_max))
         self._pan_cmd = 0.0     # normalised rate -1..1
         self._tilt_cmd = 0.0
+        # D-pad pan snap for continuous-rotation servo: spin at full rate for
+        # a fixed duration (no position feedback, so we can't jump to an angle).
+        # pan_snap_dur is tunable — set longer if the servo needs more time to
+        # reach its physical stop, shorter if the camera overshoots.
+        self._pan_snap_dur  = float(d("pan_snap_duration_sec", 1.5).value)
+        self._pan_snap_rate = 0.0   # ±1.0 during an active snap, else 0
+        self._pan_snap_until = 0.0  # monotonic deadline for the snap spin
         self._lock = threading.Lock()
         self._last = time.monotonic()
 
@@ -706,15 +713,32 @@ class CameraServo(Node):
             # linear.y encodes the tilt target: +1.0 → tilt_max, -1.0 → tilt_min,
             #                                    0.0 → no change (only pan snap).
             if msg.linear.z == 1.0:
-                if msg.linear.x > 0.5:
-                    self._pan_deg = self._pan_max
-                elif msg.linear.x < -0.5:
-                    self._pan_deg = self._pan_min
+                # ── Tilt (always positional) ─────────────────────────────────
                 if msg.linear.y > 0.5:
                     self._tilt_deg = self._tilt_max
                 elif msg.linear.y < -0.5:
                     self._tilt_deg = self._tilt_min
-                # Zero out any rate command so the servo holds the new position.
+
+                # ── Pan ──────────────────────────────────────────────────────
+                if self._pan_continuous:
+                    # Continuous-rotation servo: no position feedback, so we
+                    # cannot jump to an angle.  Instead, spin at full rate for
+                    # pan_snap_duration_sec so the camera sweeps to its limit.
+                    if msg.linear.x > 0.5:
+                        self._pan_snap_rate  = 1.0
+                        self._pan_snap_until = time.monotonic() + self._pan_snap_dur
+                    elif msg.linear.x < -0.5:
+                        self._pan_snap_rate  = -1.0
+                        self._pan_snap_until = time.monotonic() + self._pan_snap_dur
+                    # If linear.x == 0: pan-only tilt snap, leave pan running.
+                else:
+                    # Positional servo: jump directly to the mechanical extreme.
+                    if msg.linear.x > 0.5:
+                        self._pan_deg = self._pan_max
+                    elif msg.linear.x < -0.5:
+                        self._pan_deg = self._pan_min
+
+                # Zero the stick rate so the servo holds after the snap.
                 self._pan_cmd = 0.0
                 self._tilt_cmd = 0.0
                 return
@@ -794,9 +818,16 @@ class CameraServo(Node):
         if self._pan_continuous:
             # No feedback wire — this is a dead-reckoned estimate for
             # joint_state/RViz only, wrapped since it can spin forever.
-            self._pan_deg = (self._pan_deg + pan_cmd * self._pan_rate * dt
+            # D-pad snap overrides the stick rate for pan_snap_duration_sec;
+            # any stick input cancels the snap immediately.
+            effective_pan = pan_cmd
+            if pan_cmd == 0.0 and time.monotonic() < self._pan_snap_until:
+                effective_pan = self._pan_snap_rate
+            elif pan_cmd != 0.0:
+                self._pan_snap_until = 0.0  # stick moved — cancel pending snap
+            self._pan_deg = (self._pan_deg + effective_pan * self._pan_rate * dt
                              + 180.0) % 360.0 - 180.0
-            self._pan.write_rate(-pan_cmd if self._pan_inv else pan_cmd)
+            self._pan.write_rate(-effective_pan if self._pan_inv else effective_pan)
         else:
             self._pan_deg = _clamp(self._pan_deg + pan_cmd * self._pan_rate * dt,
                                    self._pan_min, self._pan_max)
