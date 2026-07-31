@@ -298,6 +298,9 @@ def _launch_setup(context, *args, **kwargs):
             "pan_continuous": True,
             "arduino_port": "/dev/ttyUSB0",
             "arduino_baud": 115200,
+            # Camera is mounted upside-down — invert both servo axes so stick
+            # and D-pad directions still feel natural from the viewer's side.
+            "upside_down": True,
         }],
     )
 

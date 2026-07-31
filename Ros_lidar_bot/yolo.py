@@ -7,6 +7,8 @@ UNDERLYING SYSTEM & DATA FLOW
 This node handles open-vocabulary object detection using Ultralytics YOLO-World.
 - Subscribes to: camera frames via Picamera2 (RPi CSI camera, e.g. Camera Module 3)
   or OpenCV VideoCapture (USB webcam) -- see --backend.
+- If --flip is set (camera mounted upside-down), every captured frame is rotated
+  180° before any downstream use (dashboard preview + YOLO inference/bboxes).
 - Publishes to: /yolo (std_msgs/String carrying a JSON payload)
   Format of published string:
   {
@@ -222,6 +224,10 @@ class YoloWorldPublisher(Node):
             self.get_logger().warn("Failed to grab frame, retrying...")
             return
 
+        # Rotate 180° when the camera is mounted upside-down.
+        if self.args.flip in (True, "true", "1", "yes"):
+            frame = cv2.rotate(frame, cv2.ROTATE_180)
+
         model = self.model
         if model is None:
             # Still loading — keep the dashboard feed alive with a status overlay.
@@ -309,6 +315,10 @@ def parse_args():
     p.add_argument("--dash-fps", dest="dash_fps", type=float, default=5.0,
                     help="how many JPEG frames per second to push to the dashboard preview "
                          "(default 5 Hz, independent of --rate; lower = less CPU)")
+    p.add_argument("--flip", default="true",
+                    choices=["true", "false", "1", "0", "yes", "no"],
+                    help="rotate every frame 180° — 'true' when the camera is mounted "
+                         "upside-down (default: true)")
     # argparse will choke on ROS2's own --ros-args passthrough if used; strip those first.
     return p.parse_args(rclpy.utilities.remove_ros_args(sys.argv)[1:])
 

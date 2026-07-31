@@ -10,6 +10,8 @@ Controls (Xbox-style layout, xpad driver mapping):
   Left stick up/down    — forward / reverse at current linear speed
   Left stick left/right — turn left / right at current angular speed
   Right stick           — pan / tilt the camera head (→ /camera_cmd)
+  D-pad left / right    — snap camera pan to extreme left / right limit
+  D-pad up / down       — snap camera tilt to extreme up / down limit
   RT (right trigger)    — increase linear speed by lin_step per press
   LT (left trigger)     — decrease linear speed by lin_step per press
   RB (right bumper)     — increase angular speed by ang_step per press
@@ -33,7 +35,9 @@ Behaviour:
 
 Axis/button indices are parameters. Defaults match this robot's pad over
 BLUETOOTH (re-measured live on /joy, 2026-07-20):
-  axes:    0=LX  1=LY  2=RX  3=RY  4=LT  5=RT   (triggers rest +1, pressed -1)
+  axes:    0=LX  1=LY  2=RX  3=RY  4=LT  5=RT  6=DX  7=DY
+           (triggers rest +1, pressed -1;
+            D-pad: axis 6 left=+1/right=-1, axis 7 up=+1/down=-1)
   buttons: 6=LB  7=RB  13=L3  14=R3   (sparse Xbox-BT hid layout)
 NOTE: the same pad over a USB dongle (xpad) usually has LT on axis 2 and
 RT on axis 5 instead. If controls act wrong after changing transport,
@@ -94,6 +98,18 @@ class JoyTeleop(Node):
         self.declare_parameter('invert_cam_pan', False)
         self.declare_parameter('invert_cam_tilt', False)
 
+        # ── D-pad → camera snap-to-limit ────────────────────────────────────
+        # axis_dpad_h: left=+1.0, right=-1.0 (standard SDL BT mapping)
+        # axis_dpad_v: up=+1.0,   down=-1.0
+        # Pressing a D-pad cardinal snaps the camera to the corresponding
+        # mechanical extreme (pan_min/max or tilt_min/max as reported by
+        # camera_servo_node). The snap is encoded in /camera_cmd by setting
+        # linear.z=1.0 (flag), linear.x=pan_target, linear.y=tilt_target.
+        self.declare_parameter('axis_dpad_h', 6)     # BT: axis 6
+        self.declare_parameter('axis_dpad_v', 7)     # BT: axis 7
+        # Threshold above which the D-pad axis is considered pressed.
+        self.declare_parameter('dpad_threshold', 0.5)
+
         gp = lambda n: self.get_parameter(n).value
         self._ax_lin = gp('axis_linear')
         self._ax_ang = gp('axis_angular')
@@ -120,6 +136,17 @@ class JoyTeleop(Node):
         self._cam_tilt_sign = 1.0 if gp('invert_cam_tilt') else -1.0
         self._cam_pan = 0.0
         self._cam_tilt = 0.0
+
+        # D-pad snap state
+        self._ax_dpad_h = gp('axis_dpad_h')
+        self._ax_dpad_v = gp('axis_dpad_v')
+        self._dpad_threshold = gp('dpad_threshold')
+        # None = no snap pending; otherwise a (pan_frac, tilt_frac) tuple where
+        # each fraction is -1.0 (min), 0.0 (unchanged), or +1.0 (max).
+        self._cam_snap: tuple | None = None
+        # Edge-detect: track previous D-pad axis states.
+        self._dpad_h_prev = 0.0
+        self._dpad_v_prev = 0.0
 
         self._cmd_lin = 0.0
         self._cmd_ang = 0.0
@@ -219,6 +246,34 @@ class JoyTeleop(Node):
             tilt_in = 0.0
         self._cam_pan = pan_in * self._cam_pan_sign
         self._cam_tilt = tilt_in * self._cam_tilt_sign
+
+        # D-pad → snap camera to mechanical extremes (edge-triggered).
+        dpad_h = axis(self._ax_dpad_h)   # left=+1, right=-1
+        dpad_v = axis(self._ax_dpad_v)   # up=+1,   down=-1
+        thr = self._dpad_threshold
+
+        snap_pan  = 0.0   # 0 = no change, +1 = max, -1 = min
+        snap_tilt = 0.0
+
+        # Horizontal D-pad edge: left (+1) → pan to max_left (+pan_max),
+        #                        right (−1) → pan to max_right (pan_min).
+        if dpad_h > thr and not (self._dpad_h_prev > thr):
+            snap_pan = 1.0    # snap to pan maximum (leftward)
+        elif dpad_h < -thr and not (self._dpad_h_prev < -thr):
+            snap_pan = -1.0   # snap to pan minimum (rightward)
+
+        # Vertical D-pad edge: up (+1) → tilt to max_up (tilt_max),
+        #                      down (−1) → tilt to max_down (tilt_min).
+        if dpad_v > thr and not (self._dpad_v_prev > thr):
+            snap_tilt = 1.0   # snap to tilt maximum (upward)
+        elif dpad_v < -thr and not (self._dpad_v_prev < -thr):
+            snap_tilt = -1.0  # snap to tilt minimum (downward)
+
+        if snap_pan != 0.0 or snap_tilt != 0.0:
+            self._cam_snap = (snap_pan, snap_tilt)
+
+        self._dpad_h_prev = dpad_h
+        self._dpad_v_prev = dpad_v
 
     # ── Gamepad → dashboard actions ────────────────────────────────────────────
     # Fired through the dashboard HTTP API so tool management stays in one
@@ -331,9 +386,20 @@ class JoyTeleop(Node):
         # Camera pan/tilt rate — published every tick regardless of drive/yield
         # state (separate topic, never interferes with /cmd_vel). A centred
         # stick sends zero rate, so camera_servo_node holds its heading.
+        #
+        # D-pad snap takes priority: encode as linear.z=1.0 (flag), with
+        # linear.x/y carrying the target fraction (+1=max, -1=min, 0=no-change).
+        # camera_servo_node detects this flag and jumps directly to the limit.
         cam = Twist()
-        cam.angular.z = float(self._cam_pan)
-        cam.angular.y = float(self._cam_tilt)
+        snap = self._cam_snap
+        if snap is not None:
+            self._cam_snap = None          # consume the snap command
+            cam.linear.z = 1.0             # snap-mode flag
+            cam.linear.x = float(snap[0]) # pan  target fraction
+            cam.linear.y = float(snap[1]) # tilt target fraction
+        else:
+            cam.angular.z = float(self._cam_pan)
+            cam.angular.y = float(self._cam_tilt)
         self._cam_pub.publish(cam)
 
         moving = abs(self._cmd_lin) > 1e-6 or abs(self._cmd_ang) > 1e-6

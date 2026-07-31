@@ -36,6 +36,9 @@ def generate_launch_description():
             "--rate", LaunchConfiguration("rate"),
             "--model", LaunchConfiguration("model"),
             "--backend", LaunchConfiguration("backend"),
+            # Rotate the feed 180° when the camera is mounted upside-down.
+            # Override at launch time: flip:=false
+            "--flip", LaunchConfiguration("flip"),
         ],
     )
     semantic = Node(
@@ -67,6 +70,9 @@ def generate_launch_description():
         DeclareLaunchArgument("backend", default_value="auto",
                               description="capture backend: auto|picamera2|cv2 "
                                           "(RPi CSI cameras need picamera2)"),
+        DeclareLaunchArgument("flip", default_value="true",
+                              description="rotate camera feed 180° (true = camera mounted "
+                                          "upside-down, false = normal orientation)"),
         yolo,
         semantic,
         shutdown_on_yolo_exit,

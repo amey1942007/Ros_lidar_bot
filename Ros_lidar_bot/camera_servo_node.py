@@ -11,6 +11,14 @@ Drives a two-servo camera mount, controlled from the gamepad's RIGHT stick
                           `pan_continuous:=true` when pan_driver=="arduino".
   SG90    (head / TILT) — hobby PWM micro servo, positional, ~180°.
 
+Mount orientation
+  If the camera head is physically installed upside-down (rotated 180° around
+  the tilt axis), set `upside_down:=true`.  This automatically inverts both the
+  pan and tilt servo directions so that "right stick up" still tilts the camera
+  upward from the viewer's perspective, and D-pad left/right still snap to the
+  expected physical extremes.  Works independently of, and is XOR-combined with,
+  the per-axis `invert_pan` / `invert_tilt` parameters.
+
 The drive path is pluggable via the `pan_driver` parameter:
   "pwm" (default) — any standard hobby servo (OT5320M, MG996R, …) on a GPIO.
   "arduino"       — BOTH axes go to an Arduino Uno over UART; the Uno makes the
@@ -589,6 +597,16 @@ class CameraServo(Node):
         self._tilt_rate = float(d("tilt_max_rate_dps", 90.0).value)
         self._tilt_inv = bool(d("invert_tilt", False).value)
         tilt_pin = int(d("tilt_pwm_pin", 12).value)
+
+        # ── Upside-down mount correction ─────────────────────────────────────
+        # When the camera is installed upside-down (rotated 180°), both the pan
+        # and tilt physical axes are mirrored.  XOR the upside_down flag with
+        # the per-axis invert flags so all existing parameter overrides still
+        # work correctly after flipping the mount orientation.
+        upside_down = bool(d("upside_down", False).value)
+        if upside_down:
+            self._pan_inv  = not self._pan_inv
+            self._tilt_inv = not self._tilt_inv
         # SG90's usable range really is 1000-2000 us — see the pan note above.
         tilt_min_us = float(d("tilt_min_pulse_us", 1000.0).value)
         tilt_max_us = float(d("tilt_max_pulse_us", 2000.0).value)
@@ -682,6 +700,24 @@ class CameraServo(Node):
 
     def _cmd_cb(self, msg: Twist):
         with self._lock:
+            # D-pad snap mode: linear.z == 1.0 signals an absolute snap command.
+            # linear.x encodes the pan  target: +1.0 → pan_max, -1.0 → pan_min,
+            #                                    0.0 → no change (only tilt snap).
+            # linear.y encodes the tilt target: +1.0 → tilt_max, -1.0 → tilt_min,
+            #                                    0.0 → no change (only pan snap).
+            if msg.linear.z == 1.0:
+                if msg.linear.x > 0.5:
+                    self._pan_deg = self._pan_max
+                elif msg.linear.x < -0.5:
+                    self._pan_deg = self._pan_min
+                if msg.linear.y > 0.5:
+                    self._tilt_deg = self._tilt_max
+                elif msg.linear.y < -0.5:
+                    self._tilt_deg = self._tilt_min
+                # Zero out any rate command so the servo holds the new position.
+                self._pan_cmd = 0.0
+                self._tilt_cmd = 0.0
+                return
             self._pan_cmd = _clamp(msg.angular.z, -1.0, 1.0)
             self._tilt_cmd = _clamp(msg.angular.y, -1.0, 1.0)
 
