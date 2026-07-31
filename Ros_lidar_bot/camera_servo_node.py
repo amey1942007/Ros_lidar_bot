@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-camera_servo_node.py — Pan/tilt camera head driver.
+camera_servo_node.py — Pan/tilt camera head driver + proximity buzzer.
 
 Drives a two-servo camera mount, controlled from the gamepad's RIGHT stick
 (joy_teleop publishes normalised rates on /camera_cmd):
@@ -57,6 +57,18 @@ HARDWARE ASSUMPTIONS (override via parameters if your setup differs):
 Both hardware layers degrade gracefully: if the library or device is missing
 the node still runs, publishes joint states, and logs the reason once — so the
 rest of the robot is never blocked by a missing servo.
+
+PROXIMITY BUZZER (pin D9 on the Arduino Uno, shared USB0 link):
+  Subscribes to /scan (sensor_msgs/LaserScan) and watches the nearest valid
+  range reading.  When an obstacle is closer than `buzzer_warn_m` (default
+  0.45 m / 45 cm) the node sends  "B<duty>\n"  over the existing UART link.
+  <duty> is an integer 0-255 (mapped to Arduino analogWrite on D9):
+    • dist ≤ buzzer_near_m (0.30 m) → duty = 255  (full beep)
+    • buzzer_near_m < dist < buzzer_warn_m → duty fades linearly to 0
+    • dist ≥ buzzer_warn_m → duty = 0  (silent)
+  The "B" command MUST be added to camera_head.ino, e.g.:
+      else if (tag == 'B') { analogWrite(9, val); }
+  Set `buzzer_enabled:=false` to disable this feature entirely.
 """
 
 import math
@@ -67,7 +79,7 @@ import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import JointState, LaserScan
 
 # Feetech bus-servo SDK (SC-15 pan). Optional — see module docstring.
 try:
@@ -625,6 +637,36 @@ class CameraServo(Node):
         self._js_pub = self.create_publisher(JointState, self._js_topic, 10)
         self.create_timer(1.0 / self._rate_hz, self._tick)
 
+        # ── Proximity buzzer (D9 PWM on the Arduino Uno) ────────────────────
+        # Buzzer is only useful when the Arduino link is live (pan_driver ==
+        # "arduino") but we keep the subscriber running regardless — a future
+        # PWM-only setup might control the buzzer via a separate GPIO.
+        self._buzzer_enabled = bool(d("buzzer_enabled", True).value)
+        # Distance at or below which the buzzer is at full intensity (metres).
+        self._buzzer_near_m = float(d("buzzer_near_m", 0.30).value)
+        # Distance at or above which the buzzer is completely silent (metres).
+        self._buzzer_warn_m = float(d("buzzer_warn_m", 0.45).value)
+        # Scan topic (standard LaserScan from any LIDAR driver).
+        _scan_topic = str(d("scan_topic", "/scan").value)
+        # Keep track of the last duty sent so we avoid hammering the UART with
+        # identical bytes on every scan (most LIDAR drivers publish at 10–15 Hz).
+        self._buzzer_last_duty = -1
+        # _arduino_link is set only when pan_driver == "arduino".
+        # For other drivers we still subscribe but the send() path is a no-op.
+        self._arduino_link: _ArduinoLink | None = None
+        if pan_driver == "arduino":
+            # The link object was captured inside _pan/_tilt.  Re-expose it so
+            # the LiDAR callback can reach it without going through the servo.
+            self._arduino_link = link   # 'link' is still in scope here
+        if self._buzzer_enabled:
+            self.create_subscription(
+                LaserScan, _scan_topic, self._lidar_cb, 10)
+            self.get_logger().info(
+                f"Proximity buzzer ENABLED (D9): near={self._buzzer_near_m*100:.0f} cm, "
+                f"warn={self._buzzer_warn_m*100:.0f} cm, scan on '{_scan_topic}'.")
+        else:
+            self.get_logger().info("Proximity buzzer DISABLED (buzzer_enabled:=false).")
+
         # Drive servos to their start pose immediately (pan: send "stop" — a
         # continuous-rotation axis has no pose to go to).
         if self._pan_continuous:
@@ -642,6 +684,61 @@ class CameraServo(Node):
         with self._lock:
             self._pan_cmd = _clamp(msg.angular.z, -1.0, 1.0)
             self._tilt_cmd = _clamp(msg.angular.y, -1.0, 1.0)
+
+    # ── Proximity buzzer ────────────────────────────────────────────────────
+    def _lidar_cb(self, msg: LaserScan):
+        """Compute nearest valid range and drive the buzzer on Arduino pin D9.
+
+        Duty-cycle mapping (duty is an integer 0-255 for analogWrite):
+          dist ≤ near_m   → 255  (full beep)
+          near_m < dist < warn_m → linear fade from 255 → 0
+          dist ≥ warn_m   → 0   (silent)
+
+        Sends  "B<duty>\n"  over the Arduino UART.  The sketch must handle it:
+            else if (tag == 'B') { analogWrite(9, val); }
+        """
+        if not self._buzzer_enabled:
+            return
+
+        # Filter out NaN / Inf / out-of-range values reported by the driver.
+        valid = [
+            r for r in msg.ranges
+            if msg.range_min <= r <= msg.range_max
+        ]
+        if not valid:
+            # No valid readings (e.g. highly reflective surface or sensor
+            # dropout) — leave the buzzer in its previous state.
+            return
+
+        min_dist = min(valid)   # metres
+
+        near = self._buzzer_near_m
+        warn = self._buzzer_warn_m
+
+        if min_dist <= near:
+            duty = 255
+        elif min_dist >= warn:
+            duty = 0
+        else:
+            # Linear interpolation: full at near_m, zero at warn_m.
+            frac = (min_dist - near) / (warn - near)   # 0.0 … 1.0
+            duty = int(round(255 * (1.0 - frac)))
+
+        # Avoid flooding the UART with identical commands.
+        if duty == self._buzzer_last_duty:
+            return
+        self._buzzer_last_duty = duty
+
+        cmd = f"B{duty}\n"
+        if self._arduino_link is not None:
+            self._arduino_link.send(cmd)
+        else:
+            # No Arduino link open (pwm / bus driver) — log once so the
+            # operator knows they need to wire up buzzer control separately.
+            self.get_logger().warn(
+                "Proximity buzzer: Arduino link not available "
+                "(pan_driver != 'arduino'). Cannot drive D9 buzzer.",
+                throttle_duration_sec=30.0)
 
     def _tick(self):
         now = time.monotonic()
@@ -676,6 +773,13 @@ class CameraServo(Node):
         self._js_pub.publish(js)
 
     def close(self):
+        # Silence the buzzer before we close the serial port.
+        if self._buzzer_enabled and self._arduino_link is not None:
+            try:
+                self._arduino_link.send("B0\n")
+                time.sleep(0.05)    # let the byte flush before port closes
+            except Exception:
+                pass
         self._pan.close()
         self._tilt.close()
 
