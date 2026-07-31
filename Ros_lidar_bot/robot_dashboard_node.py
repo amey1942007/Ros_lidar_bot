@@ -183,12 +183,13 @@ class Dashboard(Node):
         self._lock = threading.Lock()
         self._state = {
             "pose": [0.0, 0.0, 0.0], "vel": [0.0, 0.0],
-            "imu": {"gz": 0.0, "ax": 0.0, "ay": 0.0}, "scan": [],
+            "imu": {"gz": 0.0, "ax": 0.0, "ay": 0.0},
             "rates": {}, "nodes": {}, "tf": {}, "tool": None,
             "cmd": [0.0, 0.0], "map_pose": None, "nav": None,
             "yolo_det": [], "sem": [],
-            "frontier": {"zones": [], "queue": []},
             "path": [], "goal": None, "sys": {},
+            "seq": {"goals": [], "idx": -1},
+            "scan": [], "frontier": {"zones": [], "queue": []},
         }
         self._last_msg_time = {}
         self._msg_counts = {}
@@ -209,6 +210,10 @@ class Dashboard(Node):
         # Bumped on every new goal / cancel so stale accept/result callbacks
         # cannot revive a superseded or cancelled NavigateToPose goal.
         self._nav_gen = 0
+
+        # Waypoint sequence state
+        self._seq_goals: list = []   # [(x_odom, y_odom), …] in odom frame
+        self._seq_idx:   int  = -1   # currently-running goal index; -1 = idle
 
         # Camera preview: yolo.py (when vision is running) POSTs JPEG frames
         # to /api/camera_frame over loopback -- never a ROS topic/publisher,
@@ -938,20 +943,33 @@ class Dashboard(Node):
             self.log(f"nav goal error: {exc}", "error")
             self._nav_goal_handle = None
             self._clear_nav_viz()
+            self._seq_stop_internal()   # abort sequence on error
             return
         names = {4: "SUCCEEDED", 5: "CANCELED", 6: "ABORTED"}
         lvl = "info" if status in (4, 5) else "error"
         self.log(f"nav goal finished: {names.get(status, status)}", lvl)
         self._nav_goal_handle = None
         self._clear_nav_viz()
+        # Sequence auto-advance: SUCCEEDED → send next goal; otherwise stop.
+        if status == 4 and self._seq_idx >= 0:
+            self._seq_next()
+        elif self._seq_idx >= 0:
+            self._seq_stop_internal()
 
     def cancel_nav(self):
-        """Cancel immediately — UI clears now; Nav2 cancel is async."""
+        """Cancel immediately — UI clears now; Nav2 cancel is async.
+
+        Also stops any active waypoint sequence so a manual cancel or
+        E-stop always leaves the system fully idle.
+        """
         with self._nav_lock:
             self._nav_gen += 1
             gh = self._nav_goal_handle
             self._nav_goal_handle = None
         self._clear_nav_viz()
+        # Abort any running sequence before cancelling the goal so the
+        # sequence does not try to advance after the cancel completes.
+        self._seq_stop_internal()
         if gh is not None:
             try:
                 gh.cancel_goal_async()
@@ -959,6 +977,110 @@ class Dashboard(Node):
                 pass
         self.log("✕ nav goal cancelled", "info")
         return {"ok": True}
+
+    # ── Waypoint sequence ─────────────────────────────────────────────────────
+
+    def _update_seq_state(self):
+        """Push current sequence state into the SSE broadcast dict."""
+        with self._lock:
+            self._state["seq"] = {
+                "goals": [[round(x, 2), round(y, 2)] for x, y in self._seq_goals],
+                "idx": self._seq_idx,
+            }
+
+    def _seq_stop_internal(self):
+        """Reset sequence index without cancelling the nav goal.
+
+        Called from _nav_done (callback context) or cancel_nav, where
+        the nav goal is already being handled separately.
+        """
+        if self._seq_idx >= 0:
+            self._seq_idx = -1
+            self._update_seq_state()
+
+    def seq_add(self, x_odom, y_odom):
+        """Append a waypoint to the sequence queue."""
+        if self._seq_idx >= 0:
+            return {"ok": False, "error": "stop the sequence before editing goals"}
+        self._seq_goals.append((float(x_odom), float(y_odom)))
+        self._update_seq_state()
+        return {"ok": True, "count": len(self._seq_goals)}
+
+    def seq_remove(self, idx):
+        """Remove the waypoint at position idx."""
+        if self._seq_idx >= 0:
+            return {"ok": False, "error": "stop the sequence before editing goals"}
+        if idx < 0 or idx >= len(self._seq_goals):
+            return {"ok": False, "error": "index out of range"}
+        self._seq_goals.pop(idx)
+        self._update_seq_state()
+        return {"ok": True}
+
+    def seq_clear(self):
+        """Remove all waypoints."""
+        if self._seq_idx >= 0:
+            return {"ok": False, "error": "stop the sequence before clearing goals"}
+        self._seq_goals = []
+        self._update_seq_state()
+        return {"ok": True}
+
+    def seq_start(self):
+        """Begin executing the waypoint sequence from goal 0."""
+        if not self._seq_goals:
+            return {"ok": False, "error": "no waypoints — add some first"}
+        if self._seq_idx >= 0:
+            return {"ok": True, "note": "sequence already running"}
+        self._seq_idx = 0
+        self._update_seq_state()
+        x, y = self._seq_goals[0]
+        self.log(f"📍 Waypoint sequence started — {len(self._seq_goals)} goal(s)", "run")
+        self.log(f"📍 Goal 1 / {len(self._seq_goals)}: ({x:.2f}, {y:.2f})", "run")
+        result = self.nav_goal(x, y)
+        if result and not result.get("ok", True):
+            self.log(f"📍 Sequence: failed to send goal 1 — {result.get('error', '?')}", "error")
+            self._seq_stop_internal()
+        return result or {"ok": True}
+
+    def _seq_next(self):
+        """Advance to the next waypoint after the current one succeeded.
+
+        Called from _nav_done in the action-callback context.
+        """
+        next_idx = self._seq_idx + 1
+        if next_idx >= len(self._seq_goals):
+            self.log(
+                f"✅ Waypoint sequence complete — {len(self._seq_goals)} goal(s) reached",
+                "info")
+            self._seq_stop_internal()
+            return
+        self._seq_idx = next_idx
+        self._update_seq_state()
+        x, y = self._seq_goals[next_idx]
+        self.log(f"📍 Goal {next_idx + 1} / {len(self._seq_goals)}: ({x:.2f}, {y:.2f})", "run")
+        result = self.nav_goal(x, y)
+        if result and not result.get("ok", True):
+            self.log(
+                f"📍 Sequence: failed to send goal {next_idx + 1} — "
+                f"{result.get('error', '?')}", "error")
+            self._seq_stop_internal()
+
+    def seq_stop(self):
+        """Cancel the active sequence and the in-flight nav goal."""
+        if self._seq_idx < 0:
+            return {"ok": True, "note": "sequence not running"}
+        # cancel_nav resets _seq_idx via _seq_stop_internal, so set it to -1
+        # first to suppress the cancel_nav log about the sequence.
+        self._seq_idx = -1
+        self._update_seq_state()
+        self.cancel_nav()
+        self.log("■ Waypoint sequence stopped", "info")
+        return {"ok": True}
+
+    def seq_toggle(self):
+        """Toggle sequence start/stop — wired to gamepad button A."""
+        if self._seq_idx >= 0:
+            return self.seq_stop()
+        return self.seq_start()
 
 
 # ── HTTP layer ────────────────────────────────────────────────────────────────
@@ -1063,6 +1185,19 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/nav_cancel":
             self.dash.cancel_nav()
             out = {"ok": True}
+        elif self.path == "/api/seq_add":
+            out = self.dash.seq_add(float(payload.get("x", 0.0)),
+                                    float(payload.get("y", 0.0)))
+        elif self.path == "/api/seq_remove":
+            out = self.dash.seq_remove(int(payload.get("idx", -1)))
+        elif self.path == "/api/seq_clear":
+            out = self.dash.seq_clear()
+        elif self.path == "/api/seq_start":
+            out = self.dash.seq_start()
+        elif self.path == "/api/seq_stop":
+            out = self.dash.seq_stop()
+        elif self.path == "/api/seq_toggle":
+            out = self.dash.seq_toggle()
         elif self.path == "/api/vision":
             if payload.get("toggle"):
                 proc = self.dash._vision_proc
@@ -1176,6 +1311,16 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
 #camcard{flex-shrink:0}
 #camfeed{width:100%;border-radius:8px;background:#0a0f14;display:block;max-height:220px;object-fit:contain}
 #campause{color:var(--dim);font-size:12px;padding:10px 0;text-align:center}
+.sq-in{width:62px;background:#0a0f14;color:var(--acc);border:1px solid var(--edge);border-radius:6px;padding:5px 7px;font-family:ui-monospace,monospace}
+#seqlist{display:flex;flex-direction:column;gap:4px;max-height:200px;overflow-y:auto;margin-bottom:2px}
+.sq-item{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:6px;background:#0a0f14;border:1px solid var(--edge);font-size:12px;font-family:ui-monospace,monospace}
+.sq-item.sq-active{border-color:var(--ok);background:#0d2216}
+.sq-item.sq-done{opacity:.4}
+.sq-num{min-width:22px;font-weight:700;color:var(--acc)}
+.sq-active .sq-num{color:var(--ok)}
+.sq-rm{background:none;border:none;color:var(--dim);cursor:pointer;padding:0 4px;font-size:14px;margin-left:auto;line-height:1}
+.sq-rm:hover{color:var(--err)}
+#sq_status{font-size:12px;min-height:18px;margin-top:6px}
 </style></head><body>
 
 <header>
@@ -1205,6 +1350,7 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
     <div id="navmode">
       <label><input type="checkbox" id="navarm"> Nav-goal mode (click canvas to send goal)</label>
       <button class="btn stop" id="navcancel" style="padding:4px 12px">cancel goal</button>
+      <label style="margin-left:8px"><input type="checkbox" id="seqarm"> 📍 Seq-add mode (click = add waypoint)</label>
       <label style="margin-left:8px"><input type="checkbox" id="blarm"> 🚫 No-go mode (drag a circle)</label>
       <select id="bldur">
         <option value="60">1 min</option><option value="300" selected>5 min</option>
@@ -1275,7 +1421,23 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
 
       <div style="color:var(--dim);font-size:12px;margin-top:10px">
         🎮 Gamepad: <b>B</b> save map · <b>X</b> vision on/off ·
-        <b>LT+RT+LB+RB</b> IMU calibration</div>
+        <b>A</b> waypoint seq start/stop · <b>LT+RT+LB+RB</b> IMU calibration</div>
+    </section>
+
+    <section class="card">
+      <h2>📍 Waypoint Sequence</h2>
+      <div id="seqlist"></div>
+      <div style="display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap">
+        <label style="font-size:12px;color:var(--dim)">x <input id="sq_x" class="sq-in" value="0.00"></label>
+        <label style="font-size:12px;color:var(--dim)">y <input id="sq_y" class="sq-in" value="0.00"></label>
+        <button class="btn" id="sq_add" style="padding:5px 12px">✚ Add</button>
+        <button class="btn stop" id="sq_clear" style="padding:5px 10px">Clear all</button>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn" id="sq_start">▶ Start sequence</button>
+        <button class="btn stop" id="sq_stop">■ Stop</button>
+      </div>
+      <div id="sq_status"></div>
     </section>
 
     <section class="card" id="camcard">
@@ -1374,6 +1536,28 @@ function updatePanels(m){
     pill.style.display="";pill.textContent="⏳ "+m.tool;}
   else{run.style.display="none";pill.style.display="none";}
   document.querySelectorAll("[data-tool]").forEach(b=>b.disabled=!!m.tool);
+
+  // Waypoint sequence UI
+  if(m.seq){
+    const goals=m.seq.goals||[], idx=m.seq.idx;
+    const isRun=idx>=0;
+    const list=$("seqlist");
+    list.innerHTML=goals.map((g,i)=>{
+      const cls=i===idx?"sq-item sq-active":(i<idx?"sq-item sq-done":"sq-item");
+      const num=i+1;
+      return `<div class="${cls}">
+        <span class="sq-num">#${num}</span>
+        <span>(${g[0].toFixed(2)}, ${g[1].toFixed(2)})</span>
+        ${isRun?"":`<button class="sq-rm" onclick="seqRemove(${i})">✕</button>`}
+      </div>`;
+    }).join("");
+    $("sq_status").textContent=isRun?`▶ Running goal ${idx+1} / ${goals.length}`:(goals.length?`Idle · ${goals.length} waypoint(s)`:"No waypoints");
+    $("sq_status").style.color=isRun?"var(--ok)":"var(--dim)";
+    $("sq_start").disabled=isRun||!goals.length;
+    $("sq_stop").disabled=!isRun;
+    $("sq_add").disabled=isRun;
+    $("sq_clear").disabled=isRun||!goals.length;
+  }
 }
 
 // ── Console ──────────────────────────────────────────────────────────────────
@@ -1422,12 +1606,20 @@ function canvasToWorld(e){
   const px=(e.clientX-r.left)*(cv.width/r.width), py=(e.clientY-r.top)*(cv.height/r.height);
   return [S.pose[0]+(px-cv.width/2)/scale, S.pose[1]-(py-cv.height/2)/scale];
 }
+// Mutually exclusive arm modes
+$("navarm").onchange=()=>{if($("navarm").checked){$("seqarm").checked=false;$("blarm").checked=false;}};
+$("seqarm").onchange=()=>{if($("seqarm").checked){$("navarm").checked=false;$("blarm").checked=false;}};
+$("blarm").onchange=()=>{if($("blarm").checked){$("navarm").checked=false;$("seqarm").checked=false;}};
+
 cv.addEventListener("click",e=>{
-  if(!$("navarm").checked||$("blarm").checked||!S)return;
+  if(!S)return;
   const[wx,wy]=canvasToWorld(e);
-  // Optimistic flag so the marker appears on the first click, every time.
-  S.goal=[+wx.toFixed(2),+wy.toFixed(2)]; S.path=[];
-  post("/api/nav_goal",{x:wx,y:wy});
+  if($("navarm").checked&&!$("blarm").checked){
+    S.goal=[+wx.toFixed(2),+wy.toFixed(2)]; S.path=[];
+    post("/api/nav_goal",{x:wx,y:wy});
+  }else if($("seqarm").checked&&!$("blarm").checked){
+    post("/api/seq_add",{x:wx,y:wy});
+  }
 });
 // no-go zones: press = centre, drag = radius, release = send
 let blDrag=null;   // [cx, cy, r] in odom-frame metres
@@ -1504,6 +1696,22 @@ function draw(){
     ctx.beginPath();ctx.moveTo(gx,gy);ctx.lineTo(gx,gy-28);ctx.stroke();
     ctx.beginPath();ctx.moveTo(gx,gy-28);ctx.lineTo(gx+16,gy-22);ctx.lineTo(gx,gy-16);ctx.closePath();ctx.fill();
     ctx.beginPath();ctx.arc(gx,gy,4,0,Math.PI*2);ctx.fill();
+  }
+
+  // Waypoint sequence markers (numbered)
+  if(S.seq&&S.seq.goals&&S.seq.goals.length){
+    const sGoals=S.seq.goals, sIdx=S.seq.idx;
+    ctx.font="bold 12px system-ui";ctx.textAlign="center";
+    sGoals.forEach(([gx,gy],i)=>{
+      const[px,py]=W(gx,gy);
+      const isActive=i===sIdx;
+      const isDone=i<sIdx;
+      ctx.fillStyle=isActive?"#3ddc84":(isDone?"rgba(125,143,161,.5)":"#4fc3f7");
+      ctx.beginPath();ctx.arc(px,py,10,0,6.2832);ctx.fill();
+      ctx.strokeStyle=isActive?"#000":"#0e141b";ctx.lineWidth=2;ctx.stroke();
+      ctx.fillStyle=isActive?"#000":"#0e141b";
+      ctx.fillText(String(i+1),px,py+4);
+    });
   }
 
   // lidar
@@ -1584,6 +1792,16 @@ document.querySelectorAll("[data-tool]").forEach(b=>{
     post("/api/run",{tool:t,params});
   };
 });
+
+// Waypoint sequence controls
+function seqRemove(idx){post("/api/seq_remove",{idx});}
+$("sq_add").onclick=()=>{
+  const x=parseFloat($("sq_x").value), y=parseFloat($("sq_y").value);
+  if(!isNaN(x)&&!isNaN(y))post("/api/seq_add",{x,y});
+};
+$("sq_clear").onclick=()=>post("/api/seq_clear");
+$("sq_start").onclick=()=>post("/api/seq_start");
+$("sq_stop").onclick=()=>post("/api/seq_stop");
 </script>
 </body></html>
 """
