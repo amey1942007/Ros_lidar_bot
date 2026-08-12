@@ -17,12 +17,12 @@
        ======================================================================= -->
 
   <!-- LiDAR position relative to base_link  (FILL IN) -->
-  <xacro:property name="laser_x"      value="TODO_FILL"/>   <!-- e.g.  0.0   -->
-  <xacro:property name="laser_y"      value="TODO_FILL"/>   <!-- e.g.  0.0   -->
-  <xacro:property name="laser_z"      value="TODO_FILL"/>   <!-- e.g.  0.18  (height of LiDAR above chassis bottom) -->
+  <xacro:property name="laser_x"      value="0.0"/>          <!-- chassis centre — adjust to physical mount X -->
+  <xacro:property name="laser_y"      value="0.0"/>          <!-- chassis centre — adjust to physical mount Y -->
+  <xacro:property name="laser_z"      value="0.10"/>         <!-- = chassis_height: LiDAR sits on top of the chassis box -->
 
   <!-- LiDAR yaw rotation  (FILL IN — see note above) -->
-  <xacro:property name="laser_yaw"    value="TODO_FILL"/>   <!-- 0.0 or ${pi} -->
+  <xacro:property name="laser_yaw"    value="0.0"/>          <!-- 0.0 = LiDAR 0° mark faces robot front (most common) -->
 
   <!-- LiDAR cylinder visual dimensions  (FILL IN or leave defaults) -->
   <xacro:property name="laser_radius" value="0.035"/>   <!-- 70 mm diameter -->

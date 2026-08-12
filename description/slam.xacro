@@ -23,9 +23,9 @@
          chassis_width  : left-to-right  (Y axis)
          chassis_height : bottom-to-top  (Z axis)
        ──────────────────────────────────────────────────────────── -->
-  <xacro:property name="chassis_length"  value="TODO_FILL"/>   <!-- e.g. 0.55  m -->
-  <xacro:property name="chassis_width"   value="TODO_FILL"/>   <!-- e.g. 0.65  m -->
-  <xacro:property name="chassis_height"  value="TODO_FILL"/>   <!-- e.g. 0.15  m -->
+  <xacro:property name="chassis_length"  value="0.85"/>   <!-- e.g. 0.55  m -->
+  <xacro:property name="chassis_width"   value="0.75"/>   <!-- e.g. 0.65  m -->
+  <xacro:property name="chassis_height"  value="0.10"/>   <!-- e.g. 0.15  m -->
 
   <!-- ── MECANUM WHEEL DIMENSIONS ────────────────────────────────
        Sourced from Config.h  (DriveMaster.ino):
