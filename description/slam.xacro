@@ -1,38 +1,72 @@
 <?xml version="1.0" ?>
-<robot name="slam" xmlns:xacro="http://www.ros.org/wiki/xacro">
+<robot name="amr4" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
   <!-- ============================================================
-       CHASSIS & WHEEL DIMENSIONS — FILL IN YOUR VALUES (metres)
+       AMR4 — 4-WHEEL MECANUM DRIVE  (no caster wheels)
+       Jetson Orin Nano · Ubuntu 22.04 · ROS 2 Humble
+
+       Coordinate convention  (REP-103 / ROS standard):
+         X = forward,  Y = left,  Z = up
+         base_link = centre of the BOTTOM FACE of the chassis box
+
+       Frame geometry:
+         ground (z=0)
+             │  ← wheel_radius = 0.05 m
+         base_link  (chassis bottom centre)
+             │  ← chassis_height (upward)
+         chassis top
        ============================================================ -->
 
-  <!-- Chassis box size -->
-  <xacro:property name="chassis_length"  value="0.45"/>   <!-- front-to-back   -->
-  <xacro:property name="chassis_width"   value="0.25"/>   <!-- left-to-right   -->
-  <xacro:property name="chassis_height"  value="0.20"/>   <!-- bottom-to-top   -->
+  <!-- ── CHASSIS SIZE (FILL IN YOUR MEASURED VALUES) ─────────────
+       Measure the outer body of the bot in metres.
+         chassis_length : front-to-back  (X axis)
+         chassis_width  : left-to-right  (Y axis)
+         chassis_height : bottom-to-top  (Z axis)
+       ──────────────────────────────────────────────────────────── -->
+  <xacro:property name="chassis_length"  value="TODO_FILL"/>   <!-- e.g. 0.55  m -->
+  <xacro:property name="chassis_width"   value="TODO_FILL"/>   <!-- e.g. 0.65  m -->
+  <xacro:property name="chassis_height"  value="TODO_FILL"/>   <!-- e.g. 0.15  m -->
 
-  <!-- Drive wheel -->
-  <xacro:property name="wheel_radius"    value="0.05035"/>   <!-- RADIUS = 50.35 mm (from sketch) -->
-  <xacro:property name="wheel_width"     value="0.04"/>       <!-- axial thickness -->
-  <!-- X position of wheel axle from robot centre (0 = at centre) -->
-  <xacro:property name="wheel_x"         value="0.0"/>
-  <!-- Half-separation: each wheel is this far from the centre in Y
-       Text said 33cm → 0.165; sketch front-face shows ~35cm → 0.175
-       CONFIRM and update this value! -->
-  <xacro:property name="wheel_half_sep"  value="0.165"/>
-  <!-- Wheel centre height above chassis bottom (base_link) = 11 mm -->
-  <xacro:property name="wheel_z"         value="0.011"/>
+  <!-- ── MECANUM WHEEL DIMENSIONS ────────────────────────────────
+       Sourced from Config.h  (DriveMaster.ino):
+         WHEEL_RADIUS = 0.05 m
+       wheel_width (axial thickness) is not in Config.h — adjust
+       to match your physical wheel (measure the tread width).
+       ──────────────────────────────────────────────────────────── -->
+  <xacro:property name="wheel_radius"    value="0.05"/>         <!-- from Config.h WHEEL_RADIUS -->
+  <xacro:property name="wheel_width"     value="0.05"/>         <!-- axial thickness — adjust to fit -->
 
-  <!-- Caster wheels -->
-  <xacro:property name="caster_radius"    value="0.019675"/>  <!-- ball caster radius (diameter = 39.35 mm = 50.35 - 11) -->
-  <xacro:property name="caster_front_x"  value="0.12"/>   <!-- front caster X     -->
-  <xacro:property name="caster_rear_x"   value="-0.12"/>   <!-- rear  caster X     -->
+  <!-- ── WHEEL AXLE POSITIONS ─────────────────────────────────────
+       Wheel centre coordinates relative to base_link (metres):
+         X : ±wheel_half_x  (front positive, rear negative)
+         Y : ±wheel_half_y  (left positive, right negative)
+         Z : 0.0  (wheel axle sits at the same height as base_link
+                   because base_link is already wheel_radius above ground)
 
-  <!-- ============================================================
-       DERIVED VALUE
-       base_link sits (wheel_radius - wheel_z) above the ground
-       so base_footprint → base_link offset = wheel_radius - wheel_z
-       ============================================================ -->
-  <xacro:property name="ground_to_base"  value="${wheel_radius - wheel_z}"/>
+       Given by user / confirmed with Config.h CHASSIS_L = 0.52 m:
+         Front-Left  (FL): ( 0.26,  0.32)
+         Front-Right (FR): ( 0.26, -0.32)
+         Rear-Left   (RL): (-0.26,  0.32)
+         Rear-Right  (RR): (-0.26, -0.32)
+       ──────────────────────────────────────────────────────────── -->
+  <xacro:property name="wheel_half_x"   value="0.26"/>          <!-- half wheelbase (front/rear) -->
+  <xacro:property name="wheel_half_y"   value="0.32"/>          <!-- half track width (left/right) -->
+
+  <!-- Wheel axle Z above base_link.
+       base_link is wheel_radius above ground, so the axle is flush
+       with the chassis bottom face → z = 0. -->
+  <xacro:property name="wheel_z"        value="0.0"/>
+
+  <!-- ── DERIVED: how high base_link is above ground ─────────────
+       base_footprint → base_link joint rises by wheel_radius so all
+       4 wheels touch the ground plane (z = 0).
+       ──────────────────────────────────────────────────────────── -->
+  <xacro:property name="ground_to_base" value="${wheel_radius}"/>
+
+  <!-- Mass values — set to 1.0 (dummy); no collision simulation.
+       Update if you ever need realistic dynamics. -->
+  <xacro:property name="chassis_mass"   value="1.0"/>
+  <xacro:property name="wheel_mass"     value="1.0"/>
 
   <!-- ============================================================
        MATERIALS
@@ -47,8 +81,7 @@
   <link name="base_footprint"/>
 
   <!-- base_footprint → base_link
-       base_link is at the centre of the BOTTOM FACE of the chassis box.
-       It sits (wheel_radius - wheel_z) above ground so wheels touch ground. -->
+       Rises by wheel_radius so the 4 wheels sit on the ground. -->
   <joint name="base_footprint_joint" type="fixed">
     <parent link="base_footprint"/>
     <child  link="base_link"/>
@@ -56,9 +89,9 @@
   </joint>
 
   <!-- ============================================================
-       base_link / CHASSIS
-       Visual box offset by chassis_height/2 upward so the box
-       sits entirely above base_link (= chassis bottom face centre).
+       base_link / CHASSIS  (cuboid)
+       The visual box is offset +chassis_height/2 in Z so it sits
+       ABOVE base_link (= chassis bottom centre).
        ============================================================ -->
   <link name="base_link">
     <visual>
@@ -75,158 +108,76 @@
       </geometry>
     </collision>
     <inertial>
-      <!-- Centre of mass at geometric centre of box -->
       <origin xyz="0 0 ${chassis_height/2}" rpy="0 0 0"/>
-      <mass value="2.0"/>
+      <mass value="${chassis_mass}"/>
       <inertia
-        ixx="${(1.0/12.0)*2.0*(chassis_width*chassis_width + chassis_height*chassis_height)}"
-        iyy="${(1.0/12.0)*2.0*(chassis_length*chassis_length + chassis_height*chassis_height)}"
-        izz="${(1.0/12.0)*2.0*(chassis_length*chassis_length + chassis_width*chassis_width)}"
+        ixx="${(1.0/12.0)*chassis_mass*(chassis_width*chassis_width   + chassis_height*chassis_height)}"
+        iyy="${(1.0/12.0)*chassis_mass*(chassis_length*chassis_length + chassis_height*chassis_height)}"
+        izz="${(1.0/12.0)*chassis_mass*(chassis_length*chassis_length + chassis_width*chassis_width)}"
         ixy="0" iyz="0" ixz="0"/>
     </inertial>
   </link>
 
   <!-- ============================================================
-       LEFT WHEEL  (positive Y side)
-       Joint origin = physical centre of wheel relative to base_link.
-       Link visual/collision has ZERO local offset → correct TF.
-       Cylinder lies along Z by default; rotate pi/2 about X to align
-       rotation axis with Y-axis.
+       WHEEL MACRO  (cylinder, continuous joint)
+       Cylinder default axis is Z; rotate π/2 about X so the spin
+       axis aligns with Y (the axle / lateral direction).
+
+       Args:
+         prefix  : fl | fr | rl | rr
+         x_sign  : +1 (front) | -1 (rear)
+         y_sign  : +1 (left)  | -1 (right)
        ============================================================ -->
-  <joint name="left_wheel_joint" type="continuous">
-    <parent link="base_link"/>
-    <child  link="left_wheel"/>
-    <origin xyz="${wheel_x} ${wheel_half_sep} ${wheel_z}" rpy="0 0 0"/>
-    <axis xyz="0 1 0"/>
-  </joint>
+  <xacro:macro name="mecanum_wheel" params="prefix x_sign y_sign">
 
-  <link name="left_wheel">
-    <visual>
-      <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
-      <geometry>
-        <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
-      </geometry>
-      <material name="black"/>
-    </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
-      <geometry>
-        <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
-      </geometry>
-    </collision>
-    <inertial>
-      <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
-      <mass value="0.5"/>
-      <inertia
-        ixx="${(1.0/12.0)*0.5*(3*wheel_radius*wheel_radius + wheel_width*wheel_width)}"
-        iyy="${(1.0/2.0)*0.5*wheel_radius*wheel_radius}"
-        izz="${(1.0/12.0)*0.5*(3*wheel_radius*wheel_radius + wheel_width*wheel_width)}"
-        ixy="0" iyz="0" ixz="0"/>
-    </inertial>
-  </link>
+    <joint name="${prefix}_wheel_joint" type="continuous">
+      <parent link="base_link"/>
+      <child  link="${prefix}_wheel_link"/>
+      <!-- Wheel centre sits at ±wheel_half_x, ±wheel_half_y, wheel_z (=0)
+           relative to base_link. -->
+      <origin xyz="${x_sign * wheel_half_x} ${y_sign * wheel_half_y} ${wheel_z}"
+              rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <dynamics damping="0.01" friction="0.1"/>
+    </joint>
 
-  <!-- ============================================================
-       RIGHT WHEEL  (negative Y side)
-       ============================================================ -->
-  <joint name="right_wheel_joint" type="continuous">
-    <parent link="base_link"/>
-    <child  link="right_wheel"/>
-    <origin xyz="${wheel_x} ${-wheel_half_sep} ${wheel_z}" rpy="0 0 0"/>
-    <axis xyz="0 1 0"/>
-  </joint>
+    <link name="${prefix}_wheel_link">
+      <visual>
+        <!-- Rotate the cylinder so its axis aligns with Y (the roll axis) -->
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+        <material name="black"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <mass value="${wheel_mass}"/>
+        <!-- Solid cylinder (dummy mass = 1.0, not used for collision) -->
+        <inertia
+          ixx="${(1.0/12.0)*wheel_mass*(3*wheel_radius*wheel_radius + wheel_width*wheel_width)}"
+          iyy="${(1.0/2.0 )*wheel_mass*wheel_radius*wheel_radius}"
+          izz="${(1.0/12.0)*wheel_mass*(3*wheel_radius*wheel_width  + wheel_width*wheel_width)}"
+          ixy="0" iyz="0" ixz="0"/>
+      </inertial>
+    </link>
 
-  <link name="right_wheel">
-    <visual>
-      <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
-      <geometry>
-        <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
-      </geometry>
-      <material name="black"/>
-    </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
-      <geometry>
-        <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
-      </geometry>
-    </collision>
-    <inertial>
-      <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
-      <mass value="0.5"/>
-      <inertia
-        ixx="${(1.0/12.0)*0.5*(3*wheel_radius*wheel_radius + wheel_width*wheel_width)}"
-        iyy="${(1.0/2.0)*0.5*wheel_radius*wheel_radius}"
-        izz="${(1.0/12.0)*0.5*(3*wheel_radius*wheel_radius + wheel_width*wheel_width)}"
-        ixy="0" iyz="0" ixz="0"/>
-    </inertial>
-  </link>
+  </xacro:macro>
 
-  <!-- ============================================================
-       FRONT CASTER  (passive ball caster — fixed joint)
-       ============================================================ -->
-  <joint name="caster_front_joint" type="fixed">
-    <parent link="base_link"/>
-    <child  link="caster_front_link"/>
-    <!-- caster centre sits at wheel ground level; same Z as drive wheel bottom -->
-    <origin xyz="${caster_front_x} 0 ${-caster_radius}" rpy="0 0 0"/>
-  </joint>
-
-  <link name="caster_front_link">
-    <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <sphere radius="${caster_radius}"/>
-      </geometry>
-      <material name="grey"/>
-    </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <sphere radius="${caster_radius}"/>
-      </geometry>
-    </collision>
-    <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.05"/>
-      <inertia
-        ixx="${(2.0/5.0)*0.05*caster_radius*caster_radius}"
-        iyy="${(2.0/5.0)*0.05*caster_radius*caster_radius}"
-        izz="${(2.0/5.0)*0.05*caster_radius*caster_radius}"
-        ixy="0" iyz="0" ixz="0"/>
-    </inertial>
-  </link>
-
-  <!-- ============================================================
-       REAR CASTER  (passive ball caster — fixed joint)
-       ============================================================ -->
-  <joint name="caster_rear_joint" type="fixed">
-    <parent link="base_link"/>
-    <child  link="caster_rear_link"/>
-    <origin xyz="${caster_rear_x} 0 ${-caster_radius}" rpy="0 0 0"/>
-  </joint>
-
-  <link name="caster_rear_link">
-    <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <sphere radius="${caster_radius}"/>
-      </geometry>
-      <material name="grey"/>
-    </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <sphere radius="${caster_radius}"/>
-      </geometry>
-    </collision>
-    <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.05"/>
-      <inertia
-        ixx="${(2.0/5.0)*0.05*caster_radius*caster_radius}"
-        iyy="${(2.0/5.0)*0.05*caster_radius*caster_radius}"
-        izz="${(2.0/5.0)*0.05*caster_radius*caster_radius}"
-        ixy="0" iyz="0" ixz="0"/>
-    </inertial>
-  </link>
+  <!-- ── Instantiate all 4 wheels ─────────────────────────────── -->
+  <!-- Front-Left  (FL): x= 0.26  y= 0.32 -->
+  <xacro:mecanum_wheel prefix="fl" x_sign=" 1" y_sign=" 1"/>
+  <!-- Front-Right (FR): x= 0.26  y=-0.32 -->
+  <xacro:mecanum_wheel prefix="fr" x_sign=" 1" y_sign="-1"/>
+  <!-- Rear-Left   (RL): x=-0.26  y= 0.32 -->
+  <xacro:mecanum_wheel prefix="rl" x_sign="-1" y_sign=" 1"/>
+  <!-- Rear-Right  (RR): x=-0.26  y=-0.32 -->
+  <xacro:mecanum_wheel prefix="rr" x_sign="-1" y_sign="-1"/>
 
 </robot>

@@ -3,25 +3,30 @@
 
   <!-- =======================================================================
        LIDAR POSITION — FILL IN YOUR VALUES (metres)
-       Reference Point:
-         Measure X, Y, Z offsets relative to the 'base_link' origin.
-         - 'base_link' is located at the center of the bottom face of the chassis box.
-         - X: distance forward from the center of the chassis bottom (positive front, negative back).
-         - Y: distance left from the center of the chassis bottom (positive left, negative right).
-         - Z: height upwards from the center of the chassis bottom face.
-       ======================================================================= -->
-  <xacro:property name="laser_x"      value="0.0"/>  <!-- forward/back  -->
-  <xacro:property name="laser_y"      value="0.0"/>  <!-- left/right    -->
-  <xacro:property name="laser_z"      value="0.129"/>  <!-- height above base_link (e.g. 2nd floor height) -->
-  <!-- Slamtec 0° is usually opposite the cable. If cable faces the robot rear,
-       laser +X is ~180° from base_link +X → scan rides the bot, map→odom freezes
-       while driving, and Nav2 goals look inverted vs the room. Set 0.0 if your
-       S2E 0° mark already faces the chassis front. -->
-  <xacro:property name="laser_yaw"    value="${pi}"/>
 
-  <!-- Lidar cylinder dimensions (default ~RPLidar A1) -->
-  <xacro:property name="laser_radius" value="0.035"/> <!-- 70 mm diameter -->
-  <xacro:property name="laser_height" value="0.040"/> <!-- 40 mm tall     -->
+       Reference frame:
+         'base_link' is at the centre of the BOTTOM FACE of the chassis box.
+         X : forward from chassis centre  (+front, -rear)
+         Y : left from chassis centre     (+left,  -right)
+         Z : height above chassis bottom  (upward positive)
+
+       laser_yaw:
+         0.0  → LiDAR "0°" mark faces robot front  (most common)
+         pi   → LiDAR "0°" mark faces robot rear   (flip if scan is mirrored)
+         Measure the physical orientation of the LiDAR cable/mark on the chassis.
+       ======================================================================= -->
+
+  <!-- LiDAR position relative to base_link  (FILL IN) -->
+  <xacro:property name="laser_x"      value="TODO_FILL"/>   <!-- e.g.  0.0   -->
+  <xacro:property name="laser_y"      value="TODO_FILL"/>   <!-- e.g.  0.0   -->
+  <xacro:property name="laser_z"      value="TODO_FILL"/>   <!-- e.g.  0.18  (height of LiDAR above chassis bottom) -->
+
+  <!-- LiDAR yaw rotation  (FILL IN — see note above) -->
+  <xacro:property name="laser_yaw"    value="TODO_FILL"/>   <!-- 0.0 or ${pi} -->
+
+  <!-- LiDAR cylinder visual dimensions  (FILL IN or leave defaults) -->
+  <xacro:property name="laser_radius" value="0.035"/>   <!-- 70 mm diameter -->
+  <xacro:property name="laser_height" value="0.040"/>   <!-- 40 mm tall     -->
 
   <!-- ============================================================
        LIDAR JOINT & LINK
@@ -29,7 +34,8 @@
   <joint name="laser_joint" type="fixed">
     <parent link="base_link"/>
     <child  link="laser_frame"/>
-    <origin xyz="${laser_x} ${laser_y} ${laser_z}" rpy="0 0 ${laser_yaw}"/>
+    <origin xyz="${laser_x} ${laser_y} ${laser_z}"
+            rpy="0 0 ${laser_yaw}"/>
   </joint>
 
   <link name="laser_frame">
@@ -50,11 +56,11 @@
     </collision>
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.2"/>
+      <mass value="0.200"/>
       <inertia
         ixx="${(1.0/12.0)*0.2*(3*laser_radius*laser_radius + laser_height*laser_height)}"
         iyy="${(1.0/12.0)*0.2*(3*laser_radius*laser_radius + laser_height*laser_height)}"
-        izz="${(1.0/2.0)*0.2*laser_radius*laser_radius}"
+        izz="${(1.0/2.0 )*0.2*laser_radius*laser_radius}"
         ixy="0" iyz="0" ixz="0"/>
     </inertial>
   </link>

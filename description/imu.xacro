@@ -3,21 +3,34 @@
 
   <!-- =======================================================================
        IMU POSITION — FILL IN YOUR VALUES (metres)
-       Reference Point:
-         Measure X, Y, Z offsets relative to the 'base_link' origin.
-         - 'base_link' is located at the center of the bottom face of the chassis box.
-         - X: distance forward from the center of the chassis bottom (positive front, negative back).
-         - Y: distance left from the center of the chassis bottom (positive left, negative right).
-         - Z: height upwards from the center of the chassis bottom face.
-       ======================================================================= -->
-  <xacro:property name="imu_x"  value="-0.115"/>  <!-- forward/back  -->
-  <xacro:property name="imu_y"  value="0.0"/>  <!-- left/right    -->
-  <xacro:property name="imu_z"  value="0.004"/>  <!-- height        -->
 
-  <!-- IMU box size (small PCB) -->
-  <xacro:property name="imu_size_x" value="0.030"/>
-  <xacro:property name="imu_size_y" value="0.020"/>
-  <xacro:property name="imu_size_z" value="0.001"/>
+       Reference frame:
+         'base_link' is at the centre of the BOTTOM FACE of the chassis box.
+         X : forward from chassis centre  (+front, -rear)
+         Y : left from chassis centre     (+left,  -right)
+         Z : height above chassis bottom  (upward positive)
+
+       How to measure:
+         1. Place the bot on a flat surface.
+         2. Find the IMU chip/PCB mounting point.
+         3. Measure its X/Y/Z offset from the chassis bottom-centre.
+       ======================================================================= -->
+
+  <!-- IMU position relative to base_link  (FILL IN) -->
+  <xacro:property name="imu_x"  value="TODO_FILL"/>   <!-- e.g.  0.05  -->
+  <xacro:property name="imu_y"  value="TODO_FILL"/>   <!-- e.g.  0.0   -->
+  <xacro:property name="imu_z"  value="TODO_FILL"/>   <!-- e.g.  0.12  -->
+
+  <!-- IMU orientation offset (FILL IN if the IMU is not mounted flat)
+       Leave all zeros if the IMU X axis points robot-forward and Z is up. -->
+  <xacro:property name="imu_roll"  value="0.0"/>
+  <xacro:property name="imu_pitch" value="0.0"/>
+  <xacro:property name="imu_yaw"   value="0.0"/>
+
+  <!-- IMU PCB box size — only used for visualisation (FILL IN or leave as-is) -->
+  <xacro:property name="imu_size_x" value="0.030"/>   <!-- 30 mm long -->
+  <xacro:property name="imu_size_y" value="0.020"/>   <!-- 20 mm wide -->
+  <xacro:property name="imu_size_z" value="0.004"/>   <!--  4 mm tall -->
 
   <!-- ============================================================
        IMU JOINT & LINK
@@ -25,7 +38,8 @@
   <joint name="imu_joint" type="fixed">
     <parent link="base_link"/>
     <child  link="imu_link"/>
-    <origin xyz="${imu_x} ${imu_y} ${imu_z}" rpy="0 0 0"/>
+    <origin xyz="${imu_x} ${imu_y} ${imu_z}"
+            rpy="${imu_roll} ${imu_pitch} ${imu_yaw}"/>
   </joint>
 
   <link name="imu_link">
@@ -46,7 +60,7 @@
     </collision>
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.01"/>
+      <mass value="0.010"/>
       <inertia
         ixx="${(1.0/12.0)*0.01*(imu_size_y*imu_size_y + imu_size_z*imu_size_z)}"
         iyy="${(1.0/12.0)*0.01*(imu_size_x*imu_size_x + imu_size_z*imu_size_z)}"
