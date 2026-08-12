@@ -17,8 +17,8 @@
        ======================================================================= -->
 
   <!-- LiDAR position relative to base_link  (FILL IN) -->
-  <xacro:property name="laser_x"      value="0.0"/>          <!-- chassis centre — adjust to physical mount X -->
-  <xacro:property name="laser_y"      value="0.0"/>          <!-- chassis centre — adjust to physical mount Y -->
+  <xacro:property name="laser_x"      value="-0.36"/>        <!-- 36 cm rear of chassis bottom-centre (measured) -->
+  <xacro:property name="laser_y"      value="-0.02"/>        <!-- 2 cm right of chassis centre (measured) -->
   <xacro:property name="laser_z"      value="0.10"/>         <!-- = chassis_height: LiDAR sits on top of the chassis box -->
 
   <!-- LiDAR yaw rotation  (FILL IN — see note above) -->
