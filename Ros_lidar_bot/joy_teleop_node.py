@@ -6,10 +6,11 @@ Pairs with the standard `joy` package's joy_node (SDL), which reads the
 controller and publishes sensor_msgs/Joy on /joy. This node converts /joy
 into /cmd_vel (geometry_msgs/Twist).
 
-Controls (Xbox-style layout, xpad driver mapping):
-  Left stick up/down    — forward / reverse at current linear speed
-  Left stick left/right — turn left / right at current angular speed
-  Right stick           — pan / tilt the camera head (→ /camera_cmd)
+Controls (Xbox-style layout, Bluetooth mapping):
+  Left stick up/down    — forward / reverse  (linear.x)
+  Left stick left/right — strafe left/right  (linear.y)   ← mecanum strafe
+  Right stick left/right — rotate left/right (angular.z)
+  Right stick up/down   — camera tilt        (→ /camera_cmd)
   RT (right trigger)    — increase linear speed by lin_step per press
   LT (left trigger)     — decrease linear speed by lin_step per press
   RB (right bumper)     — increase angular speed by ang_step per press
@@ -60,10 +61,11 @@ class JoyTeleop(Node):
         super().__init__('joy_teleop')
 
         # ── Mapping parameters (override if `ros2 topic echo /joy` disagrees) ─
-        self.declare_parameter('axis_linear', 1)     # left stick vertical
-        self.declare_parameter('axis_angular', 0)    # left stick horizontal
-        self.declare_parameter('axis_rt', 5)         # right trigger
-        self.declare_parameter('axis_lt', 4)         # left trigger (BT; USB xpad = 2)
+        self.declare_parameter('axis_linear',  1)     # left stick vertical  → linear.x
+        self.declare_parameter('axis_strafe',  0)     # left stick horizontal → linear.y (strafe)
+        self.declare_parameter('axis_angular', 2)     # right stick horizontal → angular.z
+        self.declare_parameter('axis_rt', 5)          # right trigger
+        self.declare_parameter('axis_lt', 4)          # left trigger (BT; USB xpad = 2)
         self.declare_parameter('button_rb', 7)       # right bumper
         self.declare_parameter('button_lb', 6)       # left bumper
         self.declare_parameter('button_save_map', 1) # B (stick clicks were unreliable)
@@ -86,17 +88,17 @@ class JoyTeleop(Node):
         self.declare_parameter('publish_hz', 20.0)
         self.declare_parameter('joy_timeout', 0.5)   # s without /joy → stop
 
-        # ── Right stick → camera pan/tilt (camera_servo_node) ─────────────────
-        # Publishes normalised rate cmds on /camera_cmd; drive path is untouched.
-        self.declare_parameter('axis_cam_pan', 2)    # RX (BT layout)
-        self.declare_parameter('axis_cam_tilt', 3)   # RY
+        # ── Right stick → camera tilt; pan disabled by default (RX used for angular) ─
+        self.declare_parameter('axis_cam_pan',  -1)   # disabled (-1); RX now drives angular.z
+        self.declare_parameter('axis_cam_tilt',  3)   # RY → camera tilt
         self.declare_parameter('cam_deadzone', 0.15)
         self.declare_parameter('invert_cam_pan', False)
         self.declare_parameter('invert_cam_tilt', False)
 
         gp = lambda n: self.get_parameter(n).value
-        self._ax_lin = gp('axis_linear')
-        self._ax_ang = gp('axis_angular')
+        self._ax_lin    = gp('axis_linear')
+        self._ax_strafe = gp('axis_strafe')
+        self._ax_ang    = gp('axis_angular')
         self._ax_rt = gp('axis_rt')
         self._ax_lt = gp('axis_lt')
         self._btn_rb = gp('button_rb')
@@ -121,8 +123,9 @@ class JoyTeleop(Node):
         self._cam_pan = 0.0
         self._cam_tilt = 0.0
 
-        self._cmd_lin = 0.0
-        self._cmd_ang = 0.0
+        self._cmd_lin    = 0.0
+        self._cmd_strafe = 0.0
+        self._cmd_ang    = 0.0
         self._last_joy_time = 0.0
         # After the stick returns to center, publish one zero then stay silent
         # so Nav2 owns /cmd_vel until the stick moves again.
@@ -200,15 +203,16 @@ class JoyTeleop(Node):
         self._vision_was_pressed = vi
 
         # Movement — proportional to stick deflection
-        lin_in = axis(self._ax_lin)
-        ang_in = axis(self._ax_ang)
-        if abs(lin_in) < self._deadzone:
-            lin_in = 0.0
-        if abs(ang_in) < self._deadzone:
-            ang_in = 0.0
+        lin_in    = axis(self._ax_lin)
+        strafe_in = axis(self._ax_strafe) if self._ax_strafe >= 0 else 0.0
+        ang_in    = axis(self._ax_ang)
+        if abs(lin_in)    < self._deadzone: lin_in    = 0.0
+        if abs(strafe_in) < self._deadzone: strafe_in = 0.0
+        if abs(ang_in)    < self._deadzone: ang_in    = 0.0
 
-        self._cmd_lin = lin_in * self._lin_speed
-        self._cmd_ang = ang_in * self._ang_speed
+        self._cmd_lin    = lin_in    * self._lin_speed
+        self._cmd_strafe = strafe_in * self._lin_speed
+        self._cmd_ang    = ang_in    * self._ang_speed
 
         # Right stick → camera pan/tilt rate (normalised -1..1).
         pan_in = axis(self._ax_cam_pan)
@@ -323,9 +327,10 @@ class JoyTeleop(Node):
     def _publish_cb(self):
         # Dongle unplugged / joy_node died mid-motion → stop.
         if (time.monotonic() - self._last_joy_time) > self._joy_timeout:
-            self._cmd_lin = 0.0
-            self._cmd_ang = 0.0
-            self._cam_pan = 0.0
+            self._cmd_lin    = 0.0
+            self._cmd_strafe = 0.0
+            self._cmd_ang    = 0.0
+            self._cam_pan  = 0.0
             self._cam_tilt = 0.0
 
         # Camera pan/tilt rate — published every tick regardless of drive/yield
@@ -336,7 +341,9 @@ class JoyTeleop(Node):
         cam.angular.y = float(self._cam_tilt)
         self._cam_pub.publish(cam)
 
-        moving = abs(self._cmd_lin) > 1e-6 or abs(self._cmd_ang) > 1e-6
+        moving = (abs(self._cmd_lin) > 1e-6
+                  or abs(self._cmd_strafe) > 1e-6
+                  or abs(self._cmd_ang) > 1e-6)
         if not moving:
             if not self._yielded_to_nav:
                 self._pub.publish(Twist())   # one stop pulse, then yield
@@ -345,7 +352,8 @@ class JoyTeleop(Node):
 
         self._yielded_to_nav = False
         msg = Twist()
-        msg.linear.x = self._cmd_lin
+        msg.linear.x  = self._cmd_lin
+        msg.linear.y  = self._cmd_strafe   # mecanum strafe
         msg.angular.z = self._cmd_ang
         self._pub.publish(msg)
 

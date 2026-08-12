@@ -55,6 +55,8 @@ def _launch_setup(context, *args, **kwargs):
         "1", "true", "yes",
     )
     serial_port = LaunchConfiguration("serial_port").perform(context)
+    lidar_ip    = LaunchConfiguration("lidar_ip").perform(context)
+    scan_mode   = LaunchConfiguration("scan_mode").perform(context)
 
     out = "screen" if verbose else "log"
 
@@ -148,11 +150,34 @@ def _launch_setup(context, *args, **kwargs):
         respawn_delay=2.0,
     )
 
+    # ── 5. RPLidar S2E (Ethernet / UDP) ─────────────────────────────────────
+    # Uses sllidar_ros2 (Slamtec official source build — NOT apt rplidar_ros).
+    # Jetson ethernet port must be on 192.168.11.1/24 (see README: nmcli setup).
+    # Publishes /scan (sensor_msgs/LaserScan) on frame_id=laser_frame.
+    lidar_node = Node(
+        package='sllidar_ros2',
+        executable='sllidar_node',
+        name='rplidar_node',
+        output=out,
+        respawn=True,
+        respawn_delay=5.0,
+        parameters=[{
+            'channel_type':     'udp',
+            'udp_ip':           lidar_ip,
+            'udp_port':         8089,
+            'frame_id':         'laser_frame',   # must match lidar.xacro
+            'inverted':         False,
+            'angle_compensate': True,
+            'scan_mode':        scan_mode,
+        }],
+    )
+
     return [
         rsp,
         driver_node,
         joy_node,
         joy_teleop,
+        lidar_node,
     ]
 
 
@@ -191,6 +216,16 @@ def generate_launch_description():
             "serial_port",
             default_value="/dev/ttyACM0",
             description="USB serial port of the Arduino (DriveMaster.ino).",
+        ),
+        DeclareLaunchArgument(
+            "lidar_ip",
+            default_value="192.168.11.2",
+            description="RPLidar S2E IP address (factory default 192.168.11.2).",
+        ),
+        DeclareLaunchArgument(
+            "scan_mode",
+            default_value="DenseBoost",
+            description="Scan mode: DenseBoost | Standard | Sensitivity.",
         ),
         OpaqueFunction(function=_launch_setup),
     ])
