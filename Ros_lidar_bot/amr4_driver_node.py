@@ -95,6 +95,7 @@ class AMR4DriverNode(Node):
         self.declare_parameter("cmd_timeout",    0.5)   # seconds
         self.declare_parameter("publish_imu",    True)
         self.declare_parameter("frame_id",       "imu_link")
+        self.declare_parameter("max_send_rate",  20.0)  # Hz (max serial write rate to Arduino)
 
         self._port_name  = self.get_parameter("serial_port").value
         self._baud       = self.get_parameter("baud_rate").value
@@ -102,11 +103,14 @@ class AMR4DriverNode(Node):
         self._cmd_timeout = self.get_parameter("cmd_timeout").value
         self._pub_imu    = self.get_parameter("publish_imu").value
         self._frame_id   = self.get_parameter("frame_id").value
+        self._max_send_rate = self.get_parameter("max_send_rate").value
+        self._min_send_interval = 1.0 / self._max_send_rate if self._max_send_rate > 0 else 0.0
 
         # ── Internal state ────────────────────────────────────────────────────
         self._serial: serial.Serial | None = None
         self._serial_lock = threading.Lock()
         self._last_cmd_time = time.monotonic()
+        self._last_serial_write_time = 0.0
         self._stopped = False   # tracks whether we've already sent STOP
 
         # ── Serial open (with retry) ──────────────────────────────────────────
@@ -221,19 +225,28 @@ class AMR4DriverNode(Node):
     # ──────────────────────────────────────────────────────────────────────────
     def _cmd_vel_callback(self, msg: Twist):
         """Receive a Twist from joystick / Nav2 and forward to the Arduino."""
-        self._last_cmd_time = time.monotonic()
+        now = time.monotonic()
+        self._last_cmd_time = now
         self._stopped = False
 
         vx    = msg.linear.x
         vy    = msg.linear.y
         omega = msg.angular.z
 
-        # Skip sending if velocities match the previously sent command (rate limiting/de-duplication)
+        is_stop_cmd = (vx == 0.0 and vy == 0.0 and omega == 0.0)
+
+        # Skip sending if velocities match the previously sent command
         current_cmd = (round(vx, 4), round(vy, 4), round(omega, 4))
         if hasattr(self, '_last_sent_cmd') and self._last_sent_cmd == current_cmd:
             return
 
+        # Rate-limiting: Throttle serial writes to max_send_rate (e.g. 20Hz),
+        # but ALWAYS let zero-velocity STOP commands go through instantly!
+        if not is_stop_cmd and (now - self._last_serial_write_time) < self._min_send_interval:
+            return
+
         self._last_sent_cmd = current_cmd
+        self._last_serial_write_time = now
         self._send_drive(vx, vy, omega)
 
     # ──────────────────────────────────────────────────────────────────────────
