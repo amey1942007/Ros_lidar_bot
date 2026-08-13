@@ -187,6 +187,7 @@ class AMR4DriverNode(Node):
             if self._serial and self._serial.is_open:
                 try:
                     self._serial.write((cmd + "\n").encode())
+                    self._serial.flush()
                 except serial.SerialException as exc:
                     self.get_logger().error(f"Serial write error: {exc}")
                     self._serial = None
@@ -207,6 +208,12 @@ class AMR4DriverNode(Node):
 
     def _send_stop(self):
         """Send a zero-velocity DRIVE command (robot stops)."""
+        with self._serial_lock:
+            if self._serial and self._serial.is_open:
+                try:
+                    self._serial.reset_output_buffer()
+                except Exception:
+                    pass
         self._write_cmd("DRIVE,0.0000,0.0000,0.0000")
 
     # ──────────────────────────────────────────────────────────────────────────
