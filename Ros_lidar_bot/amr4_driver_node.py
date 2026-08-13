@@ -95,7 +95,7 @@ class AMR4DriverNode(Node):
         self.declare_parameter("cmd_timeout",    0.5)   # seconds
         self.declare_parameter("publish_imu",    True)
         self.declare_parameter("frame_id",       "imu_link")
-        self.declare_parameter("max_send_rate",  20.0)  # Hz (max serial write rate to Arduino)
+        self.declare_parameter("max_send_rate",  10.0)  # Hz (max serial write rate to Arduino)
 
         self._port_name  = self.get_parameter("serial_port").value
         self._baud       = self.get_parameter("baud_rate").value
