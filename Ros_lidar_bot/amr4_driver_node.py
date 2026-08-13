@@ -228,6 +228,12 @@ class AMR4DriverNode(Node):
         vy    = msg.linear.y
         omega = msg.angular.z
 
+        # Skip sending if velocities match the previously sent command (rate limiting/de-duplication)
+        current_cmd = (round(vx, 4), round(vy, 4), round(omega, 4))
+        if hasattr(self, '_last_sent_cmd') and self._last_sent_cmd == current_cmd:
+            return
+
+        self._last_sent_cmd = current_cmd
         self._send_drive(vx, vy, omega)
 
     # ──────────────────────────────────────────────────────────────────────────

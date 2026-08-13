@@ -696,36 +696,26 @@ void setMotorSpeeds(int m1, int m2, int m3, int m4) {
 }
 
 // FUNCTION: Non-Blocking Serial Reader & Parser (Dual Mode)
+// Drains the entire serial RX hardware buffer in every loop tick.
+// If multiple lines are queued (e.g. from continuous /cmd_vel streams),
+// it processes through all of them and leaves receivedChars containing
+// ONLY the latest line.
 void recvWithEndMarker() {
     static byte ndx = 0;
     char endMarker = '\n';
     char rc;
 
-    // If previous command was parsed or if buffer backlog built up,
-    // read and process incoming bytes.
-    while (Serial.available() > 0 && newData == false) {
+    while (Serial.available() > 0) {
         rc = Serial.read();
         if (rc != endMarker && rc != '\r') {
             receivedChars[ndx] = rc;
             ndx++;
-            if (ndx >= numChars) { ndx = numChars - 1; }
+            if (ndx >= (int)numChars) { ndx = numChars - 1; }
         }
         else if (rc == endMarker) {
             receivedChars[ndx] = '\0';
             ndx = 0;
-            newData = true;
-        }
-    }
-
-    // LATENCY FIX: If extra command bytes are still sitting in hardware serial RX buffer
-    // while newData is true, skip to the latest full line to discard stale velocity commands.
-    if (newData && Serial.available() > 64) {
-        // High backlog detected: clear accumulated stale buffer up to the last line end
-        while (Serial.available() > 0) {
-            char c = Serial.read();
-            if (c == endMarker && Serial.available() == 0) {
-                break;
-            }
+            newData = true; // Flag that a fresh complete line is ready
         }
     }
 }
