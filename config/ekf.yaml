@@ -1,156 +1,188 @@
 ekf_filter_node:
   ros__parameters:
-    # ══════════════════════════════════════════════════════════════════════════
-    # TIMESTAMP PIPELINE (audited 2026-07-17 — who stamps what, and when)
+    # ══════════════════════════════════════════════════════════════════════════════
+    # AMR4 EKF Configuration — robot_localization ekf_node
+    # ══════════════════════════════════════════════════════════════════════════════
     #
-    #   DDSM115 → driver_node /encoder : stamped at the MIDPOINT of the two
-    #     wheel serial reads (was end-of-loop = 15-20 ms late; fixed).
-    #   odom_node /odom_raw            : reuses the driver stamp; dt between
-    #     driver stamps, immune to DDS arrival jitter.
-    #   BNO055 → imu_node /imu         : stamped at UART parse time, fresh
-    #     samples only (~5 ms wire latency, acceptable; not fused yet).
-    #   S2E → sllidar /scan            : stamped at revolution start; points
-    #     span the next ~100 ms (10 Hz spin). Uncorrected skew ⇒ keep rotation
-    #     speeds moderate (RPP rotate vel 1.0) or map edges blur during spins.
-    #   EKF odom→base TF               : predict_to_current_time extrapolates
-    #     to now() — keeps TF aligned with scan stamps while moving.
-    #   slam_toolbox map→odom          : stamped scan_time + transform_timeout
-    #     (1.0 s) to future-date past the scan-match latency; Nav2 consumers
-    #     all run transform_tolerance 1.0 to match (see nav2_params.yaml).
-    #   Scan-match latency is CPU-bound: lidar Standard mode (not DenseBoost)
-    #   is what keeps map→odom fresh on the RPi5.
-    # ══════════════════════════════════════════════════════════════════════════
-    # FUSION PHILOSOPHY (hardware-driven)
+    # PIPELINE
+    #   amr4_driver_node  → /encoder       (Float32MultiArray — 4 raw wheel RPMs)
+    #   odom_node         → /odom_raw      (nav_msgs/Odometry — mecanum FK pose+twist)
+    #   imu_node          → /imu           (sensor_msgs/Imu   — BNO055 fused data)
+    #   ekf_node          → /odom          (nav_msgs/Odometry — fused output, remapped)
+    #                     → odom → base_footprint TF  (EKF is the SOLE TF publisher)
     #
-    # The DDSM115 hub motors have their own internal closed-loop velocity
-    # control and their RPM feedback has been bench-verified against measured
-    # distance to be highly accurate.  Wheel odometry is therefore the PRIMARY
-    # sensor: it provides vX and vYaw.
+    # FUSION PHILOSOPHY — MECANUM 4WD
     #
-    # The BNO055 gyro complements the wheels with the ONE thing they cannot
-    # see: true rotation during wheel slip / skid-steer scrub.  It contributes
-    # vYaw only.  Its absolute (magnetometer-fused) heading is NOT used —
-    # indoor magnetic interference makes it worse than integrated gyro+wheels.
+    #   A mecanum drive has 4 independent wheels and can translate in any
+    #   direction (holonomic). This means we get meaningful vX AND vY from FK
+    #   (unlike differential-drive which has no lateral velocity). The EKF fuses
+    #   BOTH vX and vY from /odom_raw plus vYaw from both /odom_raw and /imu.
     #
-    # Why BOTH sources publish vYaw:
-    #   - Stationary: wheels report exactly 0 RPM → the wheel measurement pins
-    #     yaw rate to zero and cancels residual gyro bias → no more odom TF
-    #     creeping while the robot sits still (the drift seen in earlier maps).
-    #   - Rotating:  the gyro (lower covariance) dominates and catches any
-    #     wheel scrub, so heading stays true during turns.
-    #   The EKF blends them by covariance — this is the standard diff-drive +
-    #   robot_localization setup and it is what keeps the LiDAR scan locked to
-    #   the world while the robot spins.
-    # ══════════════════════════════════════════════════════════════════════════
+    #   Wheel odometry (PRIMARY sensor — mecanum FK from encoder RPMs):
+    #     • vX — forward velocity (precision: encoder counts directly)
+    #     • vY — lateral / strafe velocity (holonomic motion, encoder-derived)
+    #     • vYaw — rotation rate (4-wheel differential gives good yaw estimate)
+    #     Velocity-only: EKF integrates pose internally for consistency.
+    #
+    #   IMU — BNO055 (SECONDARY — yaw rate correction):
+    #     • vYaw — gyro Z rate, corrects wheel slip / scrub during turns.
+    #       The gyro catches any heading error the encoder FK misses (e.g. a
+    #       wheel that slips during a tight spin).
+    #     • Absolute heading (mag fusion) is DISABLED — indoor magnetic fields
+    #       (motors, steel frame) corrupt the magnetometer heading.
+    #     • Accelerometer is DISABLED — too noisy on this chassis; integrating
+    #       noisy aX makes the EKF's vX estimate worse, not better.
+    #
+    #   Anti-drift strategy:
+    #     - When stationary: all 4 wheels read 0 RPM exactly → EKF pinned to 0.
+    #       The IMU gyro, even after bias removal, has residual noise; the wheel
+    #       zero-pins CANCEL this, preventing slow TF creep while parked.
+    #     - When translating: HDRIVE command makes the Arduino hold heading via
+    #       its onboard BNO055 PID → wheels already compensate → EKF sees clean vY.
+    #     - When rotating: gyro dominates vYaw (lower covariance) and catches slip.
+    #
+    # ══════════════════════════════════════════════════════════════════════════════
 
-    # ── Timing ────────────────────────────────────────────────────────────────
-    # 30 Hz output: smooth TF for RViz/SLAM, light enough for the RPi 5.
+    # ── Timing ───────────────────────────────────────────────────────────────────
+    # 30 Hz: smooth TF for RViz/SLAM. Matches odom_node publish rate.
     frequency: 30.0
-    sensor_timeout: 0.5       # 0.5 s: encoder arrives at 20 Hz, IMU at 50 Hz —
-                              # if either is silent this long something is wrong
-                              # and predicting further only bakes in error.
-    two_d_mode: true          # flat ground robot — ignore Z, roll, pitch
+
+    # If a sensor is silent for this long, stop fusing it and coast on prediction.
+    # /odom_raw arrives at ~10 Hz (telemetry TELEMETRY_MS=100ms), /imu at 50 Hz.
+    sensor_timeout: 0.5
+
+    # Flat-ground robot: collapse Z, roll, and pitch. All 2D.
+    two_d_mode: true
     use_sim_time: false
 
-    # Extrapolate odom→base_footprint TF to "now" so it matches lidar/scan
-    # stamps (sllidar stamps at receive time). With this false, TF lags the
-    # scan while moving → RViz/SLAM show the scan "riding" the robot until
-    # motion stops and map→odom snaps. This is the main timestamp fix.
+    # Extrapolate odom→base_footprint TF to the current ROS time so LiDAR scans
+    # (stamped at scan start) align correctly with the robot pose. Without this,
+    # the scan appears to lag the robot frame while moving → map edges blur.
     predict_to_current_time: true
 
-    # Scale process noise with the current velocity: when the robot is
-    # stationary the model uncertainty collapses, so the pose estimate freezes
-    # solid instead of wandering on integrated sensor noise.
+    # Scale process noise by current velocity. When the robot is stationary the
+    # model uncertainty shrinks → the pose stays frozen instead of drifting on
+    # integrated sensor noise. Essential for SLAM quality while parked.
     dynamic_process_noise_covariance: true
 
-    # ── TF output ─────────────────────────────────────────────────────────────
-    # EKF is the ONLY publisher of odom -> base_footprint (odom_node runs with
-    # broadcast_tf:=false). Two publishers of one TF = flicker/teleport.
+    # ── TF output ─────────────────────────────────────────────────────────────────
+    # EKF is the ONLY publisher of odom → base_footprint.
+    # odom_node runs with broadcast_tf: False to avoid TF conflict.
     publish_tf: true
     transform_time_offset: 0.0
     transform_timeout: 0.0
 
-    # ── Frame names ───────────────────────────────────────────────────────────
+    # ── Frame names ───────────────────────────────────────────────────────────────
     map_frame:       map
     odom_frame:      odom
     base_link_frame: base_footprint
     world_frame:     odom
 
-    # ── Source 0: Wheel odometry (/odom_raw from odom_node) ───────────────────
-    # DDSM115 closed-loop RPM feedback → body vX, vYaw (computed in odom_node).
-    # Velocity-only fusion: the EKF integrates pose itself, so its X/Y always
-    # stays consistent with its own fused heading (fusing odom_node's absolute
-    # X/Y, which was integrated with a DIFFERENT heading, made the filter fight
-    # itself — pose jumps / scan rotation in RViz).
+    # ── Source 0: Wheel odometry (/odom_raw — mecanum FK from odom_node) ─────────
+    #
     # Config vector: [X, Y, Z, Roll, Pitch, Yaw, vX, vY, vZ, vRoll, vPitch, vYaw, aX, aY, aZ]
+    #
+    # VELOCITY ONLY fusion:
+    #   - X, Y, Yaw (pose) are NOT fused — the EKF integrates its own pose from
+    #     the fused velocity using its own heading. Fusing the odom_node absolute
+    #     X/Y (integrated with a potentially different heading) causes the filter
+    #     to fight itself → pose jumps and scan rotation artefacts in RViz.
+    #
+    # vX — USE: primary forward velocity from encoder FK. High accuracy on mecanum.
+    # vY — USE: lateral / strafe velocity. Mecanum provides real vY, unlike diff-drive.
+    #           Fusing vY closes the loop on strafe motion and prevents Y-drift during
+    #           HDRIVE straight-line travel (any uncompensated lateral slip is visible).
+    # vYaw — USE: rotation rate from encoder FK. When stationary all 4 wheels = 0,
+    #         pinning vYaw to zero → cancels residual IMU gyro bias → no TF creep.
     odom0: /odom_raw
-    odom0_config: [false, false, false,   # X, Y, Z position — EKF integrates velocities itself
-                   false, false, false,   # Roll, Pitch, Yaw — integrated from fused vYaw
-                   true,  false, false,   # vX (USE — precise wheel feedback) | vY, vZ (no lateral motion)
-                   false, false, true,    # vRoll, vPitch (ignore) | vYaw (USE — pins yaw rate to 0 when parked, bounds gyro bias)
-                   false, false, false]   # aX, aY, aZ — ignore
+    odom0_config: [false, false, false,   # X, Y, Z — EKF integrates pose itself
+                   false, false, false,   # Roll, Pitch, Yaw — from fused vYaw
+                   true,  true,  false,   # vX (forward), vY (strafe), vZ (ignored)
+                   false, false, true,    # vRoll, vPitch (ignore) | vYaw (use — zero-pins when parked)
+                   false, false, false]   # aX, aY, aZ — ignore (noisy on mecanum chassis)
     odom0_differential: false
+    odom0_relative: false
     odom0_queue_size: 10
     odom0_nodelay: true
 
-    # ── Source 1: IMU (/imu from imu_node / BNO055 via Arduino) ──────────────
-    # Gyro Z rate only. imu_node estimates and removes the static gyro bias at
-    # startup, so what arrives here is already near-zero-mean when stationary.
-    # Absolute orientation (magnetometer fusion) intentionally unused indoors.
+    # ── Source 1: IMU (/imu — BNO055 via dedicated imu_node) ─────────────────────
+    #
+    # vYaw only (gyro Z rate). imu_node estimates and removes the static gyro bias
+    # at startup so arriving samples are near-zero-mean when stationary.
+    #
+    # This is the SECONDARY vYaw source. Its covariance (from imu_node) is set
+    # lower than the wheel covariance during turns, so it dominates during rotation
+    # and catches any wheel-slip the FK misses. During translation (vYaw ≈ 0),
+    # the wheel zero-pin (odom0 vYaw) anchors the EKF.
+    #
+    # Absolute orientation (Yaw): DISABLED.
+    #   The BNO055 fuses magnetometer into orientation. Indoors, motors and the
+    #   steel chassis contaminate the magnetic field → absolute heading is wrong.
+    #   We use heading from integrated gyro+wheel vYaw instead.
+    #
+    # Accelerometer: DISABLED.
+    #   The mecanum chassis generates strong vibration (4 motors + rollers).
+    #   Integrating noisy aX produces large vX drift — worse than pure wheel FK.
     imu0: /imu
-    imu0_config: [false, false, false,    # X, Y, Z position
-                  false, false, false,    # Roll, Pitch, Yaw — BNO055 absolute quat unused (mag interference indoors)
-                  false, false, false,    # vX, vY, vZ — from wheels
-                  # vYaw OFF for now: a flipped gyro sign fights wheel ωz, freezes
-                  # SLAM map→odom while moving (scan rides robot), then snaps when
-                  # stopped. Re-enable true after a rotate-in-place check: physical
-                  # CCW must make /imu angular_velocity.z positive AND match /odom_raw.
-                  false, false, false,
-                  false, false, false]    # aX, aY, aZ — accelerometer too noisy on this chassis, drifts vX
+    imu0_config: [false, false, false,    # X, Y, Z position — no
+                  false, false, false,    # Roll, Pitch, Yaw — absolute orientation not trusted
+                  false, false, false,    # vX, vY, vZ — from wheels (more accurate)
+                  false, false, true,     # vRoll, vPitch — ignore | vYaw — USE (gyro corrects slip)
+                  false, false, false]    # aX, aY, aZ — disabled (chassis vibration too noisy)
     imu0_differential: false
     imu0_relative: false
     imu0_queue_size: 50
     imu0_nodelay: true
     imu0_remove_gravity: true
 
-    # ── Process noise ─────────────────────────────────────────────────────────
-    # 15x15 diagonal [x y z roll pitch yaw vx vy vz vroll vpitch vyaw ax ay az].
-    # Smaller than robot_localization defaults for the fused states: with
-    # trusted 20 Hz wheel feedback the model should not be allowed to wander
-    # far between measurements (default values let the pose "breathe", which
-    # showed up as shimmer in the map). Unfused states keep defaults.
-    process_noise_covariance: [0.02, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,   0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,
-                               0.0,  0.02, 0.0,  0.0,  0.0,  0.0,  0.0,   0.0,   0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,
-                               0.0,  0.0,  0.06, 0.0,  0.0,  0.0,  0.0,   0.0,   0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,
-                               0.0,  0.0,  0.0,  0.03, 0.0,  0.0,  0.0,   0.0,   0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,
-                               0.0,  0.0,  0.0,  0.0,  0.03, 0.0,  0.0,   0.0,   0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,
-                               0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,   0.0,   0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,
-                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.015, 0.0,   0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,
-                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.015, 0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,
-                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,   0.04, 0.0,  0.0,  0.0,   0.0,  0.0,  0.0,
-                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,   0.0,  0.01, 0.0,  0.0,   0.0,  0.0,  0.0,
-                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,   0.0,  0.0,  0.01, 0.0,   0.0,  0.0,  0.0,
-                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,   0.0,  0.0,  0.0,  0.015, 0.0,  0.0,  0.0,
-                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,   0.0,  0.0,  0.0,  0.0,   0.01, 0.0,  0.0,
-                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,   0.0,  0.0,  0.0,  0.0,   0.0,  0.01, 0.0,
-                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,   0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.015]
+    # ── Process noise covariance (Q) ──────────────────────────────────────────────
+    # 15×15 diagonal: [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
+    #
+    # Tuning rationale for mecanum:
+    #   x, y  (0.02): moderate — EKF integrates from velocities so X/Y error grows
+    #                 with path length; small but not tiny.
+    #   yaw   (0.005): tighter than default — both wheel vYaw AND gyro constrain this.
+    #   vx    (0.005): tight — encoder FK vX is highly accurate on these motors.
+    #   vy    (0.01):  slightly looser than vX — strafe FK has more uncertainty
+    #                  (roller slip on mecanum wheels slightly less predictable than
+    #                  forward motion). Still much tighter than the default 0.5.
+    #   vyaw  (0.01):  moderate — two sources (wheels + gyro) constrain this well.
+    #   ax,ay (0.5):   large — we do not fuse acceleration; these keep the internal
+    #                  model from over-constraining unfused states.
+    process_noise_covariance:
+      [0.02,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,  0.0,  0.0,
+       0.0,   0.02,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,  0.0,  0.0,
+       0.0,   0.0,   0.06,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,  0.0,  0.0,
+       0.0,   0.0,   0.0,   0.03,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,  0.0,  0.0,
+       0.0,   0.0,   0.0,   0.0,   0.03,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,  0.0,  0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.005, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,  0.0,  0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.005, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,  0.0,  0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.01,  0.0,   0.0,   0.0,   0.0,   0.0,  0.0,  0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.04,  0.0,   0.0,   0.0,   0.0,  0.0,  0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.01,  0.0,   0.0,   0.0,  0.0,  0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.01,  0.0,   0.0,  0.0,  0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.01,  0.0,  0.0,  0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.5,  0.0,  0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,  0.5,  0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,  0.0,  0.5]
 
-    # ── Initial estimate covariance ───────────────────────────────────────────
-    # Start confident in the fused states (they begin at exactly 0 by
-    # definition of the odom frame) so the filter converges instantly instead
-    # of chasing the first few noisy measurements. Diagonal, same order.
-    initial_estimate_covariance: [1e-4, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
-                                  0.0,  1e-4, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
-                                  0.0,  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
-                                  0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
-                                  0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
-                                  0.0,  0.0,  0.0,  0.0,  0.0,  1e-4, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
-                                  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-4, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
-                                  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
-                                  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
-                                  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,  0.0,
-                                  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,
-                                  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-4, 0.0,  0.0,  0.0,
-                                  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,
-                                  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,
-                                  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9]
+    # ── Initial estimate covariance (P0) ──────────────────────────────────────────
+    # Start confident at the odom origin (by definition x=y=yaw=0 at launch).
+    # Small initial uncertainty → filter converges immediately rather than
+    # chasing large first-measurement corrections.
+    initial_estimate_covariance:
+      [1e-4, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+       0.0,  1e-4, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+       0.0,  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+       0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+       0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+       0.0,  0.0,  0.0,  0.0,  0.0,  1e-4, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+       0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-4, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+       0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-4, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+       0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+       0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,  0.0,
+       0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,
+       0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-4, 0.0,  0.0,  0.0,
+       0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,
+       0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,
+       0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9]

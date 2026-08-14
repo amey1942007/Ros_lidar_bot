@@ -7,7 +7,7 @@ Hardware : Arduino Mega 2560 running DriveMaster.ino (mecanum bot)
 
 What this node does
 -------------------
-Subscribes to /odom_raw (std_msgs/Float32MultiArray) — published by
+Subscribes to /encoder (std_msgs/Float32MultiArray) — published by
 amr4_driver_node.py — which carries the four wheel RPMs measured by the
 Arduino's encoder feedback loop:
 
@@ -22,9 +22,12 @@ DriveMaster.ino's mecanumIK() — it computes the robot body velocity
 a dead-reckoning pose estimate (x, y, yaw).
 
 Publishes:
-    /odom  (nav_msgs/Odometry)  — position + velocity + covariance, suitable
-                                   for robot_localization EKF and RViz.
-    odom → base_footprint TF   — broadcast_tf parameter (default True).
+    /odom_raw  (nav_msgs/Odometry)  — FK pose + velocity + covariance.
+                                      Consumed by robot_localization EKF
+                                      which fuses it with /imu and outputs
+                                      the final /odom.
+    odom → base_footprint TF        — controlled by broadcast_tf param
+                                      (default False — EKF owns TF).
 
 Mecanum Forward Kinematics
 --------------------------
@@ -52,14 +55,12 @@ where w_i are the signed wheel linear velocities (m/s) after direction correctio
 
 Parameters
 ----------
-  odom_raw_topic  (str)   : default "/odom_raw"
-  odom_topic      (str)   : default "/odom"
+  encoder_topic   (str)   : default "/encoder"     ← raw RPMs from driver
+  odom_topic      (str)   : default "/odom_raw"    ← FK odometry for EKF
   base_frame_id   (str)   : default "base_footprint"
   odom_frame_id   (str)   : default "odom"
-  broadcast_tf    (bool)  : publish odom→base_footprint TF (default True)
-  wheel_radius    (float) : metres, default 0.05  (matches Config.h WHEEL_RADIUS)
-  chassis_l       (float) : metres, default 0.52  (matches Config.h CHASSIS_L)
-  chassis_w       (float) : metres, default 0.88  (matches Config.h CHASSIS_W)
+  broadcast_tf    (bool)  : publish odom→base_footprint TF (default False)
+                            Keep False — EKF is the sole TF publisher.
 
   Covariance tuning (diagonal of the 6×6 pose / twist covariance):
   pose_cov_x      (float) : default 0.01  (m²)
@@ -101,11 +102,11 @@ class OdomNode(Node):
         super().__init__("odom_node")
 
         # ── Parameters ────────────────────────────────────────────────────────
-        self._odom_raw_topic  = self.declare_parameter("odom_raw_topic",  "/odom_raw").value
-        self._odom_topic      = self.declare_parameter("odom_topic",      "/odom").value
+        self._encoder_topic   = self.declare_parameter("encoder_topic",   "/encoder").value
+        self._odom_topic      = self.declare_parameter("odom_topic",      "/odom_raw").value
         self._base_frame      = self.declare_parameter("base_frame_id",   "base_footprint").value
         self._odom_frame      = self.declare_parameter("odom_frame_id",   "odom").value
-        self._broadcast_tf    = self.declare_parameter("broadcast_tf",    True).value
+        self._broadcast_tf    = self.declare_parameter("broadcast_tf",    False).value
 
         # Chassis geometry — MUST match Config.h
         self._R   = self.declare_parameter("wheel_radius", 0.05).value   # metres
@@ -141,6 +142,7 @@ class OdomNode(Node):
         )
 
         # ── Publishers ────────────────────────────────────────────────────────
+        # /odom_raw: FK-integrated odometry for the EKF to fuse with /imu
         self._pub_odom = self.create_publisher(Odometry, self._odom_topic, 10)
 
         # ── TF broadcaster ────────────────────────────────────────────────────
@@ -155,10 +157,13 @@ class OdomNode(Node):
                 )
 
         # ── Subscriber ────────────────────────────────────────────────────────
-        # /odom_raw from amr4_driver_node: Float32MultiArray([rpm_FL, rpm_FR, rpm_RL, rpm_RR])
+        # /encoder from amr4_driver_node: Float32MultiArray([rpm_FL, rpm_FR, rpm_RL, rpm_RR])
+        # These are raw wheel RPMs from Arduino encoder feedback.
+        # This node runs mecanum FK on them and publishes /odom_raw (Odometry)
+        # which the EKF fuses with /imu to produce the final /odom.
         self._sub_odom_raw = self.create_subscription(
             Float32MultiArray,
-            self._odom_raw_topic,
+            self._encoder_topic,
             self._odom_raw_callback,
             best_effort_qos,
         )
@@ -167,7 +172,7 @@ class OdomNode(Node):
         self._watchdog_timer = self.create_timer(2.0, self._watchdog_callback)
 
         self.get_logger().info(
-            f"OdomNode ready — subscribing '{self._odom_raw_topic}' "
+            f"OdomNode ready — subscribing '{self._encoder_topic}' "
             f"→ publishing '{self._odom_topic}'"
         )
         self.get_logger().info(
@@ -176,7 +181,7 @@ class OdomNode(Node):
         )
         self.get_logger().info(
             f"  Frames: odom='{self._odom_frame}' → base='{self._base_frame}'  "
-            f"broadcast_tf={self._broadcast_tf}"
+            f"broadcast_tf={self._broadcast_tf}  (EKF owns TF when False)"
         )
 
     # ──────────────────────────────────────────────────────────────────────────

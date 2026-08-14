@@ -57,6 +57,7 @@ Parameters (all ROS 2 parameters, set in launch file)
   max_send_rate    (float) : max Hz to write commands to Arduino (default 5.0)
                              Lower = less buffer pressure at 115200 baud.
   omega_threshold  (float) : |angular.z| above this → use DRIVE, not HDRIVE
+  odom_raw_topic   (str)   : topic for raw encoder output (default "/encoder")
                              (default 0.05 rad/s)
   frame_id         (str)   : frame for published messages (default "base_footprint")
   flush_rate       (float) : Hz at which to flush the serial input buffer
@@ -124,6 +125,7 @@ class AMR4DriverNode(Node):
         self.declare_parameter("omega_threshold",  0.05)   # rad/s
         self.declare_parameter("frame_id",         "base_footprint")
         self.declare_parameter("flush_rate",       1.0)    # Hz — periodic RX flush
+        self.declare_parameter("encoder_topic",    "/encoder")
 
         self._port_name       = self.get_parameter("serial_port").value
         self._baud            = self.get_parameter("baud_rate").value
@@ -133,6 +135,7 @@ class AMR4DriverNode(Node):
         self._omega_threshold = self.get_parameter("omega_threshold").value
         self._frame_id        = self.get_parameter("frame_id").value
         self._flush_rate      = self.get_parameter("flush_rate").value
+        self._encoder_topic   = self.get_parameter("encoder_topic").value
 
         self._min_send_interval = (
             1.0 / self._max_send_rate if self._max_send_rate > 0 else 0.0
@@ -162,9 +165,11 @@ class AMR4DriverNode(Node):
         )
 
         # ── Publishers ───────────────────────────────────────────────────────
-        # /odom_raw: raw 4-wheel RPMs for odom_node to compute odometry
-        self._pub_odom_raw = self.create_publisher(
-            Float32MultiArray, "/odom_raw", 10
+        # /encoder: raw 4-wheel RPMs straight from Arduino telemetry.
+        # odom_node subscribes here, runs mecanum FK and publishes /odom_raw.
+        encoder_topic = self.get_parameter("encoder_topic").value
+        self._pub_encoder = self.create_publisher(
+            Float32MultiArray, encoder_topic, 10
         )
         # /driver/status: raw telemetry string for debugging
         self._pub_status = self.create_publisher(
@@ -467,20 +472,21 @@ class AMR4DriverNode(Node):
             if not data:
                 continue
 
-            # ── /odom_raw: 4-wheel RPMs for odom_node ────────────────────────
-            # odom_node subscribes here and runs mecanum FK to compute odometry.
+            # ── /encoder: raw 4-wheel RPMs from Arduino telemetry ───────────
             # Layout: [rpm_FL, rpm_FR, rpm_RL, rpm_RR]
             #   W1 = FL (front-left),  W2 = FR (front-right)
             #   W3 = RL (rear-left),   W4 = RR (rear-right)
+            # odom_node consumes this, runs mecanum FK, and publishes
+            # nav_msgs/Odometry on /odom_raw for the EKF to fuse.
             try:
-                odom_raw_msg = Float32MultiArray()
-                odom_raw_msg.data = [
+                enc_msg = Float32MultiArray()
+                enc_msg.data = [
                     float(data.get("W1_RPM", 0.0)),
                     float(data.get("W2_RPM", 0.0)),
                     float(data.get("W3_RPM", 0.0)),
                     float(data.get("W4_RPM", 0.0)),
                 ]
-                self._pub_odom_raw.publish(odom_raw_msg)
+                self._pub_encoder.publish(enc_msg)
             except Exception:
                 pass
 

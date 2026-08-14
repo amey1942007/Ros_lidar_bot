@@ -121,14 +121,9 @@ def _launch_setup(context, *args, **kwargs):
     )
 
     # ── 3. AMR4 Motor Driver Node (DriveMaster.ino via UART) ──────────────────
-    # Receives /cmd_vel_safe (safety-filtered), sends HDRIVE or DRIVE commands
-    # to the Arduino Mega at 5 Hz max to prevent serial buffer accumulation.
-    # Reads Arduino telemetry and publishes /odom_raw (4-wheel RPMs).
-    # Does NOT re-publish IMU data — imu_node is the sole /imu publisher.
-    #
-    # Drive mode logic (internal to amr4_driver_node):
-    #   |angular.z| <= omega_threshold → HDRIVE (heading-lock, no drift)
-    #   |angular.z| >  omega_threshold → DRIVE  (free rotation)
+    # Receives /cmd_vel_safe, sends HDRIVE or DRIVE to the Arduino.
+    # Reads Arduino telemetry and publishes /encoder (4-wheel RPMs).
+    # /encoder → odom_node → /odom_raw → EKF → /odom
     driver_node = Node(
         package=package_name,
         executable="amr4_driver",
@@ -140,28 +135,22 @@ def _launch_setup(context, *args, **kwargs):
         parameters=[{
             "serial_port":      "/dev/ttyACM0",
             "baud_rate":        115200,
-            # Safety-filtered cmd_vel only — never consume raw /cmd_vel directly
             "cmd_vel_topic":    "/cmd_vel_safe",
             "cmd_timeout":      0.5,
-            # 5 Hz max write rate prevents UART buffer accumulation at 115200 baud.
-            # The Arduino reads commands immediately at each loop tick, but if
-            # the OS TX buffer fills (because driver sends faster than Arduino reads)
-            # commands queue and execute late. 5 Hz avoids this entirely.
             "max_send_rate":    5.0,
-            # rad/s — below this, use HDRIVE (heading-hold) instead of DRIVE
             "omega_threshold":  0.05,
             "frame_id":         "base_footprint",
-            # Flush stale Arduino telemetry from the RX buffer every second.
-            # Without this, unread telemetry accumulates at ~1500 B/s and causes
-            # the OS read buffer to stall after ~30 s.
             "flush_rate":       1.0,
+            # Raw wheel RPMs published here for odom_node
+            "encoder_topic":    "/encoder",
         }],
     )
 
     # ── 4. Odometry Node ──────────────────────────────────────────────────────
-    # Subscribes to /odom_raw (Float32MultiArray — 4 wheel RPMs from driver node).
+    # Subscribes to /encoder (Float32MultiArray — 4 raw wheel RPMs from driver).
     # Runs mecanum forward kinematics to compute body velocity (vx, vy, omega).
-    # Integrates pose (x, y, yaw) and publishes nav_msgs/Odometry on /odom.
+    # Integrates pose (x, y, yaw) and publishes nav_msgs/Odometry on /odom_raw.
+    # EKF then fuses /odom_raw + /imu and publishes final /odom.
     # broadcast_tf=False: EKF is the sole odom→base_footprint TF publisher.
     odom_node = Node(
         package=package_name,
@@ -176,18 +165,19 @@ def _launch_setup(context, *args, **kwargs):
             "wheel_radius":   0.05,    # metres (WHEEL_RADIUS in Config.h)
             "chassis_l":      0.52,    # metres (CHASSIS_L  in Config.h)
             "chassis_w":      0.88,    # metres (CHASSIS_W  in Config.h)
+            # Topics
+            "encoder_topic":  "/encoder",    # raw RPMs from driver node
+            "odom_topic":     "/odom_raw",   # FK odometry → EKF input
+            "base_frame_id": "base_footprint",
+            "odom_frame_id": "odom",
             # EKF publishes odom→base_footprint; odom_node must NOT also do it
             "broadcast_tf":   False,
-            "odom_raw_topic": "/odom_raw",
-            "odom_topic":     "/odom",
-            "base_frame_id":  "base_footprint",
-            "odom_frame_id":  "odom",
             # Covariance — tune per robot (higher = trust EKF IMU fusion more)
             "pose_cov_x":      0.01,
             "pose_cov_y":      0.01,
             "pose_cov_yaw":    0.01,
-            "twist_cov_vx":    0.01,
-            "twist_cov_vy":    0.01,
+            "twist_cov_vx":    0.005,   # tight — encoder FK vX is accurate
+            "twist_cov_vy":    0.01,    # slightly looser — strafe FK has more slip
             "twist_cov_omega": 0.01,
         }],
     )
@@ -270,10 +260,12 @@ def _launch_setup(context, *args, **kwargs):
         arguments=log_args,
     )
 
-    # ── 7. EKF Node (fuses /odom + /imu) ─────────────────────────────────────
-    # Fuses wheel odometry (/odom) with IMU (/imu) from imu_node.
-    # Publishes /odometry/filtered remapped to /odom (via ekf.yaml or remapping).
-    # Is the SOLE publisher of odom→base_footprint TF (odom_node broadcast_tf=False).
+    # ── 7. EKF Node (fuses /odom_raw + /imu → /odom) ─────────────────────────
+    # Fuses:
+    #   /odom_raw — mecanum FK odometry (vX, vY, vYaw) from odom_node
+    #   /imu      — BNO055 gyro (vYaw) from imu_node
+    # Outputs /odometry/filtered remapped to /odom.
+    # Is the SOLE publisher of odom→base_footprint TF (broadcast_tf=False in odom_node).
     ekf_node = Node(
         package="robot_localization",
         executable="ekf_node",
@@ -284,7 +276,7 @@ def _launch_setup(context, *args, **kwargs):
             os.path.join(pkg_share, "config", "ekf.yaml"),
             {"use_sim_time": False},
         ],
-        remappings=[("/odometry/filtered", "/odom")],
+        remappings=[("odometry/filtered", "odom")],
     )
 
     # ── 8. SLAM Toolbox ───────────────────────────────────────────────────────
