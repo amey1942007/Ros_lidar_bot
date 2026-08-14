@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             # ── AMR4 (Jetson Orin Nano, ROS 2 Humble) ────────────────────────
             'amr4_driver = Ros_lidar_bot.amr4_driver_node:main',
+            'lidar_node = Ros_lidar_bot.lidar_node:main',
             # ── Legacy / other bots ───────────────────────────────────────────
             'imu_node = Ros_lidar_bot.imu_node:main',
             'driver_node = Ros_lidar_bot.driver_node:main',

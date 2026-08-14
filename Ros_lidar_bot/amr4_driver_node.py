@@ -10,22 +10,38 @@ What this node does
 -------------------
 1. Subscribes to /cmd_vel (geometry_msgs/Twist) from either:
      • joy_teleop_node  (gamepad controller)
-     • Nav2             (autonomous navigation — future)
-2. Converts Twist → "DRIVE,vy,vx,omega\\n" ASCII command and writes
-   it to the Arduino over serial.  The Arduino's mecanumIK() function
-   converts these three values into 4 individual wheel RPM setpoints
-   and runs per-wheel PID + feedforward — all kinematics live in the .ino.
+     • Nav2             (autonomous navigation)
+
+2. Converts Twist to an ASCII command and writes it to the Arduino over serial:
+     • If angular.z ≈ 0 (translating only):
+         "HDRIVE,vy,vx,current_heading_deg\\n"
+         The Arduino's heading-hold PID locks the heading so the bot does NOT
+         drift sideways or rotate during pure translation (mecanum wheel scrub).
+         The current heading is latched from the /imu topic.
+     • If |angular.z| > OMEGA_THRESHOLD (intentional rotation):
+         "DRIVE,vy,vx,omega\\n"
+         Plain drive — heading-hold is cleared on the Arduino side automatically.
+
 3. Reads ASCII telemetry lines back from the Arduino and re-publishes:
-     • /wheel_rpms (std_msgs/Float32MultiArray)  [W1..W4 actual RPM]
-     • /imu/raw    (sensor_msgs/Imu)             [BNO055 fused data, if available]
+     • /odom_raw  (std_msgs/Float32MultiArray)  [W1..W4 actual RPM, 4 values]
      • /driver/status (std_msgs/String)          [raw telemetry string for debug]
+
+   NOTE: IMU data is NOT re-published from this node. The dedicated imu_node.py
+   reads BNO055 JSON from its own serial port (/dev/ttyACM1) and publishes /imu.
+   This node only subscribes to /imu to latch the current heading for HDRIVE.
+
+4. Buffer management: flushes the serial input buffer every 1 second to prevent
+   stale telemetry from accumulating (the Arduino sends telemetry at 10 Hz,
+   which at 115200 baud slowly fills the OS buffer if we don't drain it).
 
 Serial protocol (DriveMaster.ino)
 ----------------------------------
-  HOST → ARDUINO  : "DRIVE,vy,vx,omega\\n"
+  HOST → ARDUINO  : "HDRIVE,vy,vx,heading_deg\\n"   (translating)
+                     "DRIVE,vy,vx,omega\\n"           (rotating)
                      vy    = linear.y  (m/s, left strafe positive)
                      vx    = linear.x  (m/s, forward positive)
                      omega = angular.z (rad/s, CCW positive)
+                     heading_deg = absolute target heading from BNO055 (0..360)
   ARDUINO → HOST  : CSV telemetry line every 100 ms, fields include
                      W1_SP, W1_RPM, W2_SP, W2_RPM, W3_SP, W3_RPM,
                      W4_SP, W4_RPM, HDG, ROLL, PITCH, GX,GY,GZ,
@@ -33,14 +49,18 @@ Serial protocol (DriveMaster.ino)
 
 Parameters (all ROS 2 parameters, set in launch file)
 ------------------------------------------------------
-  serial_port   (str)   : e.g. "/dev/ttyACM0"
-  baud_rate     (int)   : must match BAUD_HOST in Config.h (default 115200)
-  cmd_vel_topic (str)   : input topic (default "/cmd_vel")
-  cmd_timeout   (float) : seconds without a cmd_vel before sending STOP
-                          (default 0.5 s — safety watchdog)
-  publish_imu   (bool)  : re-publish BNO055 data as sensor_msgs/Imu
-                          (default True)
-  frame_id      (str)   : frame for Imu messages (default "imu_link")
+  serial_port      (str)   : e.g. "/dev/ttyACM0"
+  baud_rate        (int)   : must match BAUD_HOST in Config.h (default 115200)
+  cmd_vel_topic    (str)   : input topic (default "/cmd_vel_safe")
+  cmd_timeout      (float) : seconds without a cmd_vel before sending STOP
+                             (default 0.5 s — safety watchdog)
+  max_send_rate    (float) : max Hz to write commands to Arduino (default 5.0)
+                             Lower = less buffer pressure at 115200 baud.
+  omega_threshold  (float) : |angular.z| above this → use DRIVE, not HDRIVE
+                             (default 0.05 rad/s)
+  frame_id         (str)   : frame for published messages (default "base_footprint")
+  flush_rate       (float) : Hz at which to flush the serial input buffer
+                             (default 1.0 — prevents slow stale-telemetry backlog)
 """
 
 import math
@@ -54,9 +74,9 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 import serial
 
 from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Float32MultiArray, String
-from builtin_interfaces.msg import Time as RosTime
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -83,63 +103,88 @@ def _parse_telemetry(line: str) -> dict:
 class AMR4DriverNode(Node):
     """
     ROS 2 Humble node: bridges /cmd_vel ↔ DriveMaster.ino over USB-Serial.
+
+    Drive mode selection:
+      • |angular.z| ≤ omega_threshold  →  HDRIVE (heading-hold, no drift)
+      • |angular.z| >  omega_threshold  →  DRIVE  (free rotation)
+
+    Publishes /odom_raw as Float32MultiArray([rpm1, rpm2, rpm3, rpm4]).
+    Does NOT re-publish IMU data — imu_node.py owns /imu.
     """
 
     def __init__(self):
         super().__init__("amr4_driver_node")
 
         # ── Declare parameters ────────────────────────────────────────────────
-        self.declare_parameter("serial_port",   "/dev/ttyACM0")
-        self.declare_parameter("baud_rate",      115200)
-        self.declare_parameter("cmd_vel_topic",  "/cmd_vel")
-        self.declare_parameter("cmd_timeout",    0.5)   # seconds
-        self.declare_parameter("publish_imu",    True)
-        self.declare_parameter("frame_id",       "imu_link")
-        self.declare_parameter("max_send_rate",  10.0)  # Hz (max serial write rate to Arduino)
+        self.declare_parameter("serial_port",     "/dev/ttyACM0")
+        self.declare_parameter("baud_rate",        115200)
+        self.declare_parameter("cmd_vel_topic",    "/cmd_vel_safe")
+        self.declare_parameter("cmd_timeout",      0.5)    # seconds
+        self.declare_parameter("max_send_rate",    5.0)    # Hz — 5 Hz to prevent buffer buildup
+        self.declare_parameter("omega_threshold",  0.05)   # rad/s
+        self.declare_parameter("frame_id",         "base_footprint")
+        self.declare_parameter("flush_rate",       1.0)    # Hz — periodic RX flush
 
-        self._port_name  = self.get_parameter("serial_port").value
-        self._baud       = self.get_parameter("baud_rate").value
-        self._cmd_topic  = self.get_parameter("cmd_vel_topic").value
-        self._cmd_timeout = self.get_parameter("cmd_timeout").value
-        self._pub_imu    = self.get_parameter("publish_imu").value
-        self._frame_id   = self.get_parameter("frame_id").value
-        self._max_send_rate = self.get_parameter("max_send_rate").value
-        self._min_send_interval = 1.0 / self._max_send_rate if self._max_send_rate > 0 else 0.0
+        self._port_name       = self.get_parameter("serial_port").value
+        self._baud            = self.get_parameter("baud_rate").value
+        self._cmd_topic       = self.get_parameter("cmd_vel_topic").value
+        self._cmd_timeout     = self.get_parameter("cmd_timeout").value
+        self._max_send_rate   = self.get_parameter("max_send_rate").value
+        self._omega_threshold = self.get_parameter("omega_threshold").value
+        self._frame_id        = self.get_parameter("frame_id").value
+        self._flush_rate      = self.get_parameter("flush_rate").value
+
+        self._min_send_interval = (
+            1.0 / self._max_send_rate if self._max_send_rate > 0 else 0.0
+        )
 
         # ── Internal state ────────────────────────────────────────────────────
         self._serial: serial.Serial | None = None
         self._serial_lock = threading.Lock()
         self._last_cmd_time = time.monotonic()
         self._last_serial_write_time = 0.0
-        self._stopped = False   # tracks whether we've already sent STOP
+        self._last_sent_cmd: tuple | None = None
+        self._stopped = False
+
+        # Current heading latched from /imu (degrees, BNO055 frame 0..360).
+        # Starts at 0.0 — used for HDRIVE target. Updated from /imu callback.
+        self._current_heading_deg: float = 0.0
+        self._imu_received: bool = False     # True once we have a real heading
 
         # ── Serial open (with retry) ──────────────────────────────────────────
         self._open_serial()
 
-        # ── Publishers ───────────────────────────────────────────────────────
+        # ── QoS profiles ─────────────────────────────────────────────────────
         best_effort_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             depth=10,
         )
 
-        self._pub_rpms = self.create_publisher(
-            Float32MultiArray, "/wheel_rpms", 10
+        # ── Publishers ───────────────────────────────────────────────────────
+        # /odom_raw: raw 4-wheel RPMs for odom_node to compute odometry
+        self._pub_odom_raw = self.create_publisher(
+            Float32MultiArray, "/odom_raw", 10
         )
+        # /driver/status: raw telemetry string for debugging
         self._pub_status = self.create_publisher(
             String, "/driver/status", 10
         )
-        if self._pub_imu:
-            self._pub_imu_msg = self.create_publisher(
-                Imu, "/imu/raw", best_effort_qos
-            )
 
-        # ── Subscriber ───────────────────────────────────────────────────────
+        # ── Subscribers ──────────────────────────────────────────────────────
+        # /cmd_vel: motion commands (from safety_stop or teleop)
         self._sub_cmd = self.create_subscription(
             Twist,
             self._cmd_topic,
             self._cmd_vel_callback,
             10,
+        )
+        # /imu: latch current heading from imu_node for HDRIVE
+        self._sub_imu = self.create_subscription(
+            Imu,
+            "/imu",
+            self._imu_callback,
+            best_effort_qos,
         )
 
         # ── Watchdog timer (fires every cmd_timeout/2 seconds) ───────────────
@@ -147,6 +192,14 @@ class AMR4DriverNode(Node):
         self._watchdog_timer = self.create_timer(
             watchdog_period, self._watchdog_callback
         )
+
+        # ── Periodic serial RX flush timer ───────────────────────────────────
+        # Drains stale unread telemetry bytes so the OS buffer never fills up.
+        # At 115200 baud + 10 Hz telemetry (~150 bytes/frame) the buffer would
+        # reach the OS limit in ~30 s without this flush. At 5 Hz cmd rate the
+        # output side is already light; this keeps the input side clean.
+        flush_period = 1.0 / self._flush_rate if self._flush_rate > 0 else 1.0
+        self._flush_timer = self.create_timer(flush_period, self._flush_serial_buffer)
 
         # ── Serial reader thread ──────────────────────────────────────────────
         self._reader_thread = threading.Thread(
@@ -158,8 +211,14 @@ class AMR4DriverNode(Node):
             f"AMR4 driver node started  port={self._port_name}  baud={self._baud}"
         )
         self.get_logger().info(
-            f"Subscribing to '{self._cmd_topic}'  "
-            f"cmd_timeout={self._cmd_timeout:.1f}s"
+            f"cmd_vel topic='{self._cmd_topic}'  "
+            f"cmd_timeout={self._cmd_timeout:.1f}s  "
+            f"max_send_rate={self._max_send_rate:.1f} Hz  "
+            f"omega_threshold={self._omega_threshold:.3f} rad/s"
+        )
+        self.get_logger().info(
+            "Drive mode: HDRIVE (heading-lock) when |omega| < threshold, "
+            "DRIVE (free rotate) otherwise."
         )
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -175,6 +234,11 @@ class AMR4DriverNode(Node):
                     timeout=1.0,
                 )
                 time.sleep(2.0)  # let Arduino reset after DTR toggle
+                # Flush any boot/banner bytes so telemetry starts clean
+                try:
+                    self._serial.reset_input_buffer()
+                except Exception:
+                    pass
                 self.get_logger().info(
                     f"Serial port {self._port_name} opened at {self._baud} baud"
                 )
@@ -196,22 +260,52 @@ class AMR4DriverNode(Node):
                     self.get_logger().error(f"Serial write error: {exc}")
                     self._serial = None
 
+    def _flush_serial_buffer(self):
+        """
+        Periodically flush the serial RX input buffer.
+
+        The Arduino sends telemetry at 10 Hz (~150 bytes/frame = 1500 B/s).
+        The reader thread processes lines as fast as they arrive, so under
+        normal operation the buffer stays near zero.  However, if the reader
+        thread falls behind (high CPU, serial hiccup) the OS buffer fills and
+        old commands begin to pile up.  Calling reset_input_buffer() once per
+        second discards any bytes that the reader has not yet consumed,
+        preventing the classic 'commands arrive late in bursts after silence'
+        symptom that was observed at 10 Hz cmd_vel.
+        """
+        with self._serial_lock:
+            if self._serial and self._serial.is_open:
+                try:
+                    self._serial.reset_input_buffer()
+                except Exception:
+                    pass
+
+    def _send_hdrive(self, vx: float, vy: float, heading_deg: float):
+        """
+        Send HDRIVE command — Arduino locks to heading_deg while translating.
+
+        DriveMaster.ino mecanumIK signature:  mecanumIK(vy, vx, omega)
+          vy          → linear.y  (strafe left positive)
+          vx          → linear.x  (forward positive)
+          heading_deg → absolute BNO055 heading target (0..360 deg)
+        """
+        cmd = f"HDRIVE,{vy:.4f},{vx:.4f},{heading_deg:.2f}"
+        self._write_cmd(cmd)
+
     def _send_drive(self, vx: float, vy: float, omega: float):
         """
-        Format and send a DRIVE command to the Arduino.
+        Send plain DRIVE command — no heading-hold.
 
         DriveMaster.ino mecanumIK signature:  mecanumIK(vy, vx, omega)
           vy    → linear.y  (strafe left positive)
           vx    → linear.x  (forward positive)
           omega → angular.z (CCW positive, rad/s)
-
-        The Arduino clamps to MAX_LINEAR_VEL and MAX_ANGULAR_VEL internally.
         """
         cmd = f"DRIVE,{vy:.4f},{vx:.4f},{omega:.4f}"
         self._write_cmd(cmd)
 
     def _send_stop(self):
-        """Send a zero-velocity DRIVE command (robot stops)."""
+        """Send a zero-velocity DRIVE command (robot stops, heading-hold cleared)."""
         with self._serial_lock:
             if self._serial and self._serial.is_open:
                 try:
@@ -221,10 +315,41 @@ class AMR4DriverNode(Node):
         self._write_cmd("DRIVE,0.0000,0.0000,0.0000")
 
     # ──────────────────────────────────────────────────────────────────────────
+    # /imu callback — latch heading for HDRIVE
+    # ──────────────────────────────────────────────────────────────────────────
+    def _imu_callback(self, msg: Imu):
+        """
+        Extract yaw from the imu_node quaternion and convert to BNO055-frame
+        degrees (0..360, increasing clockwise) for HDRIVE.
+
+        imu_node.py publishes orientation in ROS convention (CCW positive).
+        BNO055 heading is CW from North = mathematical (CCW) yaw negated.
+        We simply take the ROS yaw and convert: heading = (-yaw_rad) mod 2pi → deg.
+        """
+        q = msg.orientation
+        # Quaternion → yaw (ROS CCW convention, radians)
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        yaw_rad = math.atan2(siny_cosp, cosy_cosp)  # -pi..pi
+
+        # Convert to BNO055 heading convention: 0=forward, increasing clockwise
+        heading_deg = (-math.degrees(yaw_rad)) % 360.0
+        self._current_heading_deg = heading_deg
+        self._imu_received = True
+
+    # ──────────────────────────────────────────────────────────────────────────
     # /cmd_vel callback
     # ──────────────────────────────────────────────────────────────────────────
     def _cmd_vel_callback(self, msg: Twist):
-        """Receive a Twist from joystick / Nav2 and forward to the Arduino."""
+        """
+        Receive a Twist from joystick / Nav2 and forward to the Arduino.
+
+        Selects drive mode:
+          HDRIVE — when |angular.z| ≤ omega_threshold (translation-dominant).
+                   Uses the current IMU heading so Arduino actively prevents drift.
+          DRIVE  — when |angular.z| >  omega_threshold (intentional rotation).
+                   Plain open-loop omega, heading-hold cleared on Arduino side.
+        """
         now = time.monotonic()
         self._last_cmd_time = now
         self._stopped = False
@@ -235,19 +360,45 @@ class AMR4DriverNode(Node):
 
         is_stop_cmd = (vx == 0.0 and vy == 0.0 and omega == 0.0)
 
-        # Skip sending if velocities match the previously sent command
-        current_cmd = (round(vx, 4), round(vy, 4), round(omega, 4))
-        if hasattr(self, '_last_sent_cmd') and self._last_sent_cmd == current_cmd:
-            return
+        # Deduplicate: skip if same command as last sent
+        if is_stop_cmd:
+            current_cmd = (0.0, 0.0, 0.0, "STOP")
+        elif abs(omega) > self._omega_threshold:
+            current_cmd = (round(vx, 4), round(vy, 4), round(omega, 4), "DRIVE")
+        else:
+            # For HDRIVE, heading changes each callback so we can't deduplicate
+            # purely on velocity — always send at the rate-limiter cadence.
+            current_cmd = (round(vx, 4), round(vy, 4), 0.0, "HDRIVE")
 
-        # Rate-limiting: Throttle serial writes to max_send_rate (e.g. 20Hz),
-        # but ALWAYS let zero-velocity STOP commands go through instantly!
-        if not is_stop_cmd and (now - self._last_serial_write_time) < self._min_send_interval:
-            return
+        # Stop commands always go through immediately (safety)
+        if not is_stop_cmd:
+            if current_cmd == self._last_sent_cmd:
+                return  # same DRIVE/STOP command, skip
+
+            # Rate-limiting for non-stop commands
+            if (now - self._last_serial_write_time) < self._min_send_interval:
+                return
 
         self._last_sent_cmd = current_cmd
         self._last_serial_write_time = now
-        self._send_drive(vx, vy, omega)
+
+        if is_stop_cmd:
+            self._send_stop()
+        elif abs(omega) > self._omega_threshold:
+            # Intentional rotation — use plain DRIVE
+            self._send_drive(vx, vy, omega)
+        else:
+            # Pure translation — use HDRIVE with current heading
+            # If we haven't received an IMU message yet, fall back to DRIVE
+            if not self._imu_received:
+                self.get_logger().warn(
+                    "No /imu data yet — using DRIVE instead of HDRIVE. "
+                    "Check imu_node.py is running.",
+                    throttle_duration_sec=5.0,
+                )
+                self._send_drive(vx, vy, omega)
+            else:
+                self._send_hdrive(vx, vy, self._current_heading_deg)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Watchdog: stop the robot if /cmd_vel goes silent
@@ -273,7 +424,10 @@ class AMR4DriverNode(Node):
     def _serial_reader_loop(self):
         """
         Background thread: read lines from the Arduino and re-publish
-        wheel RPMs and (optionally) IMU data.
+        wheel RPMs as /odom_raw for the odom_node.
+
+        IMU data in the telemetry is intentionally ignored here.
+        The dedicated imu_node.py is the sole publisher of /imu.
         """
         while rclpy.ok():
             # Guard: wait for a valid port
@@ -313,72 +467,22 @@ class AMR4DriverNode(Node):
             if not data:
                 continue
 
-            # ── Wheel RPMs ────────────────────────────────────────────────────
+            # ── /odom_raw: 4-wheel RPMs for odom_node ────────────────────────
+            # odom_node subscribes here and runs mecanum FK to compute odometry.
+            # Layout: [rpm_FL, rpm_FR, rpm_RL, rpm_RR]
+            #   W1 = FL (front-left),  W2 = FR (front-right)
+            #   W3 = RL (rear-left),   W4 = RR (rear-right)
             try:
-                rpm_msg = Float32MultiArray()
-                rpm_msg.data = [
+                odom_raw_msg = Float32MultiArray()
+                odom_raw_msg.data = [
                     float(data.get("W1_RPM", 0.0)),
                     float(data.get("W2_RPM", 0.0)),
                     float(data.get("W3_RPM", 0.0)),
                     float(data.get("W4_RPM", 0.0)),
                 ]
-                self._pub_rpms.publish(rpm_msg)
+                self._pub_odom_raw.publish(odom_raw_msg)
             except Exception:
                 pass
-
-            # ── IMU data (BNO055 fused output) ───────────────────────────────
-            if self._pub_imu and "IMU_OK" in data:
-                try:
-                    if data["IMU_OK"] == "1":
-                        self._publish_imu(data)
-                except Exception:
-                    pass
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # IMU publisher
-    # ──────────────────────────────────────────────────────────────────────────
-    def _publish_imu(self, data: dict):
-        """
-        Convert BNO055 telemetry fields to sensor_msgs/Imu and publish.
-
-        Fields used from DriveMaster telemetry:
-          HDG   (deg, 0..360)         → orientation quaternion (yaw only)
-          GX,GY,GZ (deg/s)           → angular_velocity
-          AX,AY,AZ (m/s², gravity removed) → linear_acceleration
-
-        Note: The BNO055 provides full 9-DOF fused orientation (Euler angles).
-        For a proper quaternion we would need all three Euler angles; here we
-        publish a yaw-only quaternion for now.  Connect a dedicated imu_node.py
-        for full fusion if needed.
-        """
-        imu_msg = Imu()
-        now = self.get_clock().now().to_msg()
-        imu_msg.header.stamp = now
-        imu_msg.header.frame_id = self._frame_id
-
-        # Heading (yaw) from BNO055 Euler — convert degrees → radians
-        hdg_deg = float(data.get("HDG", 0.0))
-        yaw = math.radians(hdg_deg)
-
-        # Yaw-only quaternion  (roll=0, pitch=0)
-        imu_msg.orientation.x = 0.0
-        imu_msg.orientation.y = 0.0
-        imu_msg.orientation.z = math.sin(yaw / 2.0)
-        imu_msg.orientation.w = math.cos(yaw / 2.0)
-        # Covariance unknown (-1 diagonal signals "unknown")
-        imu_msg.orientation_covariance[0] = -1.0
-
-        # Angular velocity (deg/s → rad/s)
-        imu_msg.angular_velocity.x = math.radians(float(data.get("GX", 0.0)))
-        imu_msg.angular_velocity.y = math.radians(float(data.get("GY", 0.0)))
-        imu_msg.angular_velocity.z = math.radians(float(data.get("GZ", 0.0)))
-
-        # Linear acceleration (already m/s², gravity removed by BNO055)
-        imu_msg.linear_acceleration.x = float(data.get("AX", 0.0))
-        imu_msg.linear_acceleration.y = float(data.get("AY", 0.0))
-        imu_msg.linear_acceleration.z = float(data.get("AZ", 0.0))
-
-        self._pub_imu_msg.publish(imu_msg)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Shutdown

@@ -1,4 +1,34 @@
 #!/usr/bin/env python3
+"""
+launch_robot.launch.py — AMR4 full bringup launch file
+========================================================
+Platform : Jetson Orin Nano · Ubuntu 22.04 · ROS 2 Humble
+Robot    : AMR4 mecanum 4WD with RPLidar A1
+
+Node pipeline summary
+---------------------
+  joy_node       → /joy
+  joy_teleop     → /cmd_vel
+  safety_stop    : /cmd_vel → /cmd_vel_safe  (laser-based obstacle gate)
+  amr4_driver    : /cmd_vel_safe → Arduino Mega (HDRIVE/DRIVE commands)
+                   Arduino Mega telemetry → /odom_raw  (4-wheel RPMs)
+  odom_node      : /odom_raw → /odom  (mecanum FK dead-reckoning odometry)
+  imu_node       : /dev/ttyACM1 (BNO055 JSON) → /imu
+  ekf_node       : /odom + /imu → /odometry/filtered  (remapped to /odom by EKF config)
+  lidar_node     : /dev/ttyUSB0 (RPLidar A1 sensitivity mode) → /scan
+  slam_toolbox   : /scan + /odom → map
+  nav2           : map → /cmd_vel
+
+Serial port assignments (typical — adjust if your system differs):
+  /dev/ttyACM0 → Arduino Mega (DriveMaster.ino) — amr4_driver_node
+  /dev/ttyACM1 → Arduino Mega (BNO055 IMU firmware) — imu_node
+  /dev/ttyUSB0 → RPLidar A1 (USB-serial adapter) — lidar_node
+
+Launch arguments
+----------------
+  verbose (bool, default false) — set true to see all node logs in terminal
+  expect_frontier (bool, default false) — set true to wait for frontier_explorer
+"""
 
 import os
 
@@ -32,24 +62,17 @@ def _launch_setup(context, *args, **kwargs):
     )
 
     out = "screen" if verbose else "log"
-    # FATAL = only crashes; keeps bringup_status board alone on the TTY.
     log_args = [] if verbose else ["--ros-args", "--log-level", "fatal"]
     nav2_log_level = "info" if verbose else "fatal"
 
     actions = []
     if not verbose:
-        # Kill ROS logger spam from included launches (slam/nav2/rsp) too.
         actions.append(SetEnvironmentVariable("RCUTILS_LOGGING_MIN_SEVERITY", "FATAL"))
-        # Soften CycloneDDS discovery chatter when RViz joins from another host.
-        actions.append(SetEnvironmentVariable("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] [{name}]: {message}"))
+        actions.append(SetEnvironmentVariable(
+            "RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] [{name}]: {message}"
+        ))
 
-    # ── Web dashboard (replaces the terminal bringup_status board) ───────────
-    # Serves the interactive GUI at http://<pi-ip>:8080 — open it in a
-    # browser on the laptop (the Pi is headless over SSH, so no X11 needed).
-    # Status board + live robot/lidar view + on-demand tools (IMU test,
-    # IMU calibration, drive-distance) + click-to-send nav goals + E-STOP.
-    # The old terminal board is still available:
-    #   ros2 run Ros_lidar_bot bringup_status
+    # ── Web dashboard ─────────────────────────────────────────────────────────
     dashboard = Node(
         package=package_name,
         executable="robot_dashboard",
@@ -64,7 +87,7 @@ def _launch_setup(context, *args, **kwargs):
         }],
     )
 
-    # ── 1. Robot State Publisher ─────────────────────────────────────────────
+    # ── 1. Robot State Publisher ──────────────────────────────────────────────
     rsp = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(pkg_share, "launch", "rsp.launch.py")
@@ -75,186 +98,166 @@ def _launch_setup(context, *args, **kwargs):
         }.items(),
     )
 
-    # ── 2. IMU Node (BNO055 via Arduino Mega UART) ─────────────────────────────
+    # ── 2. IMU Node (BNO055 via dedicated Arduino Mega UART) ──────────────────
+    # This node opens /dev/ttyACM1 and reads BNO055 JSON lines from a separate
+    # Arduino that runs the BNO055 firmware (NOT DriveMaster.ino).
+    # It publishes /imu (sensor_msgs/Imu) for the EKF and HDRIVE heading latch.
     imu_node = Node(
         package=package_name,
         executable="imu_node",
         name="imu_node",
         output=out,
         arguments=log_args,
-        # Serial nodes self-heal (retry/reconnect loops), but respawn covers
-        # any crash path they can't recover from.
         respawn=True,
         respawn_delay=3.0,
         parameters=[{
-            "serial_port": "/dev/ttyACM1",
-            "baud_rate": 500000,
-            "output_topic": "/imu",
-            "frame_id": "imu_link",
-            "publish_rate": 50.0,
-            "timeout": 0.1,
+            "serial_port":   "/dev/ttyACM1",
+            "baud_rate":     500000,
+            "output_topic":  "/imu",
+            "frame_id":      "imu_link",
+            "publish_rate":  50.0,
+            "timeout":       0.1,
         }],
     )
 
-    # ── 3. Motor Driver Node (DDSM115 via UART) ──────────────────────────────
-    # Filtered path: Nav2 / teleop → /cmd_vel → safety_stop → /cmd_vel_safe → driver.
+    # ── 3. AMR4 Motor Driver Node (DriveMaster.ino via UART) ──────────────────
+    # Receives /cmd_vel_safe (safety-filtered), sends HDRIVE or DRIVE commands
+    # to the Arduino Mega at 5 Hz max to prevent serial buffer accumulation.
+    # Reads Arduino telemetry and publishes /odom_raw (4-wheel RPMs).
+    # Does NOT re-publish IMU data — imu_node is the sole /imu publisher.
+    #
+    # Drive mode logic (internal to amr4_driver_node):
+    #   |angular.z| <= omega_threshold → HDRIVE (heading-lock, no drift)
+    #   |angular.z| >  omega_threshold → DRIVE  (free rotation)
     driver_node = Node(
         package=package_name,
-        executable="driver_node",
-        name="driver_node",
+        executable="amr4_driver",
+        name="amr4_driver_node",
         output=out,
         arguments=log_args,
         respawn=True,
         respawn_delay=3.0,
         parameters=[{
-            "serial_port": "/dev/ttyACM0",
-            "baud_rate": 115200,
-            # 20 Hz encoder feedback → denser wheel odometry for the EKF.
-            "poll_rate": 20.0,
-            # False: teleop W / ROS +X = physical forward on this chassis.
-            "invert_drive": False,
-            # Only consume safety-filtered commands — never raw /cmd_vel.
-            "cmd_vel_topic": "/cmd_vel_safe",
+            "serial_port":      "/dev/ttyACM0",
+            "baud_rate":        115200,
+            # Safety-filtered cmd_vel only — never consume raw /cmd_vel directly
+            "cmd_vel_topic":    "/cmd_vel_safe",
+            "cmd_timeout":      0.5,
+            # 5 Hz max write rate prevents UART buffer accumulation at 115200 baud.
+            # The Arduino reads commands immediately at each loop tick, but if
+            # the OS TX buffer fills (because driver sends faster than Arduino reads)
+            # commands queue and execute late. 5 Hz avoids this entirely.
+            "max_send_rate":    5.0,
+            # rad/s — below this, use HDRIVE (heading-hold) instead of DRIVE
+            "omega_threshold":  0.05,
+            "frame_id":         "base_footprint",
+            # Flush stale Arduino telemetry from the RX buffer every second.
+            # Without this, unread telemetry accumulates at ~1500 B/s and causes
+            # the OS read buffer to stall after ~30 s.
+            "flush_rate":       1.0,
         }],
     )
 
-    # ── 4. Odometry Node ─────────────────────────────────────────────────────
+    # ── 4. Odometry Node ──────────────────────────────────────────────────────
+    # Subscribes to /odom_raw (Float32MultiArray — 4 wheel RPMs from driver node).
+    # Runs mecanum forward kinematics to compute body velocity (vx, vy, omega).
+    # Integrates pose (x, y, yaw) and publishes nav_msgs/Odometry on /odom.
+    # broadcast_tf=False: EKF is the sole odom→base_footprint TF publisher.
     odom_node = Node(
         package=package_name,
         executable="odom_node",
         name="odom_node",
         output=out,
         arguments=log_args,
+        respawn=True,
+        respawn_delay=3.0,
         parameters=[{
-            # EKF (started at T=0) is the ONLY publisher of odom→base_footprint.
-            # Two publishers of the same transform (odom_node raw pose vs EKF
-            # fused pose) fight each other — TF flickers between two headings,
-            # which showed up as the LiDAR scan rotating/jumping in RViz.
-            "broadcast_tf": False,
+            # Chassis geometry — must match Config.h values
+            "wheel_radius":   0.05,    # metres (WHEEL_RADIUS in Config.h)
+            "chassis_l":      0.52,    # metres (CHASSIS_L  in Config.h)
+            "chassis_w":      0.88,    # metres (CHASSIS_W  in Config.h)
+            # EKF publishes odom→base_footprint; odom_node must NOT also do it
+            "broadcast_tf":   False,
+            "odom_raw_topic": "/odom_raw",
+            "odom_topic":     "/odom",
+            "base_frame_id":  "base_footprint",
+            "odom_frame_id":  "odom",
+            # Covariance — tune per robot (higher = trust EKF IMU fusion more)
+            "pose_cov_x":      0.01,
+            "pose_cov_y":      0.01,
+            "pose_cov_yaw":    0.01,
+            "twist_cov_vx":    0.01,
+            "twist_cov_vy":    0.01,
+            "twist_cov_omega": 0.01,
         }],
     )
 
-    # ── 5. LiDAR Node (RPLidar S2E via Ethernet/UDP — official Slamtec driver)
-    #
-    # The S2E streams over Ethernet (UDP), NOT USB-serial. This removes the
-    # whole class of A1 failures we fought before (CP2102 dropouts, motor
-    # spin-up '80008000' scan-start timeouts, USB bus contention with the two
-    # Arduino/RS485 serial links).
-    #
-    # NETWORK SETUP REQUIRED on the RPi 5 (one-time):
-    #   The S2E has a fixed default IP of 192.168.11.2 and talks UDP :8089.
-    #   Give eth0 a static address on the same subnet, e.g. with nmcli:
-    #     sudo nmcli con add type ethernet ifname eth0 con-name lidar \
-    #          ipv4.method manual ipv4.addresses 192.168.11.1/24
-    #   Verify with:  ping 192.168.11.2
-    #
-    # Slamtec sllidar_ros2 (UDP). Do NOT use apt ros-jazzy-rplidar-ros SDK
-    # 1.12 — that build is serial-only and ignores channel_type:=udp.
-    # Install: git clone https://github.com/Slamtec/sllidar_ros2.git into src/
+    # ── 5. LiDAR Node (RPLidar A1 via USB-serial, sensitivity mode) ──────────
+    # Uses pyrplidar library with Express/Sensitivity mode (mode 1) for higher
+    # point density than standard mode.
+    # Requires: pip3 install pyrplidar --break-system-packages
+    # Port: /dev/ttyUSB0 (USB-serial adapter from RPLidar A1 module)
+    # Publishes /scan (sensor_msgs/LaserScan) in ROS CCW convention.
     lidar_node = Node(
-        package="sllidar_ros2",
-        executable="sllidar_node",
-        name="rplidar_node",
-        output=out,
-        arguments=log_args,
-        # Respawn if the driver ever exits (cable yank, power dip). UDP needs
-        # no motor spin-down grace period like the A1 did, so 5 s is plenty.
-        respawn=True,
-        respawn_delay=5.0,
-        # Raw hardware scan — chassis/mast returns still present. Filtered to
-        # /scan by scan_min_range_filter so RViz/SLAM/Nav2 never see them.
-        remappings=[("scan", "scan_raw"), ("/scan", "/scan_raw")],
-        parameters=[{
-            "channel_type":      "udp",
-            "udp_ip":            "192.168.11.2",   # S2E factory default
-            "udp_port":          8089,             # S2E factory default
-            "frame_id":          "laser_frame",
-            "inverted":          False,
-            "angle_compensate":  True,
-            # DenseBoost per user requirement — full ~3200 pts/rev resolution
-            # matters for their use case; do NOT downgrade this again.
-            # Trade-off (measured 2026-07-17): the extra scan-match/raytrace
-            # CPU makes map→odom run ~0.6 s stale on the RPi5. The Nav2/SLAM
-            # transform tolerances are set to 1.0 s specifically to absorb
-            # that — if they are ever lowered, this mode is why things break.
-            "scan_mode":         "DenseBoost",
-        }],
-    )
-
-    # Drop returns within 0.30 m of the lidar (chassis/mast frame hits).
-    # Without this, RViz /scan still shows the body even if Nav2 ignores it.
-    scan_filter = Node(
         package=package_name,
-        executable="scan_min_range_filter",
-        name="scan_min_range_filter",
+        executable="lidar_node",
+        name="lidar_node",
         output=out,
         arguments=log_args,
         respawn=True,
-        respawn_delay=2.0,
+        respawn_delay=3.0,
         parameters=[{
-            "min_range": 0.30,  # per user: nothing within 30 cm of the bot
+            "serial_port":      "/dev/ttyUSB0",
+            "serial_baud":      115200,
+            "scan_topic":       "/scan",
+            "frame_id":         "laser_frame",
+            # RPLidar A1 reliable range: 0.15 m to 12.0 m
+            "min_range":        0.15,
+            "max_range":        12.0,
+            # Motor PWM: 660 is nominal for A1 (600-700 range)
+            "motor_pwm":        660,
+            # True = Express/Sensitivity mode (higher density, recommended)
+            # False = Standard mode (fallback)
+            "sensitivity_mode": True,
+            # 0.0 = publish every complete sweep (no throttle)
+            "publish_rate":     0.0,
+            "num_bins":         360,
         }],
     )
 
-    # ── 6. Safety Stop Node ──────────────────────────────────────────────────
-    # Scan-based velocity filter between Nav2/teleop and the motor driver
-    # (same wiring as the main-branch sim pipeline):
-    #   Nav2 / teleop → /cmd_vel → safety_stop → /cmd_vel_safe → driver
-    # Also publishes /safety_blocked, which frontier_explorer uses to abort
-    # goals that keep the robot pinned against an obstacle.
+    # ── 6. Safety Stop Node ───────────────────────────────────────────────────
+    # Scan-based velocity filter: /cmd_vel → /cmd_vel_safe
+    # Stops the robot if obstacles are detected within min_safe_distance.
     safety_stop = Node(
         package=package_name,
         executable="safety_stop_node",
         name="safety_stop",
         output=out,
         arguments=log_args,
-        # If this node dies the driver gets no commands at all (fail-safe:
-        # robot stops) — respawn it so the pipeline recovers on its own.
         respawn=True,
         respawn_delay=2.0,
         parameters=[{
-            # Stop for real obstacles just past the filtered near field.
-            "min_safe_distance": 0.35,
-            # /scan is already clipped at 0.30 m; keep ignore in sync.
-            "ignore_below": 0.30,
-            # 50° (was 90°): only a head-on obstacle blocks forward drive, so a
-            # crowd standing beside the robot no longer freezes it.
-            "front_opening_deg": 50.0,
-            "rear_opening_deg": 50.0,
-            # Hysteresis: release only once clear past 0.35 + 0.10 m — kills the
-            # stop-go chatter at the threshold in a crowd.
-            "clear_margin": 0.10,
-            # Hard-stop if wheel odometry dies (prevents Nav2 circle-on-stale-pose).
-            "odom_raw_timeout_sec": 0.5,
+            "min_safe_distance":     0.35,
+            "ignore_below":          0.15,   # matches lidar min_range
+            "front_opening_deg":     50.0,
+            "rear_opening_deg":      50.0,
+            "clear_margin":          0.10,
+            "odom_raw_timeout_sec":  0.5,
         }],
     )
 
-    # ── 6b. Gamepad teleop (Bluetooth or USB controller) ─────────────────────
-    # joy_node (SDL) reads the controller and publishes /joy; joy_teleop maps
-    # it to /cmd_vel. Left stick = movement, RT/LT = linear speed ±,
-    # RB/LB = angular speed ±. joy_teleop yields /cmd_vel to Nav2 whenever
-    # the stick is centered, so both can coexist on the same topic.
-    #
-    # Bluetooth: pair once on the Pi with bluetoothctl (scan on / pair / trust
-    # / connect) — "trust" makes it auto-reconnect on power-up. NOTE: over
-    # Bluetooth many pads expose a DIFFERENT axis/button order than over a
-    # USB dongle (e.g. Xbox BT without xpadneo puts triggers elsewhere).
-    # If controls act wrong, check `ros2 topic echo /joy` and override the
-    # axis_*/button_* parameters on joy_teleop below.
+    # ── 6b. Gamepad teleop ────────────────────────────────────────────────────
     joy_node = Node(
         package="joy",
         executable="joy_node",
         name="joy_node",
         output=out,
         arguments=log_args,
-        # Survive controller disconnect/reconnect (BT dropout or USB unplug).
         respawn=True,
         respawn_delay=2.0,
         parameters=[{
-            "device_id": 0,
-            "deadzone": 0.05,
-            # Keep /joy streaming while a stick is held so joy_teleop's
-            # 0.5 s watchdog never fires mid-motion.
+            "device_id":       0,
+            "deadzone":        0.05,
             "autorepeat_rate": 20.0,
         }],
     )
@@ -267,41 +270,10 @@ def _launch_setup(context, *args, **kwargs):
         arguments=log_args,
     )
 
-    # ── 6c. Camera pan/tilt head (OT5320M pan + SG90 tilt, via Arduino Uno) ──
-    # Right stick → /camera_cmd → camera_servo_node → UART → Uno → servos.
-    # Parallel control path: never touches /cmd_vel, Nav2 or frontier
-    # exploration. Degrades gracefully if the Uno is unplugged — the node keeps
-    # running, publishes joint states, and reconnects on its own.
-    #   OT5320M pan : 20 kg PWM servo, Uno D6, 7.4 V external supply — this one
-    #                 is CONTINUOUS-ROTATION (confirmed on the bench: a fixed
-    #                 pulse spins it forever). Stick position = speed/
-    #                 direction, not a target angle, hence pan_continuous.
-    #   SG90 tilt   : positional PWM micro servo, Uno D5, 5 V external supply
-    # The Uno makes the pulses in hardware timers, so the head does not hunt
-    # when SLAM/Nav2/YOLO load the Pi. Flash arduino/camera_head/camera_head.ino
-    # (wiring + protocol documented at the top of that sketch).
-    # The Uno is its own USB0 link; motors and IMU Mega are on separate ports.
-    # Use a /dev/serial/by-id/... path if the numbers shuffle on replug.
-    # Alternatives: pan_driver:="pwm" drives both servos straight off the Pi's
-    # GPIOs (pan_pwm_pin/tilt_pwm_pin), "bus" a Feetech STS/SMS bus servo —
-    # see the camera_servo_node.py docstring.
-    camera_servo = Node(
-        package=package_name,
-        executable="camera_servo",
-        name="camera_servo",
-        output=out,
-        arguments=log_args,
-        respawn=True,
-        respawn_delay=3.0,
-        parameters=[{
-            "pan_driver": "arduino",
-            "pan_continuous": True,
-            "arduino_port": "/dev/ttyUSB0",
-            "arduino_baud": 115200,
-        }],
-    )
-
-    # ── 7. EKF Node (Fuses Odom & IMU) ───────────────────────────────────────
+    # ── 7. EKF Node (fuses /odom + /imu) ─────────────────────────────────────
+    # Fuses wheel odometry (/odom) with IMU (/imu) from imu_node.
+    # Publishes /odometry/filtered remapped to /odom (via ekf.yaml or remapping).
+    # Is the SOLE publisher of odom→base_footprint TF (odom_node broadcast_tf=False).
     ekf_node = Node(
         package="robot_localization",
         executable="ekf_node",
@@ -315,7 +287,7 @@ def _launch_setup(context, *args, **kwargs):
         remappings=[("/odometry/filtered", "/odom")],
     )
 
-    # ── 8. SLAM Toolbox ──────────────────────────────────────────────────────
+    # ── 8. SLAM Toolbox ───────────────────────────────────────────────────────
     slam_toolbox = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
@@ -332,8 +304,7 @@ def _launch_setup(context, *args, **kwargs):
         }.items(),
     )
 
-    # ── 9. Nav2 Navigation Stack ────────────────────────────────────────────
-    # Nav2 publishes /cmd_vel → safety_stop → /cmd_vel_safe → driver_node.
+    # ── 9. Nav2 Navigation Stack ──────────────────────────────────────────────
     nav2 = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
@@ -343,29 +314,30 @@ def _launch_setup(context, *args, **kwargs):
             )
         ),
         launch_arguments={
-            "use_sim_time": "false",
-            "params_file": os.path.join(pkg_share, "config", "nav2_params.yaml"),
-            "log_level": nav2_log_level,
+            "use_sim_time":  "false",
+            "params_file":   os.path.join(pkg_share, "config", "nav2_params.yaml"),
+            "log_level":     nav2_log_level,
         }.items(),
     )
 
     actions.extend([
         dashboard,
-        # ── Stage 1 (T=0s): Hardware + EKF ─────────────────────────────────────
+
+        # ── Stage 1 (T=0s): Hardware drivers + localization ───────────────────
         rsp,
-        imu_node,
-        driver_node,
-        safety_stop,
-        odom_node,
-        lidar_node,
-        scan_filter,
+        imu_node,        # /dev/ttyACM1 → /imu
+        driver_node,     # /dev/ttyACM0 → /odom_raw, sends HDRIVE/DRIVE
+        odom_node,       # /odom_raw → /odom (mecanum FK)
+        lidar_node,      # /dev/ttyUSB0 → /scan (RPLidar A1 sensitivity mode)
+        safety_stop,     # /cmd_vel → /cmd_vel_safe
         joy_node,
         joy_teleop,
-        camera_servo,
-        ekf_node,
-        # ── Stage 2 (T=5s): SLAM ──────────────────────────────────────────────
+        ekf_node,        # /odom + /imu → odom TF + fused pose
+
+        # ── Stage 2 (T=5s): SLAM — needs /scan + odom TF ─────────────────────
         TimerAction(period=5.0, actions=[slam_toolbox]),
-        # Nav2 starts after SLAM's map and map→odom transform are available.
+
+        # ── Stage 3 (T=8s): Nav2 — needs SLAM map + map→odom TF ──────────────
         TimerAction(period=8.0, actions=[nav2]),
     ])
     return actions
@@ -376,12 +348,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "verbose",
             default_value="false",
-            description="If true, all node logs go to the terminal (old spammy mode).",
+            description="If true, all node logs go to the terminal.",
         ),
         DeclareLaunchArgument(
             "expect_frontier",
             default_value="false",
-            description="If true, bringup_status waits for frontier_explorer (autonomous).",
+            description="If true, dashboard waits for frontier_explorer (autonomous).",
         ),
         OpaqueFunction(function=_launch_setup),
     ])
