@@ -1,43 +1,49 @@
 #!/usr/bin/env python3
 """
-amr4_driver_node.py — AMR4 Motor Driver Node
+amr4_driver_node.py — AMR4 Motor Driver + IMU Bridge Node
 =============================================
 Platform : Jetson Orin Nano · Ubuntu 22.04 · ROS 2 Humble
-Hardware : Arduino Mega 2560 running DriveMaster.ino
-           Connected via USB-Serial (e.g. /dev/ttyACM0)
+Hardware : Arduino Mega 2560 running DriveMaster.ino (ONE Mega — no second Arduino)
+           BNO055 IMU connected to the SAME Mega over I2C.
+           Connected to the Jetson via USB-Serial on /dev/ttyACM0.
 
 What this node does
 -------------------
-1. Subscribes to /cmd_vel (geometry_msgs/Twist) from either:
-     • joy_teleop_node  (gamepad controller)
-     • Nav2             (autonomous navigation)
+1. Subscribes to /cmd_vel_safe (geometry_msgs/Twist) and forwards to Arduino:
+     • If |angular.z| ≤ omega_threshold (translating only):
+         "HDRIVE,vy,vx,current_heading_deg\n"
+         Arduino's heading-hold PID (driven by its onboard BNO055) stabilises
+         the heading so the bot doesn't rotate during pure mecanum translation.
+         current_heading_deg is latched from our own /imu publisher (below).
+     • If |angular.z| > omega_threshold (intentional rotation):
+         "DRIVE,vy,vx,omega\n"
+         Plain drive — heading-hold is cleared on the Arduino side.
 
-2. Converts Twist to an ASCII command and writes it to the Arduino over serial:
-     • If angular.z ≈ 0 (translating only):
-         "HDRIVE,vy,vx,current_heading_deg\\n"
-         The Arduino's heading-hold PID locks the heading so the bot does NOT
-         drift sideways or rotate during pure translation (mecanum wheel scrub).
-         The current heading is latched from the /imu topic.
-     • If |angular.z| > OMEGA_THRESHOLD (intentional rotation):
-         "DRIVE,vy,vx,omega\\n"
-         Plain drive — heading-hold is cleared on the Arduino side automatically.
+2. Reads ASCII telemetry back from the Arduino (one CSV line per TELEMETRY_MS).
+   The telemetry format is:
+     T:<ms>,W1_SP:,W1_RPM:,...,W4_SP:,W4_RPM:,
+     LIFT:,RLIFT:,LLIFT:,KFSLIFT:,GRIP:,KFSGRIP:,ARM:,...,
+     HHOLD:,HTGT:,
+     IMU_OK:1,HDG:,ROLL:,PITCH:,GX:,GY:,GZ:,AX:,AY:,AZ:,CAL:
 
-3. Reads ASCII telemetry lines back from the Arduino and re-publishes:
-     • /odom_raw  (std_msgs/Float32MultiArray)  [W1..W4 actual RPM, 4 values]
-     • /driver/status (std_msgs/String)          [raw telemetry string for debug]
+   This node parses and re-publishes TWO topics from that single UART stream:
 
-   NOTE: IMU data is NOT re-published from this node. The dedicated imu_node.py
-   reads BNO055 JSON from its own serial port (/dev/ttyACM1) and publishes /imu.
-   This node only subscribes to /imu to latch the current heading for HDRIVE.
+   a) /encoder  (std_msgs/Float32MultiArray) — [W1_RPM,W2_RPM,W3_RPM,W4_RPM]
+      Consumed by odom_node which runs mecanum FK and publishes /odom_raw.
 
-4. Buffer management: flushes the serial input buffer every 1 second to prevent
-   stale telemetry from accumulating (the Arduino sends telemetry at 10 Hz,
-   which at 115200 baud slowly fills the OS buffer if we don't drain it).
+   b) /imu  (sensor_msgs/Imu) — parsed from IMU_OK/HDG/ROLL/PITCH/GX../AX..
+      BNO055 Euler angles are converted to a quaternion (ROS convention).
+      Angular velocity in rad/s, linear acceleration in m/s².
+      This is the SOLE /imu publisher — there is NO separate imu_node.
+      The EKF fuses /odom_raw + /imu → /odom.
+
+3. Buffer management: 1 Hz periodic RX flush (reset_input_buffer) prevents
+   stale telemetry from filling the OS buffer at ~1500 B/s.
 
 Serial protocol (DriveMaster.ino)
 ----------------------------------
-  HOST → ARDUINO  : "HDRIVE,vy,vx,heading_deg\\n"   (translating)
-                     "DRIVE,vy,vx,omega\\n"           (rotating)
+  HOST → ARDUINO  : "HDRIVE,vy,vx,heading_deg\n"   (translating)
+                     "DRIVE,vy,vx,omega\n"           (rotating)
                      vy    = linear.y  (m/s, left strafe positive)
                      vx    = linear.x  (m/s, forward positive)
                      omega = angular.z (rad/s, CCW positive)
@@ -103,14 +109,17 @@ def _parse_telemetry(line: str) -> dict:
 # ──────────────────────────────────────────────────────────────────────────────
 class AMR4DriverNode(Node):
     """
-    ROS 2 Humble node: bridges /cmd_vel ↔ DriveMaster.ino over USB-Serial.
+    ROS 2 Humble node: bridges /cmd_vel_safe ↔ DriveMaster.ino over USB-Serial.
 
     Drive mode selection:
       • |angular.z| ≤ omega_threshold  →  HDRIVE (heading-hold, no drift)
       • |angular.z| >  omega_threshold  →  DRIVE  (free rotation)
 
-    Publishes /odom_raw as Float32MultiArray([rpm1, rpm2, rpm3, rpm4]).
-    Does NOT re-publish IMU data — imu_node.py owns /imu.
+    Publishes from DriveMaster telemetry:
+      /encoder  (Float32MultiArray) — [rpm_FL, rpm_FR, rpm_RL, rpm_RR]
+      /imu      (sensor_msgs/Imu)   — BNO055 orientation + gyro + accel
+
+    There is NO separate imu_node — this node is the sole /imu publisher.
     """
 
     def __init__(self):
@@ -121,10 +130,11 @@ class AMR4DriverNode(Node):
         self.declare_parameter("baud_rate",        115200)
         self.declare_parameter("cmd_vel_topic",    "/cmd_vel_safe")
         self.declare_parameter("cmd_timeout",      0.5)    # seconds
-        self.declare_parameter("max_send_rate",    5.0)    # Hz — 5 Hz to prevent buffer buildup
+        self.declare_parameter("max_send_rate",    5.0)    # Hz
         self.declare_parameter("omega_threshold",  0.05)   # rad/s
         self.declare_parameter("frame_id",         "base_footprint")
-        self.declare_parameter("flush_rate",       1.0)    # Hz — periodic RX flush
+        self.declare_parameter("imu_frame_id",     "imu_link")   # frame for /imu
+        self.declare_parameter("flush_rate",       1.0)    # Hz
         self.declare_parameter("encoder_topic",    "/encoder")
 
         self._port_name       = self.get_parameter("serial_port").value
@@ -134,6 +144,7 @@ class AMR4DriverNode(Node):
         self._max_send_rate   = self.get_parameter("max_send_rate").value
         self._omega_threshold = self.get_parameter("omega_threshold").value
         self._frame_id        = self.get_parameter("frame_id").value
+        self._imu_frame_id    = self.get_parameter("imu_frame_id").value
         self._flush_rate      = self.get_parameter("flush_rate").value
         self._encoder_topic   = self.get_parameter("encoder_topic").value
 
@@ -165,26 +176,33 @@ class AMR4DriverNode(Node):
         )
 
         # ── Publishers ───────────────────────────────────────────────────────
-        # /encoder: raw 4-wheel RPMs straight from Arduino telemetry.
-        # odom_node subscribes here, runs mecanum FK and publishes /odom_raw.
+        # /encoder: raw 4-wheel RPMs from Arduino telemetry.
+        # odom_node subscribes here, runs mecanum FK, publishes /odom_raw.
         encoder_topic = self.get_parameter("encoder_topic").value
         self._pub_encoder = self.create_publisher(
             Float32MultiArray, encoder_topic, 10
         )
+        # /imu: BNO055 data parsed from DriveMaster telemetry.
+        # THIS NODE is the sole /imu publisher — no separate imu_node needed.
+        # The EKF fuses /odom_raw + /imu → final /odom.
+        self._pub_imu = self.create_publisher(Imu, "/imu", 10)
+
         # /driver/status: raw telemetry string for debugging
         self._pub_status = self.create_publisher(
             String, "/driver/status", 10
         )
 
         # ── Subscribers ──────────────────────────────────────────────────────
-        # /cmd_vel: motion commands (from safety_stop or teleop)
+        # /cmd_vel_safe: safety-filtered motion commands
         self._sub_cmd = self.create_subscription(
             Twist,
             self._cmd_topic,
             self._cmd_vel_callback,
             10,
         )
-        # /imu: latch current heading from imu_node for HDRIVE
+        # /imu: self-subscribe to latch current heading for HDRIVE.
+        # We publish /imu ourselves (from telemetry) so this subscription
+        # will receive our own messages — that's intentional and correct.
         self._sub_imu = self.create_subscription(
             Imu,
             "/imu",
@@ -487,6 +505,96 @@ class AMR4DriverNode(Node):
                     float(data.get("W4_RPM", 0.0)),
                 ]
                 self._pub_encoder.publish(enc_msg)
+            except Exception:
+                pass
+
+            # ── /imu: BNO055 data parsed from DriveMaster telemetry ─────────
+            # DriveMaster appendIMUTelemetry() sends:
+            #   IMU_OK:1 (or 0 if sensor offline)
+            #   HDG:   absolute heading  (deg, BNO055 Euler X, CW from North)
+            #   ROLL:  roll              (deg, BNO055 Euler Y)
+            #   PITCH: pitch             (deg, BNO055 Euler Z)
+            #   GX/GY/GZ: angular velocity (deg/s, GYROSCOPE vector)
+            #   AX/AY/AZ: linear acceleration (m/s², LINEARACCEL — gravity removed)
+            #   CAL: 4-digit string SSGGAAMMM (sys/gyro/accel/mag 0..3)
+            #
+            # Angle conventions:
+            #   BNO055 HDG is CW from North (0..360). ROS yaw is CCW.
+            #   We publish orientation as a quaternion in ROS ENU convention.
+            #   For NDOF mode: ROS yaw = -HDG_deg converted to radians.
+            #   ROLL and PITCH are passed through directly (small angles, flat floor).
+            try:
+                imu_ok = int(data.get("IMU_OK", "0"))
+                if imu_ok == 1:
+                    hdg_deg   = float(data.get("HDG",   0.0))
+                    roll_deg  = float(data.get("ROLL",  0.0))
+                    pitch_deg = float(data.get("PITCH", 0.0))
+
+                    # Convert BNO055 Euler (CW heading) → ROS quaternion (CCW yaw)
+                    # BNO055 NDOF: heading = yaw measured clockwise
+                    # ROS ENU:     yaw = CCW from East (or robot forward)
+                    # For SLAM/Nav2 we only need consistent yaw, not absolute North.
+                    # Negate heading to convert CW→CCW.
+                    yaw_rad   = -math.radians(hdg_deg)
+                    roll_rad  =  math.radians(roll_deg)
+                    pitch_rad =  math.radians(pitch_deg)
+
+                    # Roll-Pitch-Yaw → quaternion (ZYX Euler, intrinsic)
+                    cy, sy = math.cos(yaw_rad   / 2), math.sin(yaw_rad   / 2)
+                    cp, sp = math.cos(pitch_rad / 2), math.sin(pitch_rad / 2)
+                    cr, sr = math.cos(roll_rad  / 2), math.sin(roll_rad  / 2)
+
+                    qw = cr * cp * cy + sr * sp * sy
+                    qx = sr * cp * cy - cr * sp * sy
+                    qy = cr * sp * cy + sr * cp * sy
+                    qz = cr * cp * sy - sr * sp * cy
+
+                    # Angular velocity: BNO055 GYROSCOPE vector is deg/s → rad/s
+                    gx = math.radians(float(data.get("GX", 0.0)))
+                    gy = math.radians(float(data.get("GY", 0.0)))
+                    gz = math.radians(float(data.get("GZ", 0.0)))
+
+                    # Linear acceleration: LINEARACCEL already in m/s² (gravity removed)
+                    ax = float(data.get("AX", 0.0))
+                    ay = float(data.get("AY", 0.0))
+                    az = float(data.get("AZ", 0.0))
+
+                    imu_msg = Imu()
+                    imu_msg.header.stamp    = self.get_clock().now().to_msg()
+                    imu_msg.header.frame_id = self._imu_frame_id
+
+                    imu_msg.orientation.x = qx
+                    imu_msg.orientation.y = qy
+                    imu_msg.orientation.z = qz
+                    imu_msg.orientation.w = qw
+
+                    # Covariance: BNO055 in NDOF mode — orientation well-fused
+                    # Row-major 3×3 [roll, pitch, yaw]
+                    imu_msg.orientation_covariance = [
+                        0.002, 0.0,   0.0,
+                        0.0,   0.002, 0.0,
+                        0.0,   0.0,   0.005,  # yaw slightly worse (mag indoor)
+                    ]
+
+                    imu_msg.angular_velocity.x = gx
+                    imu_msg.angular_velocity.y = gy
+                    imu_msg.angular_velocity.z = gz
+                    imu_msg.angular_velocity_covariance = [
+                        0.003, 0.0,   0.0,
+                        0.0,   0.003, 0.0,
+                        0.0,   0.0,   0.003,
+                    ]
+
+                    imu_msg.linear_acceleration.x = ax
+                    imu_msg.linear_acceleration.y = ay
+                    imu_msg.linear_acceleration.z = az
+                    imu_msg.linear_acceleration_covariance = [
+                        0.1,   0.0,   0.0,
+                        0.0,   0.1,   0.0,
+                        0.0,   0.0,   0.1,
+                    ]
+
+                    self._pub_imu.publish(imu_msg)
             except Exception:
                 pass
 

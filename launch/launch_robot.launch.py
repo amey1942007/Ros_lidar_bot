@@ -20,9 +20,12 @@ Node pipeline summary
   nav2           : map → /cmd_vel
 
 Serial port assignments (typical — adjust if your system differs):
-  /dev/ttyACM0 → Arduino Mega (DriveMaster.ino) — amr4_driver_node
-  /dev/ttyACM1 → Arduino Mega (BNO055 IMU firmware) — imu_node
+  /dev/ttyACM0 → Arduino Mega (DriveMaster.ino + BNO055 IMU) — amr4_driver_node
   /dev/ttyUSB0 → RPLidar A1 (USB-serial adapter) — lidar_node
+
+  NOTE: There is only ONE Arduino Mega. The BNO055 IMU is connected to that
+  same Mega over I2C. amr4_driver_node parses IMU data from the telemetry
+  and publishes /imu directly. There is NO separate imu_node.
 
 Launch arguments
 ----------------
@@ -98,32 +101,12 @@ def _launch_setup(context, *args, **kwargs):
         }.items(),
     )
 
-    # ── 2. IMU Node (BNO055 via dedicated Arduino Mega UART) ──────────────────
-    # This node opens /dev/ttyACM1 and reads BNO055 JSON lines from a separate
-    # Arduino that runs the BNO055 firmware (NOT DriveMaster.ino).
-    # It publishes /imu (sensor_msgs/Imu) for the EKF and HDRIVE heading latch.
-    imu_node = Node(
-        package=package_name,
-        executable="imu_node",
-        name="imu_node",
-        output=out,
-        arguments=log_args,
-        respawn=True,
-        respawn_delay=3.0,
-        parameters=[{
-            "serial_port":   "/dev/ttyACM1",
-            "baud_rate":     500000,
-            "output_topic":  "/imu",
-            "frame_id":      "imu_link",
-            "publish_rate":  50.0,
-            "timeout":       0.1,
-        }],
-    )
-
     # ── 3. AMR4 Motor Driver Node (DriveMaster.ino via UART) ──────────────────
-    # Receives /cmd_vel_safe, sends HDRIVE or DRIVE to the Arduino.
-    # Reads Arduino telemetry and publishes /encoder (4-wheel RPMs).
-    # /encoder → odom_node → /odom_raw → EKF → /odom
+    # ONE Arduino Mega handles BOTH drive control AND the BNO055 IMU (via I2C).
+    # This node opens /dev/ttyACM0 and:
+    #   a) Sends HDRIVE/DRIVE commands to the Arduino
+    #   b) Reads telemetry and publishes /encoder (4 RPMs) + /imu (BNO055)
+    # Pipeline: /encoder → odom_node → /odom_raw → EKF + /imu → /odom
     driver_node = Node(
         package=package_name,
         executable="amr4_driver",
@@ -140,8 +123,8 @@ def _launch_setup(context, *args, **kwargs):
             "max_send_rate":    5.0,
             "omega_threshold":  0.05,
             "frame_id":         "base_footprint",
+            "imu_frame_id":     "imu_link",   # BNO055 on the same Mega
             "flush_rate":       1.0,
-            # Raw wheel RPMs published here for odom_node
             "encoder_topic":    "/encoder",
         }],
     )
@@ -263,7 +246,7 @@ def _launch_setup(context, *args, **kwargs):
     # ── 7. EKF Node (fuses /odom_raw + /imu → /odom) ─────────────────────────
     # Fuses:
     #   /odom_raw — mecanum FK odometry (vX, vY, vYaw) from odom_node
-    #   /imu      — BNO055 gyro (vYaw) from imu_node
+    #   /imu      — BNO055 (from amr4_driver_node, parsed from telemetry)
     # Outputs /odometry/filtered remapped to /odom.
     # Is the SOLE publisher of odom→base_footprint TF (broadcast_tf=False in odom_node).
     ekf_node = Node(
@@ -315,16 +298,15 @@ def _launch_setup(context, *args, **kwargs):
     actions.extend([
         dashboard,
 
-        # ── Stage 1 (T=0s): Hardware drivers + localization ───────────────────
+        # ── Stage 1 (T=0s): Hardware drivers + localization ──────────────────────
         rsp,
-        imu_node,        # /dev/ttyACM1 → /imu
-        driver_node,     # /dev/ttyACM0 → /odom_raw, sends HDRIVE/DRIVE
-        odom_node,       # /odom_raw → /odom (mecanum FK)
+        driver_node,     # /dev/ttyACM0 → /encoder + /imu (driver + BNO055)
+        odom_node,       # /encoder → /odom_raw (mecanum FK)
         lidar_node,      # /dev/ttyUSB0 → /scan (RPLidar A1 sensitivity mode)
         safety_stop,     # /cmd_vel → /cmd_vel_safe
         joy_node,
         joy_teleop,
-        ekf_node,        # /odom + /imu → odom TF + fused pose
+        ekf_node,        # /odom_raw + /imu → /odom + odom TF
 
         # ── Stage 2 (T=5s): SLAM — needs /scan + odom TF ─────────────────────
         TimerAction(period=5.0, actions=[slam_toolbox]),
