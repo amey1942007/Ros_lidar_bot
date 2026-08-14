@@ -363,7 +363,7 @@ class OdomNode(Node):
         age = time.monotonic() - self._last_data_time
         if age > 2.0:
             self.get_logger().warn(
-                f"\033[1;33m[ODOM WATCHDOG] No /odom_raw data for {age:.1f} s. "
+                f"\033[1;33m[ODOM WATCHDOG] No /encoder data for {age:.1f} s. "
                 "Check amr4_driver_node is running and Arduino is connected.\033[0m",
                 throttle_duration_sec=5.0,
             )
