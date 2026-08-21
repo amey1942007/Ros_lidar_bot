@@ -240,6 +240,13 @@ def _launch_setup(context, *args, **kwargs):
         name="joy_teleop",
         output=out,
         arguments=log_args,
+        parameters=[{
+            # Left stick → translate (HDRIVE). Right stick → rotate (DRIVE).
+            # USB/xpad RX is usually axis 3; if rotate does nothing on BT, use 2.
+            "axis_angular": 3,
+            "ang_deadzone": 0.30,
+            "stick_exclusive": True,
+        }],
     )
 
     # ── 7. EKF Node (fuses /odom_raw + /imu → /odom) ─────────────────────────

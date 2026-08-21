@@ -360,11 +360,12 @@ class AMR4DriverNode(Node):
         """
         Receive a Twist from joystick / Nav2 and forward to the Arduino.
 
-        Selects drive mode:
-          HDRIVE — when |angular.z| ≤ omega_threshold (translation-dominant).
-                   Uses the current IMU heading so Arduino actively prevents drift.
-          DRIVE  — when |angular.z| >  omega_threshold (intentional rotation).
-                   Plain open-loop omega, heading-hold cleared on Arduino side.
+        Selects drive mode from which stick teleop used:
+          HDRIVE — omega ≈ 0 and (vx or vy) nonzero  → left stick / translate
+                   Arduino holds heading via BNO055.
+          DRIVE  — |omega| > omega_threshold           → right stick / Nav2 rotate
+                   Plain omega; heading-hold cleared.
+                   Linear components are kept (Nav2 may command both).
         """
         now = time.monotonic()
         self._last_cmd_time = now
@@ -374,16 +375,17 @@ class AMR4DriverNode(Node):
         vy    = msg.linear.y
         omega = msg.angular.z
 
-        is_stop_cmd = (vx == 0.0 and vy == 0.0 and omega == 0.0)
+        translating = abs(vx) > 1e-6 or abs(vy) > 1e-6
+        rotating    = abs(omega) > self._omega_threshold
+        is_stop_cmd = (not translating) and (not rotating)
 
         # Deduplicate: skip if same command as last sent
         if is_stop_cmd:
             current_cmd = (0.0, 0.0, 0.0, "STOP")
-        elif abs(omega) > self._omega_threshold:
+        elif rotating:
             current_cmd = (round(vx, 4), round(vy, 4), round(omega, 4), "DRIVE")
         else:
-            # For HDRIVE, heading changes each callback so we can't deduplicate
-            # purely on velocity — always send at the rate-limiter cadence.
+            # Left-stick translate: HDRIVE, omega forced off
             current_cmd = (round(vx, 4), round(vy, 4), 0.0, "HDRIVE")
 
         # Stop commands always go through immediately (safety)
@@ -400,19 +402,16 @@ class AMR4DriverNode(Node):
 
         if is_stop_cmd:
             self._send_stop()
-        elif abs(omega) > self._omega_threshold:
-            # Intentional rotation — use plain DRIVE
+        elif rotating:
             self._send_drive(vx, vy, omega)
         else:
-            # Pure translation — use HDRIVE with current heading
-            # If we haven't received an IMU message yet, fall back to DRIVE
             if not self._imu_received:
                 self.get_logger().warn(
                     "No /imu data yet — using DRIVE instead of HDRIVE. "
                     "Waiting for BNO055 telemetry from DriveMaster.",
                     throttle_duration_sec=5.0,
                 )
-                self._send_drive(vx, vy, omega)
+                self._send_drive(vx, vy, 0.0)
             else:
                 self._send_hdrive(vx, vy, self._current_heading_deg)
 

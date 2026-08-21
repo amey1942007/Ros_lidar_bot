@@ -6,10 +6,9 @@ Pairs with the standard `joy` package's joy_node (SDL), which reads the
 controller and publishes sensor_msgs/Joy on /joy. This node converts /joy
 into /cmd_vel (geometry_msgs/Twist).
 
-Controls (Xbox-style layout, Bluetooth mapping):
-  Left stick up/down    — forward / reverse  (linear.x)
-  Left stick left/right — strafe left/right  (linear.y)   ← mecanum strafe
-  Right stick left/right — rotate left/right (angular.z)
+Controls (Xbox-style; USB/xpad defaults — override axes if needed):
+  Left stick  — translate only  → /cmd_vel with omega=0 → amr4 HDRIVE
+  Right stick left/right — rotate only → /cmd_vel omega → amr4 DRIVE
   Right stick up/down   — camera tilt        (→ /camera_cmd)
   RT (right trigger)    — increase linear speed by lin_step per press
   LT (left trigger)     — decrease linear speed by lin_step per press
@@ -63,7 +62,9 @@ class JoyTeleop(Node):
         # ── Mapping parameters (override if `ros2 topic echo /joy` disagrees) ─
         self.declare_parameter('axis_linear',  1)     # left stick vertical  → linear.x
         self.declare_parameter('axis_strafe',  0)     # left stick horizontal → linear.y (strafe)
-        self.declare_parameter('axis_angular', 2)     # right stick horizontal → angular.z
+        # USB/xpad RX is usually 3. BT Xbox often uses 2 — override if needed.
+        # Wrong map to a trigger (rests at +1) causes continuous spin.
+        self.declare_parameter('axis_angular', 3)     # right stick horizontal → angular.z
         self.declare_parameter('axis_rt', 5)          # right trigger
         self.declare_parameter('axis_lt', 4)          # left trigger (BT; USB xpad = 2)
         self.declare_parameter('button_rb', 7)       # right bumper
@@ -84,16 +85,24 @@ class JoyTeleop(Node):
         self.declare_parameter('ang_min', 0.2)
         self.declare_parameter('ang_max', 2.0)
 
-        self.declare_parameter('deadzone', 0.15)     # stick idle threshold
+        self.declare_parameter('deadzone', 0.15)     # left stick idle threshold
+        # Right-stick rotate needs a fatter deadzone: small RX drift used to
+        # leak angular.z every tick → amr4_driver stayed in DRIVE and spun.
+        self.declare_parameter('ang_deadzone', 0.30)
         self.declare_parameter('publish_hz', 20.0)
         self.declare_parameter('joy_timeout', 0.5)   # s without /joy → stop
 
-        # ── Right stick → camera tilt; pan disabled by default (RX used for angular) ─
-        self.declare_parameter('axis_cam_pan',  -1)   # disabled (-1); RX now drives angular.z
+        # Right stick → camera tilt; pan disabled (RX used for rotate / DRIVE).
+        # USB/xpad: RX is usually axis 3. Xbox Bluetooth often uses axis 2 —
+        # override with -p axis_angular:=2 if rotate feels dead.
+        self.declare_parameter('axis_cam_pan',  -1)   # disabled (-1)
         self.declare_parameter('axis_cam_tilt',  3)   # RY → camera tilt
         self.declare_parameter('cam_deadzone', 0.15)
         self.declare_parameter('invert_cam_pan', False)
         self.declare_parameter('invert_cam_tilt', False)
+        # If True: right stick = rotate only (vx/vy zeroed → plain DRIVE).
+        # Left stick = translate only (omega forced 0 → HDRIVE on amr4_driver).
+        self.declare_parameter('stick_exclusive', True)
 
         gp = lambda n: self.get_parameter(n).value
         self._ax_lin    = gp('axis_linear')
@@ -113,6 +122,8 @@ class JoyTeleop(Node):
         self._lin_min, self._lin_max = gp('lin_min'), gp('lin_max')
         self._ang_min, self._ang_max = gp('ang_min'), gp('ang_max')
         self._deadzone = gp('deadzone')
+        self._ang_deadzone = gp('ang_deadzone')
+        self._stick_exclusive = bool(gp('stick_exclusive'))
         self._joy_timeout = gp('joy_timeout')
         self._ax_cam_pan = gp('axis_cam_pan')
         self._ax_cam_tilt = gp('axis_cam_tilt')
@@ -154,7 +165,11 @@ class JoyTeleop(Node):
 
         self.get_logger().info(
             f'Gamepad teleop ready — lin {self._lin_speed:.2f} m/s, '
-            f'ang {self._ang_speed:.2f} rad/s at full stick.')
+            f'ang {self._ang_speed:.2f} rad/s at full stick. '
+            f'axis_angular={self._ax_ang} ang_deadzone={self._ang_deadzone} '
+            f'stick_exclusive={self._stick_exclusive} '
+            f'(left→HDRIVE translate, right→DRIVE rotate).'
+        )
 
     # ── /joy callback ──────────────────────────────────────────────────────────
     def _joy_cb(self, msg: Joy):
@@ -202,17 +217,33 @@ class JoyTeleop(Node):
             self._fire_action('vision')
         self._vision_was_pressed = vi
 
-        # Movement — proportional to stick deflection
+        # Movement — left stick = translate (→ HDRIVE), right stick = rotate (→ DRIVE).
         lin_in    = axis(self._ax_lin)
         strafe_in = axis(self._ax_strafe) if self._ax_strafe >= 0 else 0.0
         ang_in    = axis(self._ax_ang)
-        if abs(lin_in)    < self._deadzone: lin_in    = 0.0
-        if abs(strafe_in) < self._deadzone: strafe_in = 0.0
-        if abs(ang_in)    < self._deadzone: ang_in    = 0.0
+        if abs(lin_in)    < self._deadzone:     lin_in    = 0.0
+        if abs(strafe_in) < self._deadzone:     strafe_in = 0.0
+        if abs(ang_in)    < self._ang_deadzone: ang_in    = 0.0
 
-        self._cmd_lin    = lin_in    * self._lin_speed
-        self._cmd_strafe = strafe_in * self._lin_speed
-        self._cmd_ang    = ang_in    * self._ang_speed
+        translating = abs(lin_in) > 0.0 or abs(strafe_in) > 0.0
+        rotating    = abs(ang_in) > 0.0
+
+        if self._stick_exclusive:
+            # Right stick wins for rotate-only DRIVE; left stick alone → HDRIVE.
+            if rotating:
+                self._cmd_lin    = 0.0
+                self._cmd_strafe = 0.0
+                self._cmd_ang    = ang_in * self._ang_speed
+            elif translating:
+                self._cmd_lin    = lin_in    * self._lin_speed
+                self._cmd_strafe = strafe_in * self._lin_speed
+                self._cmd_ang    = 0.0   # force zero so amr4_driver uses HDRIVE
+            else:
+                self._cmd_lin = self._cmd_strafe = self._cmd_ang = 0.0
+        else:
+            self._cmd_lin    = lin_in    * self._lin_speed
+            self._cmd_strafe = strafe_in * self._lin_speed
+            self._cmd_ang    = ang_in    * self._ang_speed
 
         # Right stick → camera pan/tilt rate (normalised -1..1).
         pan_in = axis(self._ax_cam_pan)
