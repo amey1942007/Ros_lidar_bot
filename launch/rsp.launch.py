@@ -37,9 +37,8 @@ def generate_launch_description():
         output=output_mode,
         parameters=[{
             'use_sim_time': use_sim_time,
-            # /encoder = wheel joints (driver_node); /camera_joint_states =
-            # pan/tilt head (camera_servo_node). Merged here so TF reflects both.
-            'source_list': ['/encoder', '/camera_joint_states']
+            # AMR4 has no camera head. /encoder is Float32MultiArray RPMs
+            # (not JointState), so JSP publishes URDF zeros for the wheel joints.
         }],
     )
 

@@ -194,10 +194,9 @@ class BringupStatusNode(Node):
         specs = [
             NodeSpec("robot_state_publisher", 0.0, "URDF / rsp.launch failed"),
             NodeSpec("joint_state_publisher", 0.0, "joint_state_publisher missing"),
-            NodeSpec("imu_node", 0.0, "check /dev/ttyACM1 and Arduino IMU"),
-            NodeSpec("driver_node", 0.0, "check /dev/ttyACM0 and DDSM115"),
+            NodeSpec("amr4_driver_node", 0.0, "check /dev/ttyACM0 and DriveMaster Mega"),
             NodeSpec("odom_node", 0.0, "odom_node not running"),
-            NodeSpec("rplidar_node", 0.0, "check eth0 / ping 192.168.11.2 / lidar power"),
+            NodeSpec("lidar_node", 0.0, "check /dev/ttyUSB0, A1 power, pip install pyrplidar"),
             NodeSpec("ekf_filter_node", 0.0, "robot_localization EKF not running"),
             NodeSpec("slam_toolbox", 5.0, "SLAM Toolbox failed to start (due T+5s)"),
             NodeSpec("bt_navigator", 8.0, "Nav2 bt_navigator not up", lifecycle=True),
@@ -228,12 +227,12 @@ class BringupStatusNode(Node):
         return [
             TopicSpec(
                 "/imu", Imu, 20.0, 0.5, 2.0,
-                "no IMU — check /dev/ttyACM1 / Arduino power",
+                "no IMU — check Mega telemetry / BNO055 on amr4_driver",
                 sensor_qos,
             ),
             TopicSpec(
-                "/scan", LaserScan, 8.0, 1.0, 3.0,
-                "no /scan — eth0 192.168.11.1, ping 192.168.11.2, lidar power",
+                "/scan", LaserScan, 4.0, 1.0, 3.0,
+                "no /scan — /dev/ttyUSB0, A1 USB power, pyrplidar installed",
                 sensor_qos,
             ),
             TopicSpec(
@@ -296,8 +295,8 @@ class BringupStatusNode(Node):
                             "ERROR",
                             f"/scan frame_id='{msg.header.frame_id}' but URDF/TF "
                             f"expects '{self._expected_scan_frame}' — RViz scan will "
-                            f"detach/rotate with the robot. Set frame_id:=laser_frame "
-                            f"(do not use official sllidar_s2e_launch alone).",
+                            f"detach/rotate with the robot. Set lidar_node "
+                            f"frame_id:=laser_frame (AMR4 A1 USB driver).",
                         )
 
                 self.create_subscription(spec.msg_type, spec.name, _scan_cb, qos)

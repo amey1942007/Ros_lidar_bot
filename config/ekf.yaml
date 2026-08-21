@@ -6,8 +6,8 @@ ekf_filter_node:
     #
     # PIPELINE
     #   amr4_driver_node  → /encoder       (Float32MultiArray — 4 raw wheel RPMs)
+    #                     → /imu           (sensor_msgs/Imu   — BNO055 from same Mega)
     #   odom_node         → /odom_raw      (nav_msgs/Odometry — mecanum FK pose+twist)
-    #   imu_node          → /imu           (sensor_msgs/Imu   — BNO055 fused data)
     #   ekf_node          → /odom          (nav_msgs/Odometry — fused output, remapped)
     #                     → odom → base_footprint TF  (EKF is the SOLE TF publisher)
     #
@@ -105,10 +105,9 @@ ekf_filter_node:
     odom0_queue_size: 10
     odom0_nodelay: true
 
-    # ── Source 1: IMU (/imu — BNO055 via dedicated imu_node) ─────────────────────
+    # ── Source 1: IMU (/imu — BNO055 via amr4_driver_node telemetry) ─────────────
     #
-    # vYaw only (gyro Z rate). imu_node estimates and removes the static gyro bias
-    # at startup so arriving samples are near-zero-mean when stationary.
+    # vYaw only (gyro Z rate). No separate imu_node — same Mega as DriveMaster.
     #
     # This is the SECONDARY vYaw source. Its covariance (from imu_node) is set
     # lower than the wheel covariance during turns, so it dominates during rotation

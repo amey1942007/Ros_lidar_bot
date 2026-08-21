@@ -129,10 +129,11 @@ TOOLS = {
 }
 
 EXPECTED_NODES = [
-    "robot_state_publisher", "imu_node", "driver_node", "odom_node",
-    "rplidar_node", "scan_min_range_filter", "ekf_filter_node", "slam_toolbox", "joy_node",
-    "joy_teleop", "camera_servo", "bt_navigator", "controller_server", "planner_server",
-    "behavior_server", "velocity_smoother", "collision_monitor",
+    "robot_state_publisher", "amr4_driver_node", "odom_node",
+    "lidar_node", "ekf_filter_node", "slam_toolbox", "joy_node",
+    "joy_teleop", "safety_stop", "bt_navigator", "controller_server",
+    "planner_server", "behavior_server", "velocity_smoother",
+    "collision_monitor",
 ]
 
 
@@ -175,9 +176,8 @@ class Dashboard(Node):
         self.port = int(self.declare_parameter("port", 8080).value)
         self.expect_frontier = bool(
             self.declare_parameter("expect_frontier", False).value)
-        # laser_frame is mounted 180° rotated (laser_yaw=pi in lidar.xacro);
-        # applied here so scan points render correctly around the model.
-        self.laser_yaw = float(self.declare_parameter("laser_yaw", math.pi).value)
+        # Must match laser_yaw in description/lidar.xacro (AMR4 A1 = 0.0).
+        self.laser_yaw = float(self.declare_parameter("laser_yaw", 0.0).value)
 
         self.hub = Hub()
         self._lock = threading.Lock()

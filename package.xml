@@ -23,7 +23,7 @@
   <exec_depend>nav2_bringup</exec_depend>
   <exec_depend>robot_localization</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
-  <exec_depend>sllidar_ros2</exec_depend>
+  <!-- RPLidar A1 uses in-package lidar_node.py + pyrplidar (pip), not sllidar_ros2/S2E -->
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 

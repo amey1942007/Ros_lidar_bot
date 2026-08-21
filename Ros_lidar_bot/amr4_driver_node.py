@@ -285,21 +285,18 @@ class AMR4DriverNode(Node):
 
     def _flush_serial_buffer(self):
         """
-        Periodically flush the serial RX input buffer.
+        Drop RX only if the OS input buffer is dangerously full.
 
-        The Arduino sends telemetry at 10 Hz (~150 bytes/frame = 1500 B/s).
-        The reader thread processes lines as fast as they arrive, so under
-        normal operation the buffer stays near zero.  However, if the reader
-        thread falls behind (high CPU, serial hiccup) the OS buffer fills and
-        old commands begin to pile up.  Calling reset_input_buffer() once per
-        second discards any bytes that the reader has not yet consumed,
-        preventing the classic 'commands arrive late in bursts after silence'
-        symptom that was observed at 10 Hz cmd_vel.
+        Telemetry is ~150 B at 10 Hz. The reader thread consumes it. A blind
+        reset_input_buffer() every second also dumps encoder/IMU frames, which
+        makes /odom_raw go stale and trips safety_stop. Only wipe when the
+        backlog is already unusable (several KB of old lines).
         """
         with self._serial_lock:
             if self._serial and self._serial.is_open:
                 try:
-                    self._serial.reset_input_buffer()
+                    if self._serial.in_waiting > 4096:
+                        self._serial.reset_input_buffer()
                 except Exception:
                     pass
 
@@ -342,12 +339,8 @@ class AMR4DriverNode(Node):
     # ──────────────────────────────────────────────────────────────────────────
     def _imu_callback(self, msg: Imu):
         """
-        Extract yaw from the imu_node quaternion and convert to BNO055-frame
+        Extract yaw from our own /imu quaternion and convert to BNO055-frame
         degrees (0..360, increasing clockwise) for HDRIVE.
-
-        imu_node.py publishes orientation in ROS convention (CCW positive).
-        BNO055 heading is CW from North = mathematical (CCW) yaw negated.
-        We simply take the ROS yaw and convert: heading = (-yaw_rad) mod 2pi → deg.
         """
         q = msg.orientation
         # Quaternion → yaw (ROS CCW convention, radians)
@@ -416,7 +409,7 @@ class AMR4DriverNode(Node):
             if not self._imu_received:
                 self.get_logger().warn(
                     "No /imu data yet — using DRIVE instead of HDRIVE. "
-                    "Check imu_node.py is running.",
+                    "Waiting for BNO055 telemetry from DriveMaster.",
                     throttle_duration_sec=5.0,
                 )
                 self._send_drive(vx, vy, omega)
@@ -446,11 +439,8 @@ class AMR4DriverNode(Node):
     # ──────────────────────────────────────────────────────────────────────────
     def _serial_reader_loop(self):
         """
-        Background thread: read lines from the Arduino and re-publish
-        wheel RPMs as /odom_raw for the odom_node.
-
-        IMU data in the telemetry is intentionally ignored here.
-        The dedicated imu_node.py is the sole publisher of /imu.
+        Background thread: read DriveMaster telemetry and publish
+        /encoder (wheel RPMs) plus /imu (BNO055).
         """
         while rclpy.ok():
             # Guard: wait for a valid port

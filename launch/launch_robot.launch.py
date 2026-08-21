@@ -10,12 +10,11 @@ Node pipeline summary
   joy_node       → /joy
   joy_teleop     → /cmd_vel
   safety_stop    : /cmd_vel → /cmd_vel_safe  (laser-based obstacle gate)
-  amr4_driver    : /cmd_vel_safe → Arduino Mega (HDRIVE/DRIVE commands)
-                   Arduino Mega telemetry → /odom_raw  (4-wheel RPMs)
-  odom_node      : /odom_raw → /odom  (mecanum FK dead-reckoning odometry)
-  imu_node       : /dev/ttyACM1 (BNO055 JSON) → /imu
-  ekf_node       : /odom + /imu → /odometry/filtered  (remapped to /odom by EKF config)
-  lidar_node     : /dev/ttyUSB0 (RPLidar A1 sensitivity mode) → /scan
+  amr4_driver    : /cmd_vel_safe → Arduino Mega (HDRIVE/DRIVE)
+                   telemetry → /encoder (4 wheel RPMs) + /imu (BNO055)
+  odom_node      : /encoder → /odom_raw  (mecanum FK dead-reckoning)
+  ekf_node       : /odom_raw + /imu → /odom  (sole odom→base_footprint TF)
+  lidar_node     : /dev/ttyUSB0 (RPLidar A1) → /scan
   slam_toolbox   : /scan + /odom → map
   nav2           : map → /cmd_vel
 
@@ -165,12 +164,12 @@ def _launch_setup(context, *args, **kwargs):
         }],
     )
 
-    # ── 5. LiDAR Node (RPLidar A1 via USB-serial, sensitivity mode) ──────────
-    # Uses pyrplidar library with Express/Sensitivity mode (mode 1) for higher
-    # point density than standard mode.
+    # ── 5. LiDAR Node (RPLidar A1 via USB-serial — NOT S2E Ethernet) ─────────
+    # Uses pyrplidar with Express/Sensitivity mode (mode 1).
     # Requires: pip3 install pyrplidar --break-system-packages
-    # Port: /dev/ttyUSB0 (USB-serial adapter from RPLidar A1 module)
+    # Port: /dev/ttyUSB0 (CP2102 / CH340 USB-serial from the A1).
     # Publishes /scan (sensor_msgs/LaserScan) in ROS CCW convention.
+    lidar_port = LaunchConfiguration("lidar_port").perform(context)
     lidar_node = Node(
         package=package_name,
         executable="lidar_node",
@@ -180,7 +179,7 @@ def _launch_setup(context, *args, **kwargs):
         respawn=True,
         respawn_delay=3.0,
         parameters=[{
-            "serial_port":      "/dev/ttyUSB0",
+            "serial_port":      lidar_port,
             "serial_baud":      115200,
             "scan_topic":       "/scan",
             "frame_id":         "laser_frame",
@@ -328,6 +327,11 @@ def generate_launch_description():
             "expect_frontier",
             default_value="false",
             description="If true, dashboard waits for frontier_explorer (autonomous).",
+        ),
+        DeclareLaunchArgument(
+            "lidar_port",
+            default_value="/dev/ttyUSB0",
+            description="USB serial port for RPLidar A1 (not S2E Ethernet).",
         ),
         OpaqueFunction(function=_launch_setup),
     ])

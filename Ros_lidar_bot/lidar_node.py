@@ -202,15 +202,30 @@ class LidarNode(Node):
             self.get_logger().info(f'RPLidar A1 device info:   {info}')
             self.get_logger().info(f'RPLidar A1 device health: {health}')
 
-            self.get_logger().info(f'Setting motor PWM to {self.motor_pwm} …')
+            # A1 often needs an explicit stop before a fresh scan session
+            # (leftover express/standard state from a previous crash).
+            try:
+                lidar.stop()
+            except Exception:
+                pass
+            time.sleep(0.2)
+
+            status = getattr(health, 'status', None)
+            if status is not None and str(status).lower() not in ('0', 'good', 'ok'):
+                self.get_logger().warn(
+                    f'RPLidar A1 health is not Good ({health}). '
+                    f'Check USB cable / power; continuing anyway …'
+                )
+
+            self.get_logger().info(f'Setting motor PWM to {self.motor_pwm} (A1 typical 600–700) …')
             lidar.set_motor_pwm(self.motor_pwm)
-            time.sleep(1.5)  # let motor spin up and stabilise to rated RPM
+            time.sleep(2.0)  # A1 motor needs ~1.5–2 s to reach stable RPM
 
             # Flush again after motor spin-up to discard electrical noise bytes
             if lidar.lidar_serial and lidar.lidar_serial._serial:
                 lidar.lidar_serial._serial.reset_input_buffer()
 
-            # Start the appropriate scan mode
+            # Start the appropriate scan mode (A1 Express / Standard — not S2E UDP)
             self._generator = self._start_generator(lidar)
             if self._generator is None:
                 raise RuntimeError('Failed to obtain a scan generator.')

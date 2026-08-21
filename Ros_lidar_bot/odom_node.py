@@ -31,27 +31,25 @@ Publishes:
 
 Mecanum Forward Kinematics
 --------------------------
-DriveMaster mecanumIK():
-    wFL = vy + vx + omega * KIN_LW       (W1, sign flipped in PPR)
-    wFR = vy - vx + omega * KIN_LW       (W2)
-    wRL = vy - vx - omega * KIN_LW       (W3, sign flipped in PPR)
-    wRR = vy + vx - omega * KIN_LW       (W4)
+DriveMaster mecanumIK() (must invert exactly):
+    wFL = vy + vx + omega * KIN_LW
+    wFR = vy - vx + omega * KIN_LW
+    wRL = vy - vx - omega * KIN_LW
+    wRR = vy + vx - omega * KIN_LW
 
 where KIN_LW = (L + W) / 2, L = CHASSIS_L (front-rear), W = CHASSIS_W (left-right).
-RPM setpoints have direction signs applied by MOTOR*_DIR in Config.h and by
-the DriveMaster PID sign conventions.  The FK below accounts for the sign
-conventions used in Config.h (MOTOR1_DIR=+1, MOTOR2_DIR=-1, MOTOR3_DIR=-1,
-MOTOR4_DIR=-1) so the resulting velocities match the physical motion.
 
-    w_rad_s = RPM / 60 * 2π * R   (convert RPM to wheel linear velocity)
+PID setpoints then apply extra sign flips:
+    pid1 = -wFL * toRPM,  pid2 = +wFR * toRPM
+    pid3 = -wRL * toRPM,  pid4 = +wRR * toRPM
 
-FK (linear algebra inverse of the IK matrix):
-    4·vx    =  w1 + w2 + w3 + w4
-    4·vy    = -w1 + w2 - w3 + w4       (note: sign pattern differs from IK due
-                                         to mecanum roller geometry)
-    4·LW·omega = -w1 + w2 + w3 - w4
+so measured RPM is converted back to IK wheel velocities with the same flips
+before the inverse is applied.
 
-where w_i are the signed wheel linear velocities (m/s) after direction correction.
+Inverse of that IK matrix:
+    4·vy       =  wFL + wFR + wRL + wRR
+    4·vx       =  wFL - wFR - wRL + wRR
+    4·LW·omega =  wFL + wFR - wRL - wRR
 
 Parameters
 ----------
@@ -93,9 +91,9 @@ class OdomNode(Node):
     """
     Computes and publishes wheel odometry for the AMR4 mecanum robot.
 
-    Subscribes to /odom_raw (4 wheel RPMs from amr4_driver_node).
-    Publishes    /odom     (nav_msgs/Odometry with full pose+twist+covariance).
-    Optionally   broadcasts odom→base_footprint TF.
+    Subscribes to /encoder (4 wheel RPMs from amr4_driver_node).
+    Publishes    /odom_raw (nav_msgs/Odometry with pose+twist+covariance).
+    Optionally   broadcasts odom→base_footprint TF (keep off — EKF owns TF).
     """
 
     def __init__(self):
@@ -113,6 +111,8 @@ class OdomNode(Node):
         self._L   = self.declare_parameter("chassis_l",    0.52).value   # metres
         self._W   = self.declare_parameter("chassis_w",    0.88).value   # metres
         self._lw  = (self._L + self._W) / 2.0   # KIN_LW in DriveMaster
+        # Feedback below this on ALL four wheels is treated as standstill.
+        self._standstill_rpm = self.declare_parameter("standstill_rpm", 2.0).value
 
         # Covariance (position diagonal entries; off-diagonal = 0 for dead-reckoning)
         self._pose_cov_x     = self.declare_parameter("pose_cov_x",      0.01).value
@@ -191,15 +191,11 @@ class OdomNode(Node):
         """
         Receive 4-wheel RPMs, run mecanum FK, integrate pose, publish /odom.
 
-        Input layout (from amr4_driver_node /odom_raw):
-            msg.data[0] = W1_RPM  FL — matches MOTOR1_DIR = +1 in Config.h
-            msg.data[1] = W2_RPM  FR — matches MOTOR2_DIR = -1
-            msg.data[2] = W3_RPM  RL — matches MOTOR3_DIR = -1
-            msg.data[3] = W4_RPM  RR — matches MOTOR4_DIR = -1
-
-        MOTOR*_DIR sign corrections are applied below so that positive RPM
-        always means "wheel spinning in the direction that moves the robot
-        forward" before FK is applied.
+        Input layout (from amr4_driver_node /encoder):
+            msg.data[0] = W1_RPM  FL
+            msg.data[1] = W2_RPM  FR
+            msg.data[2] = W3_RPM  RL
+            msg.data[3] = W4_RPM  RR
         """
         if len(msg.data) < 4:
             return
@@ -217,45 +213,32 @@ class OdomNode(Node):
             # Sanity guard: ignore absurd dt (first message, serial gap, etc.)
             return
 
-        # ── RPM → signed wheel linear velocity (m/s) ─────────────────────────
-        # Apply the MOTOR*_DIR sign from Config.h so each value is positive
-        # when the wheel moves the robot forward.
-        # MOTOR1_DIR = +1,  MOTOR2_DIR = -1,  MOTOR3_DIR = -1,  MOTOR4_DIR = -1
-        #
-        # DriveMaster mecanumIK() also negates W1 and W3 setpoints:
-        #   pid1.setpoint = -wFL * toRPM   →  measured rpm1 = negative for forward FL
-        #   pid3.setpoint = -wRL * toRPM   →  measured rpm3 = negative for forward RL
-        # So we need to negate W1 and W3 additionally (these wheels are "inverted"
-        # in the kinematics sense — their positive RPM is backward motion for the body).
-        #
-        # Net sign correction per wheel:
-        #   w1_signed = (-1) * MOTOR1_DIR * RPM1 = (-1)(+1) * RPM1 = -RPM1
-        #   w2_signed = (+1) * MOTOR2_DIR * RPM2 = (+1)(-1) * RPM2 = -RPM2  … wait
-        #
-        # Let's derive carefully from mecanumIK:
-        #   pid1.setpoint = -wFL * toRPM  → w1_body = -(rpm1 / toRPM)
-        #   pid2.setpoint =  wFR * toRPM  → w2_body =  (rpm2 / toRPM)
-        #   pid3.setpoint = -wRL * toRPM  → w3_body = -(rpm3 / toRPM)
-        #   pid4.setpoint =  wRR * toRPM  → w4_body =  (rpm4 / toRPM)
-        #
-        # where toRPM = 60 / (2π · R), so v = RPM / toRPM * 1 = RPM * 2π·R/60
-
         to_rps = (2.0 * math.pi * self._R) / 60.0  # RPM → linear velocity (m/s)
 
-        raw_rpm = msg.data
-        w1 = -(float(raw_rpm[0])) * to_rps   # FL (negated per IK convention)
-        w2 =  (float(raw_rpm[1])) * to_rps   # FR
-        w3 = -(float(raw_rpm[2])) * to_rps   # RL (negated per IK convention)
-        w4 =  (float(raw_rpm[3])) * to_rps   # RR
+        rpm1 = float(msg.data[0])
+        rpm2 = float(msg.data[1])
+        rpm3 = float(msg.data[2])
+        rpm4 = float(msg.data[3])
 
-        # ── Mecanum Forward Kinematics ────────────────────────────────────────
-        # Inverse of the IK matrix (4×3 → 3 body DOF):
-        #   vx    = (w1 + w2 + w3 + w4) / 4
-        #   vy    = (-w1 + w2 - w3 + w4) / 4     ← strafe (left positive)
-        #   omega = (-w1 + w2 + w3 - w4) / (4 * lw)
-        vx    = (w1 + w2 + w3 + w4) / 4.0
-        vy    = (-w1 + w2 - w3 + w4) / 4.0
-        omega = (-w1 + w2 + w3 - w4) / (4.0 * self._lw)
+        # Standstill deadband: encoder jitter at rest would integrate into
+        # a creeping pose / rotating lidar scan while parked.
+        if (abs(rpm1) < self._standstill_rpm and abs(rpm2) < self._standstill_rpm
+                and abs(rpm3) < self._standstill_rpm and abs(rpm4) < self._standstill_rpm):
+            rpm1 = rpm2 = rpm3 = rpm4 = 0.0
+
+        # Recover IK wheel linear velocities from measured RPM.
+        # DriveMaster: pid1/pid3 setpoints are negated, pid2/pid4 are not.
+        w_fl = -rpm1 * to_rps
+        w_fr =  rpm2 * to_rps
+        w_rl = -rpm3 * to_rps
+        w_rr =  rpm4 * to_rps
+
+        # Inverse of DriveMaster mecanumIK():
+        #   wFL = vy + vx + r,  wFR = vy - vx + r
+        #   wRL = vy - vx - r,  wRR = vy + vx - r
+        vx    = ( w_fl - w_fr - w_rl + w_rr) / 4.0
+        vy    = ( w_fl + w_fr + w_rl + w_rr) / 4.0
+        omega = ( w_fl + w_fr - w_rl - w_rr) / (4.0 * self._lw)
 
         self._last_vx    = vx
         self._last_vy    = vy
