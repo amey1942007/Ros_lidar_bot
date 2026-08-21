@@ -27,7 +27,7 @@ sleep 2
 
 # Start your main launch file
 echo "[2/2] Starting main launch file..."
-ros2 launch ros_lidar_bot launch_robot.launch.py
+ros2 launch Ros_lidar_bot launch_robot.launch.py
 
 # Cleanup on exit
 trap "kill $ROUTER_PID 2>/dev/null || true" EXIT
