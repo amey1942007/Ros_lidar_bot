@@ -119,11 +119,13 @@ def _launch_setup(context, *args, **kwargs):
             "baud_rate":        115200,
             "cmd_vel_topic":    "/cmd_vel_safe",
             "cmd_timeout":      0.5,
-            "max_send_rate":    5.0,
+            "max_send_rate":    15.0,  # keep latest cmd under rate limit
             "omega_threshold":  0.05,
             "frame_id":         "base_footprint",
             "imu_frame_id":     "imu_link",   # BNO055 on the same Mega
-            "flush_rate":       1.0,
+            # Blind 1 Hz RX flush wiped telemetry → no /encoder → no /odom_raw
+            # → safety_stop zeroes /cmd_vel_safe. Off by default; backlog-only wipe.
+            "flush_rate":       0.0,
             "encoder_topic":    "/encoder",
         }],
     )
