@@ -4,8 +4,11 @@ drive_distance_node.py — Interactive terminal app to drive the AMR4 a precise 
 ========================================================================================
 Platform : Jetson Orin Nano · Ubuntu 22.04 · ROS 2 Humble · SSH-friendly terminal UI
 
-Usage (after full bringup)
---------------------------
+Usage (odom accuracy test — no lidar/SLAM/Nav2)
+-----------------------------------------------
+    # Terminal 1
+    ros2 launch Ros_lidar_bot launch_odom_test.launch.py
+    # Terminal 2 — confirm EKF /odom is live, then:
     ros2 run Ros_lidar_bot drive_distance
 
 The node opens an interactive prompt:
