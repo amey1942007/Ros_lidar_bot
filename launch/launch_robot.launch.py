@@ -268,23 +268,6 @@ def _launch_setup(context, *args, **kwargs):
     )
 
     # ── 6c. Camera pan/tilt head (OT5320M pan + SG90 tilt, via Arduino Uno) ──
-    # Right stick → /camera_cmd → camera_servo_node → UART → Uno → servos.
-    # Parallel control path: never touches /cmd_vel, Nav2 or frontier
-    # exploration. Degrades gracefully if the Uno is unplugged — the node keeps
-    # running, publishes joint states, and reconnects on its own.
-    #   OT5320M pan : 20 kg PWM servo, Uno D6, 7.4 V external supply — this one
-    #                 is CONTINUOUS-ROTATION (confirmed on the bench: a fixed
-    #                 pulse spins it forever). Stick position = speed/
-    #                 direction, not a target angle, hence pan_continuous.
-    #   SG90 tilt   : positional PWM micro servo, Uno D5, 5 V external supply
-    # The Uno makes the pulses in hardware timers, so the head does not hunt
-    # when SLAM/Nav2/YOLO load the Pi. Flash arduino/camera_head/camera_head.ino
-    # (wiring + protocol documented at the top of that sketch).
-    # The Uno is its own USB0 link; motors and IMU Mega are on separate ports.
-    # Use a /dev/serial/by-id/... path if the numbers shuffle on replug.
-    # Alternatives: pan_driver:="pwm" drives both servos straight off the Pi's
-    # GPIOs (pan_pwm_pin/tilt_pwm_pin), "bus" a Feetech STS/SMS bus servo —
-    # see the camera_servo_node.py docstring.
     camera_servo = Node(
         package=package_name,
         executable="camera_servo",
@@ -298,10 +281,16 @@ def _launch_setup(context, *args, **kwargs):
             "pan_continuous": True,
             "arduino_port": "/dev/ttyUSB0",
             "arduino_baud": 115200,
-            # Camera is mounted upside-down — invert both servo axes so stick
-            # and D-pad directions still feel natural from the viewer's side.
             "upside_down": True,
         }],
+    )
+
+    teleop_interface = Node(
+        package=package_name,
+        executable="teleop_interface",
+        name="teleop_interface",
+        output="screen",
+        emulate_tty=True,
     )
 
     # ── 7. EKF Node (Fuses Odom & IMU) ───────────────────────────────────────
@@ -362,10 +351,29 @@ def _launch_setup(context, *args, **kwargs):
         odom_node,
         lidar_node,
         scan_filter,
-        joy_node,
-        joy_teleop,
         camera_servo,
         ekf_node,
+    ])
+    
+    # Dynamic auto-detection for /dev/input/js* port
+    import glob
+    use_joystick_mode = LaunchConfiguration("use_joystick").perform(context).lower()
+    js_devices = glob.glob("/dev/input/js*")
+    js_detected = len(js_devices) > 0 or os.path.exists("/dev/input/js0")
+
+    if use_joystick_mode in ("1", "true", "yes"):
+        actions.extend([joy_node, joy_teleop])
+    elif use_joystick_mode in ("0", "false", "no"):
+        actions.append(teleop_interface)
+    else:  # 'auto' mode
+        if js_detected:
+            # Gamepad port detected -> Launch joy_node + joy_teleop
+            actions.extend([joy_node, joy_teleop])
+        else:
+            # Gamepad port missing -> Launch keyboard teleop interface
+            actions.append(teleop_interface)
+
+    actions.extend([
         # ── Stage 2 (T=5s): SLAM ──────────────────────────────────────────────
         TimerAction(period=5.0, actions=[slam_toolbox]),
         # Nav2 starts after SLAM's map and map→odom transform are available.
@@ -385,6 +393,11 @@ def generate_launch_description():
             "expect_frontier",
             default_value="false",
             description="If true, bringup_status waits for frontier_explorer (autonomous).",
+        ),
+        DeclareLaunchArgument(
+            "use_joystick",
+            default_value="auto",
+            description="Joystick teleop mode: auto (detects /dev/input/js0), true (force gamepad), or false (force keyboard teleop).",
         ),
         OpaqueFunction(function=_launch_setup),
     ])

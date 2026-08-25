@@ -41,6 +41,7 @@ setup(
             'bringup_status = Ros_lidar_bot.bringup_status_node:main',
             'robot_dashboard = Ros_lidar_bot.robot_dashboard_node:main',
             'scan_min_range_filter = Ros_lidar_bot.scan_min_range_filter_node:main',
+            'teleop_interface = Ros_lidar_bot.teleop_interface_node:main',
         ],
     },
     extras_require={
