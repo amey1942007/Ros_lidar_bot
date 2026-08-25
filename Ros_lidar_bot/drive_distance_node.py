@@ -7,8 +7,8 @@ Platform : Jetson Orin Nano · Ubuntu 22.04 · ROS 2 Humble · SSH-friendly term
 Usage (odom accuracy test — no lidar/SLAM/Nav2)
 -----------------------------------------------
     # Terminal 1
-    ros2 launch Ros_lidar_bot launch_odom_test.launch.py
-    # Terminal 2 — confirm EKF /odom is live, then:
+    ros2 launch Ros_lidar_bot amr4.launch.py
+    # Terminal 2 — confirm /odom_raw is live, then:
     ros2 run Ros_lidar_bot drive_distance
 
 The node opens an interactive prompt:
@@ -37,22 +37,24 @@ Two complementary mechanisms work together:
    profile as Twist commands to /cmd_vel_safe at 20 Hz.  This gives a smooth
    commanded stop at the mathematically correct time.
 
-2. Odometry feedback (EKF /odom only)
-   Tracks displacement from /odom (EKF-fused). Requires full bringup.
+2. Odometry feedback (/odom_raw — wheel FK)
+   Tracks displacement from /odom_raw (mecanum FK from odom_node).
+   Does not require EKF /odom.
 
 Publishes    : /cmd_vel_safe  (geometry_msgs/Twist)
-Subscribes   : /odom          (nav_msgs/Odometry — EKF output)
+Subscribes   : /odom_raw      (nav_msgs/Odometry — wheel FK)
 
 Parameters (ROS 2, settable on the command line)
 ------------------------------------------------
     cmd_topic      (str)   default "/cmd_vel_safe"
+    odom_topic     (str)   default "/odom_raw"
     max_vel        (float) default 0.35   m/s    peak velocity
     accel          (float) default 0.20   m/s²   acceleration rate
     decel          (float) default 0.25   m/s²   deceleration rate (slightly
                                                   harder than accel so it stops
                                                   precisely without coasting)
     rate_hz        (float) default 20.0   Hz     cmd_vel publish rate
-    odom_timeout   (float) default 3.0    s      warn if /odom silent this long
+    odom_timeout   (float) default 3.0    s      warn if /odom_raw silent this long
     early_stop_m   (float) default 0.02   m      stop early if within this of target
     overshoot_m    (float) default 0.05   m      emergency stop if past target by this
 """
@@ -115,8 +117,8 @@ class DriveDistanceNode(Node):
 
         # ── Parameters ────────────────────────────────────────────────────────
         self._cmd_topic    = self.declare_parameter("cmd_topic",   "/cmd_vel_safe").value
-        # EKF fused pose only — do not use /odom_raw here.
-        self._odom_topic   = self.declare_parameter("odom_topic",  "/odom").value
+        # Wheel FK odometry from odom_node (not EKF /odom).
+        self._odom_topic   = self.declare_parameter("odom_topic",  "/odom_raw").value
         self._max_vel      = self.declare_parameter("max_vel",      0.35).value
         self._accel        = self.declare_parameter("accel",        0.20).value
         self._decel        = self.declare_parameter("decel",        0.25).value
@@ -130,17 +132,15 @@ class DriveDistanceNode(Node):
         # ── Publisher ─────────────────────────────────────────────────────────
         self._pub = self.create_publisher(Twist, self._cmd_topic, 10)
 
-        # ── Odometry state (/odom only — EKF output) ──────────────────────────
+        # ── Odometry state (/odom_raw — wheel FK) ─────────────────────────────
         self._odom_lock  = threading.Lock()
         self._odom_x: float | None = None
         self._odom_y: float | None = None
         self._odom_last  = time.monotonic()
 
-        # RELIABLE to match ekf_node /odom publisher (default depth-10 RELIABLE).
         self._sub_odom = self.create_subscription(
             Odometry, self._odom_topic, self._odom_cb, 10
         )
-
         self._wait_for_odom()
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -151,8 +151,8 @@ class DriveDistanceNode(Node):
             self._odom_last = time.monotonic()
 
     def _wait_for_odom(self):
-        """Spin until we get the first /odom pose (max 15 s)."""
-        deadline = time.monotonic() + 15.0
+        """Spin until first pose on /odom_raw (max ~10 s)."""
+        deadline = time.monotonic() + 10.0
         print(_c(DIM, f"  Waiting for {self._odom_topic} …"), end="", flush=True)
         dots = 0
         while time.monotonic() < deadline:
@@ -164,12 +164,12 @@ class DriveDistanceNode(Node):
             dots += 1
             if dots % 5 == 0:
                 print(".", end="", flush=True)
+
         print(_c(YELL, f"\n  ⚠ No {self._odom_topic} yet — time-only stop (odom guard disabled)"))
-        print(_c(DIM, "  Debug chain (all must tick):"))
+        print(_c(DIM, "  Debug chain:"))
         print(_c(DIM, "    ros2 topic hz /encoder     # amr4_driver"))
-        print(_c(DIM, "    ros2 topic hz /odom_raw    # odom_node"))
-        print(_c(DIM, "    ros2 topic hz /imu         # amr4_driver"))
-        print(_c(DIM, "    ros2 topic hz /odom        # EKF ← drive_distance uses this"))
+        print(_c(DIM, "    ros2 topic hz /odom_raw    # odom_node ← drive_distance uses this"))
+        print(_c(DIM, "    ros2 node list | grep odom_node"))
 
     def _get_odom(self) -> tuple[float | None, float | None]:
         with self._odom_lock:

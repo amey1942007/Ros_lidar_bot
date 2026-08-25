@@ -95,7 +95,8 @@ def _launch_setup(context, *args, **kwargs):
             "max_send_rate":    15.0,
             "omega_threshold":  0.05,
             "frame_id":         "base_footprint",
-            "imu_frame_id":     "imu_link",
+            # base_footprint avoids EKF waiting on imu_link TF for gyro-only fusion.
+            "imu_frame_id":     "base_footprint",
             "flush_rate":       0.0,
             "encoder_topic":    "/encoder",
         }],
@@ -131,13 +132,21 @@ def _launch_setup(context, *args, **kwargs):
         package="robot_localization",
         executable="ekf_node",
         name="ekf_filter_node",
-        output=out,
-        arguments=log_args,
+        # Always screen for odom bringup — silent EKF is hard to debug.
+        output="screen",
         parameters=[
             os.path.join(pkg_share, "config", "ekf.yaml"),
-            {"use_sim_time": False},
+            {
+                "use_sim_time": False,
+                # Reinforce critical inputs in case YAML node-key missed.
+                "odom0": "/odom_raw",
+                "imu0": "/imu",
+                "publish_tf": True,
+                "print_diagnostics": True,
+            },
         ],
-        remappings=[("/odometry/filtered", "/odom")],
+        # Prefer unscoped names — more reliable remaps on Humble.
+        remappings=[("odometry/filtered", "odom")],
     )
 
     # Keeps joy → /cmd_vel → /cmd_vel_safe. Without lidar, laser gate never

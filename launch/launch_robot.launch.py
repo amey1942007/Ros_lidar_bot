@@ -265,9 +265,14 @@ def _launch_setup(context, *args, **kwargs):
         arguments=log_args,
         parameters=[
             os.path.join(pkg_share, "config", "ekf.yaml"),
-            {"use_sim_time": False},
+            {
+                "use_sim_time": False,
+                "odom0": "/odom_raw",
+                "imu0": "/imu",
+                "publish_tf": True,
+            },
         ],
-        remappings=[("/odometry/filtered", "/odom")],
+        remappings=[("odometry/filtered", "odom")],
     )
 
     # ── 8. SLAM Toolbox ───────────────────────────────────────────────────────

@@ -1,4 +1,6 @@
-ekf_filter_node:
+# /** applies regardless of node name / namespace (avoids silent empty params
+# when the launch node name does not exactly match "ekf_filter_node").
+/**:
   ros__parameters:
     # ══════════════════════════════════════════════════════════════════════════════
     # AMR4 EKF Configuration — robot_localization ekf_node
@@ -54,6 +56,7 @@ ekf_filter_node:
     # Flat-ground robot: collapse Z, roll, and pitch. All 2D.
     two_d_mode: true
     use_sim_time: false
+    print_diagnostics: true
 
     # Extrapolate odom→base_footprint TF to the current ROS time so LiDAR scans
     # (stamped at scan start) align correctly with the robot pose. Without this,
@@ -70,7 +73,8 @@ ekf_filter_node:
     # odom_node runs with broadcast_tf: False to avoid TF conflict.
     publish_tf: true
     transform_time_offset: 0.0
-    transform_timeout: 0.0
+    # Wait briefly for imu_link→base_footprint from robot_state_publisher.
+    transform_timeout: 0.1
 
     # ── Frame names ───────────────────────────────────────────────────────────────
     map_frame:       map
@@ -132,7 +136,8 @@ ekf_filter_node:
     imu0_relative: false
     imu0_queue_size: 50
     imu0_nodelay: true
-    imu0_remove_gravity: true
+    # Humble name (imu0_remove_gravity was wrong and silently ignored).
+    imu0_remove_gravitational_acceleration: true
 
     # ── Process noise covariance (Q) ──────────────────────────────────────────────
     # 15×15 diagonal: [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
