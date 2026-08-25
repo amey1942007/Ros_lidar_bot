@@ -161,53 +161,43 @@ class AMR4DriverNode(Node):
         self._stopped = False
 
         # Current heading latched from /imu (degrees, BNO055 frame 0..360).
-        # Starts at 0.0 — used for HDRIVE target. Updated from /imu callback.
         self._current_heading_deg: float = 0.0
-        self._imu_received: bool = False     # True once we have a real heading
+        self._imu_received: bool = False
 
-        # ── Serial open (with retry) ──────────────────────────────────────────
-        self._open_serial()
-
-        # ── QoS profiles ─────────────────────────────────────────────────────
-        best_effort_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+        # ── QoS — keep encoder/imu RELIABLE so odom_node + EKF always match ──
+        self._reliable_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
             depth=10,
         )
 
+        # Non-blocking serial: one attempt here; watchdog/reader retry forever.
+        # Blocking forever in __init__ hung the whole launch when ACM0 was absent.
+        self._open_serial(blocking=False)
+
         # ── Publishers ───────────────────────────────────────────────────────
-        # /encoder: raw 4-wheel RPMs from Arduino telemetry.
-        # odom_node subscribes here, runs mecanum FK, publishes /odom_raw.
         encoder_topic = self.get_parameter("encoder_topic").value
         self._pub_encoder = self.create_publisher(
-            Float32MultiArray, encoder_topic, 10
+            Float32MultiArray, encoder_topic, self._reliable_qos
         )
-        # /imu: BNO055 data parsed from DriveMaster telemetry.
-        # THIS NODE is the sole /imu publisher — no separate imu_node needed.
-        # The EKF fuses /odom_raw + /imu → final /odom.
-        self._pub_imu = self.create_publisher(Imu, "/imu", 10)
-
-        # /driver/status: raw telemetry string for debugging
+        self._pub_imu = self.create_publisher(Imu, "/imu", self._reliable_qos)
         self._pub_status = self.create_publisher(
-            String, "/driver/status", 10
+            String, "/driver/status", self._reliable_qos
         )
 
         # ── Subscribers ──────────────────────────────────────────────────────
-        # /cmd_vel_safe: safety-filtered motion commands
         self._sub_cmd = self.create_subscription(
             Twist,
             self._cmd_topic,
             self._cmd_vel_callback,
-            10,
+            self._reliable_qos,
         )
-        # /imu: self-subscribe to latch current heading for HDRIVE.
-        # We publish /imu ourselves (from telemetry) so this subscription
-        # will receive our own messages — that's intentional and correct.
+        # Self-subscribe for HDRIVE heading — same RELIABLE QoS as /imu pub.
         self._sub_imu = self.create_subscription(
             Imu,
             "/imu",
             self._imu_callback,
-            best_effort_qos,
+            self._reliable_qos,
         )
 
         # ── Watchdog timer (fires every cmd_timeout/2 seconds) ───────────────
@@ -247,8 +237,14 @@ class AMR4DriverNode(Node):
     # ──────────────────────────────────────────────────────────────────────────
     # Serial helpers
     # ──────────────────────────────────────────────────────────────────────────
-    def _open_serial(self):
-        """Open (or re-open) the serial port.  Retries every 3 s on failure."""
+    def _open_serial(self, blocking: bool = True):
+        """
+        Open (or re-open) the serial port.
+
+        blocking=True  — retry forever (used from watchdog reconnect).
+        blocking=False — single attempt; return False if port missing so
+                         __init__ can finish and launch does not hang.
+        """
         while rclpy.ok():
             try:
                 self._serial = serial.Serial(
@@ -257,7 +253,6 @@ class AMR4DriverNode(Node):
                     timeout=1.0,
                 )
                 time.sleep(2.0)  # let Arduino reset after DTR toggle
-                # Flush any boot/banner bytes so telemetry starts clean
                 try:
                     self._serial.reset_input_buffer()
                 except Exception:
@@ -265,12 +260,17 @@ class AMR4DriverNode(Node):
                 self.get_logger().info(
                     f"Serial port {self._port_name} opened at {self._baud} baud"
                 )
-                return
+                return True
             except serial.SerialException as exc:
                 self.get_logger().error(
-                    f"Cannot open {self._port_name}: {exc}  — retrying in 3 s"
+                    f"Cannot open {self._port_name}: {exc}"
+                    + ("" if blocking else " — will retry in background")
                 )
+                if not blocking:
+                    self._serial = None
+                    return False
                 time.sleep(3.0)
+        return False
 
     def _write_cmd(self, cmd: str):
         """Send a newline-terminated command string to the Arduino (thread-safe)."""

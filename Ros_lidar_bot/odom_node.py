@@ -135,8 +135,11 @@ class OdomNode(Node):
         self._last_data_time = time.monotonic()
 
         # ── QoS ──────────────────────────────────────────────────────────────
-        best_effort_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+        # Must match amr4_driver's /encoder publisher (RELIABLE, depth 10).
+        # BEST_EFFORT here was silently dropping all encoder messages on some
+        # RMW stacks → no /odom_raw → EKF never published /odom.
+        encoder_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
             depth=10,
         )
@@ -158,18 +161,16 @@ class OdomNode(Node):
 
         # ── Subscriber ────────────────────────────────────────────────────────
         # /encoder from amr4_driver_node: Float32MultiArray([rpm_FL, rpm_FR, rpm_RL, rpm_RR])
-        # These are raw wheel RPMs from Arduino encoder feedback.
-        # This node runs mecanum FK on them and publishes /odom_raw (Odometry)
-        # which the EKF fuses with /imu to produce the final /odom.
-        self._sub_odom_raw = self.create_subscription(
+        self._sub_encoder = self.create_subscription(
             Float32MultiArray,
             self._encoder_topic,
-            self._odom_raw_callback,
-            best_effort_qos,
+            self._encoder_callback,
+            encoder_qos,
         )
 
         # ── Watchdog: warn if no data arrives for > 2 s ───────────────────────
         self._watchdog_timer = self.create_timer(2.0, self._watchdog_callback)
+        self._msg_count = 0
 
         self.get_logger().info(
             f"OdomNode ready — subscribing '{self._encoder_topic}' "
@@ -185,11 +186,11 @@ class OdomNode(Node):
         )
 
     # ──────────────────────────────────────────────────────────────────────────
-    # /odom_raw callback — runs mecanum FK and integrates pose
+    # /encoder callback — runs mecanum FK and integrates pose
     # ──────────────────────────────────────────────────────────────────────────
-    def _odom_raw_callback(self, msg: Float32MultiArray):
+    def _encoder_callback(self, msg: Float32MultiArray):
         """
-        Receive 4-wheel RPMs, run mecanum FK, integrate pose, publish /odom.
+        Receive 4-wheel RPMs, run mecanum FK, integrate pose, publish /odom_raw.
 
         Input layout (from amr4_driver_node /encoder):
             msg.data[0] = W1_RPM  FL
@@ -198,7 +199,15 @@ class OdomNode(Node):
             msg.data[3] = W4_RPM  RR
         """
         if len(msg.data) < 4:
+            self.get_logger().warn(
+                f"/encoder has {len(msg.data)} values, need 4",
+                throttle_duration_sec=5.0,
+            )
             return
+
+        self._msg_count += 1
+        if self._msg_count == 1:
+            self.get_logger().info("First /encoder message received — odom pipeline live")
 
         now = time.monotonic()
         self._last_data_time = now
@@ -210,7 +219,7 @@ class OdomNode(Node):
         dt = now - self._last_odom_time
         self._last_odom_time = now
         if dt <= 0.0 or dt > 1.0:
-            # Sanity guard: ignore absurd dt (first message, serial gap, etc.)
+            # Sanity guard: ignore absurd dt (clock jump / long serial gap)
             return
 
         to_rps = (2.0 * math.pi * self._R) / 60.0  # RPM → linear velocity (m/s)

@@ -34,17 +34,11 @@ Two complementary mechanisms work together:
    profile as Twist commands to /cmd_vel_safe at 20 Hz.  This gives a smooth
    commanded stop at the mathematically correct time.
 
-2. Odometry feedback (EKF /odom)
-   The node tracks the actual displacement from /odom (the EKF-fused output).
-   If the odometry distance reaches within EARLY_STOP_THRESH of the target
-   BEFORE the time profile ends, the node sends an immediate stop — catching
-   any case where the robot is faster than modelled (wheel slip, wrong params).
-
-   An OVERSHOOT_GUARD also triggers immediately if the robot travels more than
-   OVERSHOOT_MARGIN beyond the target — protecting against runaway.
+2. Odometry feedback (EKF /odom only)
+   Tracks displacement from /odom (EKF-fused). Requires full bringup.
 
 Publishes    : /cmd_vel_safe  (geometry_msgs/Twist)
-Subscribes   : /odom          (nav_msgs/Odometry  — EKF output)
+Subscribes   : /odom          (nav_msgs/Odometry — EKF output)
 
 Parameters (ROS 2, settable on the command line)
 ------------------------------------------------
@@ -118,6 +112,8 @@ class DriveDistanceNode(Node):
 
         # ── Parameters ────────────────────────────────────────────────────────
         self._cmd_topic    = self.declare_parameter("cmd_topic",   "/cmd_vel_safe").value
+        # EKF fused pose only — do not use /odom_raw here.
+        self._odom_topic   = self.declare_parameter("odom_topic",  "/odom").value
         self._max_vel      = self.declare_parameter("max_vel",      0.35).value
         self._accel        = self.declare_parameter("accel",        0.20).value
         self._decel        = self.declare_parameter("decel",        0.25).value
@@ -131,17 +127,17 @@ class DriveDistanceNode(Node):
         # ── Publisher ─────────────────────────────────────────────────────────
         self._pub = self.create_publisher(Twist, self._cmd_topic, 10)
 
-        # ── Odometry state (updated from /odom) ───────────────────────────────
+        # ── Odometry state (/odom only — EKF output) ──────────────────────────
         self._odom_lock  = threading.Lock()
         self._odom_x: float | None = None
         self._odom_y: float | None = None
         self._odom_last  = time.monotonic()
 
-        self._sub = self.create_subscription(
-            Odometry, "/odom", self._odom_cb, 10
+        # RELIABLE to match ekf_node /odom publisher (default depth-10 RELIABLE).
+        self._sub_odom = self.create_subscription(
+            Odometry, self._odom_topic, self._odom_cb, 10
         )
 
-        # Wait up to 3 s for the first /odom message so we have a start position
         self._wait_for_odom()
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -152,16 +148,25 @@ class DriveDistanceNode(Node):
             self._odom_last = time.monotonic()
 
     def _wait_for_odom(self):
-        """Spin until we get the first /odom message (max 5 s)."""
-        deadline = time.monotonic() + 5.0
-        print(_c(DIM, "  Waiting for /odom …"), end="", flush=True)
+        """Spin until we get the first /odom pose (max 15 s)."""
+        deadline = time.monotonic() + 15.0
+        print(_c(DIM, f"  Waiting for {self._odom_topic} …"), end="", flush=True)
+        dots = 0
         while time.monotonic() < deadline:
-            rclpy.spin_once(self, timeout_sec=0.1)
+            rclpy.spin_once(self, timeout_sec=0.2)
             with self._odom_lock:
                 if self._odom_x is not None:
                     print(_c(GREEN, " ✓"))
                     return
-        print(_c(YELL, "\n  ⚠ No /odom yet — will use time-only stop (odom guard disabled)"))
+            dots += 1
+            if dots % 5 == 0:
+                print(".", end="", flush=True)
+        print(_c(YELL, f"\n  ⚠ No {self._odom_topic} yet — time-only stop (odom guard disabled)"))
+        print(_c(DIM, "  Debug chain (all must tick):"))
+        print(_c(DIM, "    ros2 topic hz /encoder     # amr4_driver"))
+        print(_c(DIM, "    ros2 topic hz /odom_raw    # odom_node"))
+        print(_c(DIM, "    ros2 topic hz /imu         # amr4_driver"))
+        print(_c(DIM, "    ros2 topic hz /odom        # EKF ← drive_distance uses this"))
 
     def _get_odom(self) -> tuple[float | None, float | None]:
         with self._odom_lock:
@@ -363,7 +368,7 @@ class DriveDistanceNode(Node):
         print(_c(BOLD, "╚══════════════════════════════════════════════╝"))
         print(
             f"  cmd_vel topic : {_c(CYAN, self._cmd_topic)}\n"
-            f"  odom topic    : {_c(CYAN, '/odom')}\n"
+            f"  odom topic    : {_c(CYAN, self._odom_topic)}  (EKF only)\n"
             f"  max_vel       : {_c(BOLD, f'{self._max_vel:.2f}')} m/s\n"
             f"  accel / decel : {self._accel:.2f} / {self._decel:.2f} m/s²\n"
             f"  early stop    : ±{self._early_stop_m*100:.0f} cm from target\n"

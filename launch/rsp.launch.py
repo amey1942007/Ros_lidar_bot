@@ -30,17 +30,10 @@ def generate_launch_description():
         parameters=[params]
     )
 
-    node_joint_state_publisher = Node(
-        package='joint_state_publisher',
-        executable='joint_state_publisher',
-        name='joint_state_publisher',
-        output=output_mode,
-        parameters=[{
-            'use_sim_time': use_sim_time,
-            # AMR4 has no camera head. /encoder is Float32MultiArray RPMs
-            # (not JointState), so JSP publishes URDF zeros for the wheel joints.
-        }],
-    )
+    # No joint_state_publisher: AMR4 /encoder is Float32MultiArray (not
+    # JointState). RSP publishes fixed TF (imu/lidar/base); wheel joints stay
+    # at zero which is fine for drive/odom/nav. Avoids a hard dep that is not
+    # installed on every bringup host.
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -53,5 +46,4 @@ def generate_launch_description():
             description='screen or log — use log so bringup_status owns the terminal'),
 
         node_robot_state_publisher,
-        node_joint_state_publisher
     ])
