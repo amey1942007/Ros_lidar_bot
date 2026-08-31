@@ -258,7 +258,7 @@ const long BAUD_SABERTOOTH = 9600;
 //   WHEEL_RADIUS = mecanum wheel radius, metres
 // ============================================================
 const float CHASSIS_L    = 0.52;
-const float CHASSIS_W    = 0.88;
+const float CHASSIS_W    = 0.63;
 const float WHEEL_RADIUS = 0.05;
 
 // Combined geometry term used in mecanum IK: (L + W) / 2

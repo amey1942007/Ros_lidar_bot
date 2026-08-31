@@ -131,8 +131,8 @@ def _launch_setup(context, *args, **kwargs):
     )
 
     # ── 4. Odometry Node ──────────────────────────────────────────────────────
-    # Subscribes to /encoder (Float32MultiArray — 4 raw wheel RPMs from driver).
-    # Runs mecanum forward kinematics to compute body velocity (vx, vy, omega).
+    # Subscribes to /encoder (Float64MultiArray — 4 wheel counts + Arduino ms).
+    # Runs mecanum forward kinematics on the count deltas to get body motion.
     # Integrates pose (x, y, yaw) and publishes nav_msgs/Odometry on /odom_raw.
     # EKF then fuses /odom_raw + /imu and publishes final /odom.
     # broadcast_tf=False: EKF is the sole odom→base_footprint TF publisher.
@@ -148,9 +148,14 @@ def _launch_setup(context, *args, **kwargs):
             # Chassis geometry — must match Config.h values
             "wheel_radius":   0.05,    # metres (WHEEL_RADIUS in Config.h)
             "chassis_l":      0.52,    # metres (CHASSIS_L  in Config.h)
-            "chassis_w":      0.88,    # metres (CHASSIS_W  in Config.h)
+            "chassis_w":      0.63,    # metres (CHASSIS_W  in Config.h)
+            # Encoder counts per wheel revolution (PPR1..PPR4 in Config.h)
+            "ppr1":           1300,
+            "ppr2":            680,
+            "ppr3":            400,
+            "ppr4":            280,
             # Topics
-            "encoder_topic":  "/encoder",    # raw RPMs from driver node
+            "encoder_topic":  "/encoder",    # counts + Arduino ms from driver
             "odom_topic":     "/odom_raw",   # FK odometry → EKF input
             "base_frame_id": "base_footprint",
             "odom_frame_id": "odom",

@@ -7,19 +7,30 @@ Hardware : Arduino Mega 2560 running DriveMaster.ino (mecanum bot)
 
 What this node does
 -------------------
-Subscribes to /encoder (std_msgs/Float32MultiArray) — published by
-amr4_driver_node.py — which carries the four wheel RPMs measured by the
-Arduino's encoder feedback loop:
+Subscribes to /encoder (std_msgs/Float64MultiArray) — published by
+amr4_driver_node.py — which carries the raw encoder counts and the Arduino
+millis() timestamp they were sampled at:
 
-    data[0] = W1_RPM  (FL — front-left)
-    data[1] = W2_RPM  (FR — front-right)
-    data[2] = W3_RPM  (RL — rear-left)
-    data[3] = W4_RPM  (RR — rear-right)
+    data[0] = C1  (FL — front-left)   counts
+    data[1] = C2  (FR — front-right)  counts
+    data[2] = C3  (RL — rear-left)    counts
+    data[3] = C4  (RR — rear-right)   counts
+    data[4] = T   (Arduino millis() at sample time)
 
 Using mecanum forward kinematics (FK) — the mathematical inverse of
-DriveMaster.ino's mecanumIK() — it computes the robot body velocity
-(vx forward, vy strafe, omega yaw) and integrates over time to maintain
-a dead-reckoning pose estimate (x, y, yaw).
+DriveMaster.ino's mecanumIK() — it converts the per-wheel count deltas into
+a body displacement and integrates that into a dead-reckoning pose (x, y,
+yaw), then divides by the Arduino dt to report body velocity.
+
+Why counts and not RPM
+----------------------
+Counts are displacement; RPM is a rate averaged over the Arduino telemetry
+period. Integrating "rate x dt" with dt measured on the Jetson turns USB
+scheduling jitter into position error, because a late frame is credited with
+extra travel that never happened. Differencing counts removes dt from the
+position estimate entirely — the pose depends only on how far the wheels
+actually turned. The Arduino timestamp is still used for the twist, which is
+a rate by definition and only feeds the EKF.
 
 Publishes:
     /odom_raw  (nav_msgs/Odometry)  — FK pose + velocity + covariance.
@@ -43,22 +54,27 @@ PID setpoints then apply extra sign flips:
     pid1 = -wFL * toRPM,  pid2 = +wFR * toRPM
     pid3 = -wRL * toRPM,  pid4 = +wRR * toRPM
 
-so measured RPM is converted back to IK wheel velocities with the same flips
-before the inverse is applied.
+so measured wheel travel is converted back to IK wheel displacements with the
+same flips before the inverse is applied.
 
-Inverse of that IK matrix:
+Inverse of that IK matrix (identical for velocities or displacements):
     4·vy       =  wFL + wFR + wRL + wRR
     4·vx       =  wFL - wFR - wRL + wRR
     4·LW·omega =  wFL + wFR - wRL - wRR
 
 Parameters
 ----------
-  encoder_topic   (str)   : default "/encoder"     ← raw RPMs from driver
+  encoder_topic   (str)   : default "/encoder"     ← counts + T from driver
   odom_topic      (str)   : default "/odom_raw"    ← FK odometry for EKF
   base_frame_id   (str)   : default "base_footprint"
   odom_frame_id   (str)   : default "odom"
   broadcast_tf    (bool)  : publish odom→base_footprint TF (default False)
                             Keep False — EKF is the sole TF publisher.
+
+  Encoder counts per wheel revolution (must match Config.h PPR1..PPR4):
+  ppr1 / ppr2 / ppr3 / ppr4  (int) : defaults 1300 / 680 / 400 / 280
+  standstill_counts (int) : per-wheel |delta| at or below this is treated
+                            as zero, so encoder dither cannot creep the pose
 
   Covariance tuning (diagonal of the 6×6 pose / twist covariance):
   pose_cov_x      (float) : default 0.01  (m²)
@@ -78,7 +94,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import Odometry
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float64MultiArray
 
 try:
     from tf2_ros import TransformBroadcaster
@@ -91,7 +107,7 @@ class OdomNode(Node):
     """
     Computes and publishes wheel odometry for the AMR4 mecanum robot.
 
-    Subscribes to /encoder (4 wheel RPMs from amr4_driver_node).
+    Subscribes to /encoder (4 wheel counts + Arduino ms from amr4_driver_node).
     Publishes    /odom_raw (nav_msgs/Odometry with pose+twist+covariance).
     Optionally   broadcasts odom→base_footprint TF (keep off — EKF owns TF).
     """
@@ -109,10 +125,19 @@ class OdomNode(Node):
         # Chassis geometry — MUST match Config.h
         self._R   = self.declare_parameter("wheel_radius", 0.05).value   # metres
         self._L   = self.declare_parameter("chassis_l",    0.52).value   # metres
-        self._W   = self.declare_parameter("chassis_w",    0.88).value   # metres
+        self._W   = self.declare_parameter("chassis_w",    0.63).value   # metres
         self._lw  = (self._L + self._W) / 2.0   # KIN_LW in DriveMaster
-        # Feedback below this on ALL four wheels is treated as standstill.
-        self._standstill_rpm = self.declare_parameter("standstill_rpm", 2.0).value
+
+        # Encoder counts per wheel revolution — MUST match Config.h PPR1..PPR4
+        self._ppr = [
+            float(self.declare_parameter("ppr1", 1300).value),
+            float(self.declare_parameter("ppr2",  680).value),
+            float(self.declare_parameter("ppr3",  400).value),
+            float(self.declare_parameter("ppr4",  280).value),
+        ]
+        # Per-wheel count dither at rest, ignored so a parked robot cannot
+        # integrate its own encoder noise into a creeping pose.
+        self._standstill_counts = self.declare_parameter("standstill_counts", 2).value
 
         # Covariance (position diagonal entries; off-diagonal = 0 for dead-reckoning)
         self._pose_cov_x     = self.declare_parameter("pose_cov_x",      0.01).value
@@ -127,8 +152,9 @@ class OdomNode(Node):
         self._y   = 0.0   # metres
         self._yaw = 0.0   # radians
 
-        # ── Timing ────────────────────────────────────────────────────────────
-        self._last_odom_time: float | None = None   # monotonic timestamp of last /odom_raw msg
+        # ── Encoder / timing state (all from the Arduino, not the Jetson) ─────
+        self._last_counts: list[float] | None = None
+        self._last_arduino_ms: float | None = None
         self._last_vx    = 0.0
         self._last_vy    = 0.0
         self._last_omega = 0.0
@@ -160,9 +186,9 @@ class OdomNode(Node):
                 )
 
         # ── Subscriber ────────────────────────────────────────────────────────
-        # /encoder from amr4_driver_node: Float32MultiArray([rpm_FL, rpm_FR, rpm_RL, rpm_RR])
+        # /encoder from amr4_driver_node: Float64MultiArray([c1, c2, c3, c4, t_ms])
         self._sub_encoder = self.create_subscription(
-            Float32MultiArray,
+            Float64MultiArray,
             self._encoder_topic,
             self._encoder_callback,
             encoder_qos,
@@ -181,6 +207,9 @@ class OdomNode(Node):
             f"KIN_LW={self._lw:.4f} m"
         )
         self.get_logger().info(
+            f"  Counts/rev: {[int(p) for p in self._ppr]}  (must match Config.h PPR1..PPR4)"
+        )
+        self.get_logger().info(
             f"  Frames: odom='{self._odom_frame}' → base='{self._base_frame}'  "
             f"broadcast_tf={self._broadcast_tf}  (EKF owns TF when False)"
         )
@@ -188,19 +217,20 @@ class OdomNode(Node):
     # ──────────────────────────────────────────────────────────────────────────
     # /encoder callback — runs mecanum FK and integrates pose
     # ──────────────────────────────────────────────────────────────────────────
-    def _encoder_callback(self, msg: Float32MultiArray):
+    def _encoder_callback(self, msg: Float64MultiArray):
         """
-        Receive 4-wheel RPMs, run mecanum FK, integrate pose, publish /odom_raw.
+        Receive 4-wheel counts, run mecanum FK, integrate pose, publish /odom_raw.
 
         Input layout (from amr4_driver_node /encoder):
-            msg.data[0] = W1_RPM  FL
-            msg.data[1] = W2_RPM  FR
-            msg.data[2] = W3_RPM  RL
-            msg.data[3] = W4_RPM  RR
+            msg.data[0] = C1  FL counts
+            msg.data[1] = C2  FR counts
+            msg.data[2] = C3  RL counts
+            msg.data[3] = C4  RR counts
+            msg.data[4] = T   Arduino millis() when the counts were sampled
         """
-        if len(msg.data) < 4:
+        if len(msg.data) < 5:
             self.get_logger().warn(
-                f"/encoder has {len(msg.data)} values, need 4",
+                f"/encoder has {len(msg.data)} values, need 5 (C1..C4, T)",
                 throttle_duration_sec=5.0,
             )
             return
@@ -209,62 +239,73 @@ class OdomNode(Node):
         if self._msg_count == 1:
             self.get_logger().info("First /encoder message received — odom pipeline live")
 
-        now = time.monotonic()
-        self._last_data_time = now
+        self._last_data_time = time.monotonic()
 
-        # ── dt ───────────────────────────────────────────────────────────────
-        if self._last_odom_time is None:
-            self._last_odom_time = now
-            return   # need at least two messages to compute dt
-        dt = now - self._last_odom_time
-        self._last_odom_time = now
-        if dt <= 0.0 or dt > 1.0:
-            # Sanity guard: ignore absurd dt (clock jump / long serial gap)
+        counts = [float(v) for v in msg.data[:4]]
+        arduino_ms = float(msg.data[4])
+
+        # First frame only latches the reference — there is nothing to
+        # difference against yet.
+        if self._last_counts is None:
+            self._last_counts = counts
+            self._last_arduino_ms = arduino_ms
             return
 
-        to_rps = (2.0 * math.pi * self._R) / 60.0  # RPM → linear velocity (m/s)
+        dt = (arduino_ms - self._last_arduino_ms) / 1000.0
+        deltas = [c - p for c, p in zip(counts, self._last_counts)]
+        self._last_counts = counts
+        self._last_arduino_ms = arduino_ms
 
-        rpm1 = float(msg.data[0])
-        rpm2 = float(msg.data[1])
-        rpm3 = float(msg.data[2])
-        rpm4 = float(msg.data[3])
+        if dt <= 0.0:
+            # Arduino clock went backwards: it rebooted (counts restart at 0)
+            # or millis() wrapped. The delta is meaningless, so this frame
+            # only re-syncs the reference.
+            return
 
-        # Standstill deadband: encoder jitter at rest would integrate into
-        # a creeping pose / rotating lidar scan while parked.
-        if (abs(rpm1) < self._standstill_rpm and abs(rpm2) < self._standstill_rpm
-                and abs(rpm3) < self._standstill_rpm and abs(rpm4) < self._standstill_rpm):
-            rpm1 = rpm2 = rpm3 = rpm4 = 0.0
+        # Standstill deadband: with every wheel this quiet the robot is parked
+        # and the deltas are encoder dither, which would otherwise integrate
+        # into a creeping pose and a slowly rotating lidar scan.
+        if all(abs(d) <= self._standstill_counts for d in deltas):
+            deltas = [0.0, 0.0, 0.0, 0.0]
 
-        # Recover IK wheel linear velocities from measured RPM.
+        # Count delta → wheel travel (metres). Each wheel has its own PPR.
+        circumference = 2.0 * math.pi * self._R
+        travel = [(d / ppr) * circumference for d, ppr in zip(deltas, self._ppr)]
+
+        # Recover IK wheel displacements from measured travel.
         # DriveMaster: pid1/pid3 setpoints are negated, pid2/pid4 are not.
-        w_fl = -rpm1 * to_rps
-        w_fr =  rpm2 * to_rps
-        w_rl = -rpm3 * to_rps
-        w_rr =  rpm4 * to_rps
+        w_fl = -travel[0]
+        w_fr =  travel[1]
+        w_rl = -travel[2]
+        w_rr =  travel[3]
 
-        # Inverse of DriveMaster mecanumIK():
+        # Inverse of DriveMaster mecanumIK() — the same matrix works on
+        # displacements as on velocities:
         #   wFL = vy + vx + r,  wFR = vy - vx + r
         #   wRL = vy - vx - r,  wRR = vy + vx - r
-        vx    = ( w_fl - w_fr - w_rl + w_rr) / 4.0
-        vy    = ( w_fl + w_fr + w_rl + w_rr) / 4.0
-        omega = ( w_fl + w_fr - w_rl - w_rr) / (4.0 * self._lw)
+        d_x_body = ( w_fl - w_fr - w_rl + w_rr) / 4.0
+        d_y_body = ( w_fl + w_fr + w_rl + w_rr) / 4.0
+        d_yaw    = ( w_fl + w_fr - w_rl - w_rr) / (4.0 * self._lw)
+
+        vx    = d_x_body / dt
+        vy    = d_y_body / dt
+        omega = d_yaw / dt
 
         self._last_vx    = vx
         self._last_vy    = vy
         self._last_omega = omega
 
-        # ── Pose integration (Euler integration in odom frame) ────────────────
-        # Project body velocity to odom frame using current heading
-        cos_yaw = math.cos(self._yaw)
-        sin_yaw = math.sin(self._yaw)
+        # ── Pose integration ─────────────────────────────────────────────────
+        # Rotate the body displacement into the odom frame about the midpoint
+        # heading of the interval, which tracks an arc far better than using
+        # the heading from the start of the interval.
+        mid_yaw = self._yaw + 0.5 * d_yaw
+        cos_yaw = math.cos(mid_yaw)
+        sin_yaw = math.sin(mid_yaw)
 
-        dx = (vx * cos_yaw - vy * sin_yaw) * dt
-        dy = (vx * sin_yaw + vy * cos_yaw) * dt
-        dyaw = omega * dt
-
-        self._x   += dx
-        self._y   += dy
-        self._yaw += dyaw
+        self._x   += d_x_body * cos_yaw - d_y_body * sin_yaw
+        self._y   += d_x_body * sin_yaw + d_y_body * cos_yaw
+        self._yaw += d_yaw
         # Normalise yaw to [-π, π]
         self._yaw = math.atan2(math.sin(self._yaw), math.cos(self._yaw))
 

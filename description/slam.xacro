@@ -43,14 +43,14 @@
          Z : 0.0  (wheel axle sits at the same height as base_link
                    because base_link is already wheel_radius above ground)
 
-       Given by user / confirmed with Config.h CHASSIS_L = 0.52 m:
-         Front-Left  (FL): ( 0.26,  0.32)
-         Front-Right (FR): ( 0.26, -0.32)
-         Rear-Left   (RL): (-0.26,  0.32)
-         Rear-Right  (RR): (-0.26, -0.32)
+       Measured, matches Config.h CHASSIS_L = 0.52 m, CHASSIS_W = 0.63 m:
+         Front-Left  (FL): ( 0.26,  0.315)
+         Front-Right (FR): ( 0.26, -0.315)
+         Rear-Left   (RL): (-0.26,  0.315)
+         Rear-Right  (RR): (-0.26, -0.315)
        ──────────────────────────────────────────────────────────── -->
   <xacro:property name="wheel_half_x"   value="0.26"/>          <!-- half wheelbase (front/rear) -->
-  <xacro:property name="wheel_half_y"   value="0.32"/>          <!-- half track width (left/right) -->
+  <xacro:property name="wheel_half_y"   value="0.315"/>         <!-- half track width (left/right) -->
 
   <!-- Wheel axle Z above base_link.
        base_link is wheel_radius above ground, so the axle is flush

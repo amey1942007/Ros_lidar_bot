@@ -8,7 +8,7 @@ Purpose  : Test /odom (EKF) with drive_distance — NO lidar, SLAM, or Nav2.
 Starts only:
   rsp              → TF (base / imu / laser frames from URDF)
   amr4_driver      → /cmd_vel_safe → Mega; publishes /encoder + /imu
-  odom_node        → /encoder → /odom_raw
+  odom_node        → /encoder (counts + Arduino ms) → /odom_raw
   ekf_node         → /odom_raw + /imu → /odom (+ odom→base_footprint TF)
   safety_stop      → /cmd_vel → /cmd_vel_safe (odom-stale guard; no laser without lidar)
   joy + joy_teleop → optional manual positioning
@@ -25,7 +25,8 @@ Usage
   # Terminal 2 — verify chain is live
   ros2 topic hz /encoder /imu /odom_raw /odom
 
-  # Terminal 3 — distance accuracy test (uses EKF /odom)
+  # Terminal 3 — distance accuracy test
+  # Prefers the fused EKF /odom; falls back to /odom_raw if the EKF is down.
   ros2 run Ros_lidar_bot drive_distance
 
 Mark a tape line on the floor, command e.g. X=1.0 Y=0.0, measure real travel
@@ -113,7 +114,11 @@ def _launch_setup(context, *args, **kwargs):
         parameters=[{
             "wheel_radius":   0.05,
             "chassis_l":      0.52,
-            "chassis_w":      0.88,
+            "chassis_w":      0.63,
+            "ppr1":           1300,
+            "ppr2":            680,
+            "ppr3":            400,
+            "ppr4":            280,
             "encoder_topic":  "/encoder",
             "odom_topic":     "/odom_raw",
             "base_frame_id":  "base_footprint",

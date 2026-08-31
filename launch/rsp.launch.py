@@ -30,7 +30,7 @@ def generate_launch_description():
         parameters=[params]
     )
 
-    # No joint_state_publisher: AMR4 /encoder is Float32MultiArray (not
+    # No joint_state_publisher: AMR4 /encoder is Float64MultiArray (not
     # JointState). RSP publishes fixed TF (imu/lidar/base); wheel joints stay
     # at zero which is fine for drive/odom/nav. Avoids a hard dep that is not
     # installed on every bringup host.
@@ -43,7 +43,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'output',
             default_value='log',
-            description='screen or log — use log so bringup_status owns the terminal'),
+            description='screen or log — use log to keep the bringup terminal readable'),
 
         node_robot_state_publisher,
     ])

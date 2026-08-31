@@ -7,8 +7,8 @@ Platform : Jetson Orin Nano · Ubuntu 22.04 · ROS 2 Humble · SSH-friendly term
 Usage (odom accuracy test — no lidar/SLAM/Nav2)
 -----------------------------------------------
     # Terminal 1
-    ros2 launch Ros_lidar_bot amr4.launch.py
-    # Terminal 2 — confirm /odom_raw is live, then:
+    ros2 launch Ros_lidar_bot launch_odom_test.launch.py
+    # Terminal 2 — confirm /odom is live, then:
     ros2 run Ros_lidar_bot drive_distance
 
 The node opens an interactive prompt:
@@ -37,24 +37,34 @@ Two complementary mechanisms work together:
    profile as Twist commands to /cmd_vel_safe at 20 Hz with angular.z=0
    so amr4_driver uses HDRIVE (heading-hold) for pure translation.
 
-2. Odometry feedback (/odom_raw — wheel FK)
-   Tracks displacement from /odom_raw (mecanum FK from odom_node).
-   Does not require EKF /odom.
+2. Odometry feedback — stop condition, not path tracking
+   Travelled distance is measured from odometry and the move ends on early
+   stop / overshoot. The commanded direction is fixed at the start of the
+   move: this closes the loop on HOW FAR the robot has gone, not on how far
+   it has strayed sideways. Heading itself is held by the Arduino HDRIVE PID.
+
+Odometry source
+---------------
+Prefers the EKF-fused /odom (wheel FK + BNO055 gyro). If the EKF is not
+running, it says so and falls back to /odom_raw (wheel FK only). With
+neither, it degrades to a time-only profile with the odom guard disabled.
 
 Publishes    : /cmd_vel_safe  (geometry_msgs/Twist)
-Subscribes   : /odom_raw      (nav_msgs/Odometry — wheel FK)
+Subscribes   : /odom          (nav_msgs/Odometry — EKF fused, preferred)
+               /odom_raw      (nav_msgs/Odometry — wheel FK, fallback)
 
 Parameters (ROS 2, settable on the command line)
 ------------------------------------------------
     cmd_topic      (str)   default "/cmd_vel_safe"
-    odom_topic     (str)   default "/odom_raw"
+    odom_topic     (str)   default "/odom"       preferred (EKF fused)
+    odom_fallback_topic (str) default "/odom_raw"
     max_vel        (float) default 0.35   m/s    peak velocity
     accel          (float) default 0.20   m/s²   acceleration rate
     decel          (float) default 0.25   m/s²   deceleration rate (slightly
                                                   harder than accel so it stops
                                                   precisely without coasting)
     rate_hz        (float) default 20.0   Hz     cmd_vel publish rate
-    odom_timeout   (float) default 3.0    s      warn if /odom_raw silent this long
+    odom_timeout   (float) default 3.0    s      warn if odom silent this long
     early_stop_m   (float) default 0.02   m      stop early if within this of target
     overshoot_m    (float) default 0.05   m      emergency stop if past target by this
 """
@@ -117,8 +127,10 @@ class DriveDistanceNode(Node):
 
         # ── Parameters ────────────────────────────────────────────────────────
         self._cmd_topic    = self.declare_parameter("cmd_topic",   "/cmd_vel_safe").value
-        # Wheel FK odometry from odom_node (not EKF /odom).
-        self._odom_topic   = self.declare_parameter("odom_topic",  "/odom_raw").value
+        # EKF-fused odometry preferred; wheel-FK-only odometry as fallback.
+        self._odom_topic   = self.declare_parameter("odom_topic",  "/odom").value
+        self._odom_fallback_topic = self.declare_parameter(
+            "odom_fallback_topic", "/odom_raw").value
         self._max_vel      = self.declare_parameter("max_vel",      0.35).value
         self._accel        = self.declare_parameter("accel",        0.20).value
         self._decel        = self.declare_parameter("decel",        0.25).value
@@ -132,16 +144,16 @@ class DriveDistanceNode(Node):
         # ── Publisher ─────────────────────────────────────────────────────────
         self._pub = self.create_publisher(Twist, self._cmd_topic, 10)
 
-        # ── Odometry state (/odom_raw — wheel FK) ─────────────────────────────
+        # ── Odometry state ────────────────────────────────────────────────────
         self._odom_lock  = threading.Lock()
         self._odom_x: float | None = None
         self._odom_y: float | None = None
         self._odom_last  = time.monotonic()
+        # Topic actually feeding the stop guard, resolved at startup.
+        self._odom_source: str | None = None
 
-        self._sub_odom = self.create_subscription(
-            Odometry, self._odom_topic, self._odom_cb, 10
-        )
-        self._wait_for_odom()
+        self._sub_odom = None
+        self._select_odom_source()
 
     # ──────────────────────────────────────────────────────────────────────────
     def _odom_cb(self, msg: Odometry):
@@ -150,26 +162,60 @@ class DriveDistanceNode(Node):
             self._odom_y = msg.pose.pose.position.y
             self._odom_last = time.monotonic()
 
-    def _wait_for_odom(self):
-        """Spin until first pose on /odom_raw (max ~10 s)."""
-        deadline = time.monotonic() + 10.0
-        print(_c(DIM, f"  Waiting for {self._odom_topic} …"), end="", flush=True)
+    def _try_odom_topic(self, topic: str, timeout: float) -> bool:
+        """Subscribe to *topic* and spin until a pose arrives or time runs out."""
+        if self._sub_odom is not None:
+            self.destroy_subscription(self._sub_odom)
+        with self._odom_lock:
+            self._odom_x = None
+            self._odom_y = None
+        self._sub_odom = self.create_subscription(
+            Odometry, topic, self._odom_cb, 10
+        )
+
+        deadline = time.monotonic() + timeout
+        print(_c(DIM, f"  Waiting for {topic} …"), end="", flush=True)
         dots = 0
         while time.monotonic() < deadline:
             rclpy.spin_once(self, timeout_sec=0.2)
             with self._odom_lock:
                 if self._odom_x is not None:
                     print(_c(GREEN, " ✓"))
-                    return
+                    self._odom_source = topic
+                    return True
             dots += 1
             if dots % 5 == 0:
                 print(".", end="", flush=True)
+        print()
+        return False
 
-        print(_c(YELL, f"\n  ⚠ No {self._odom_topic} yet — time-only stop (odom guard disabled)"))
+    def _select_odom_source(self):
+        """
+        Use the EKF-fused topic when it is live, otherwise the raw wheel FK.
+
+        The fused pose is the better stop reference because the gyro corrects
+        wheel slip, so it is tried first and only given a short window — a
+        running EKF publishes at 30 Hz and answers immediately.
+        """
+        if self._try_odom_topic(self._odom_topic, 2.0):
+            print(_c(GREEN, f"  Odometry source: {self._odom_topic}  (EKF fused)"))
+            return
+
+        print(_c(YELL, f"  ⚠ {self._odom_topic} not found — falling back to "
+                       f"{self._odom_fallback_topic}"))
+        print(_c(DIM,  "    (wheel FK only: no gyro correction for slip)"))
+
+        if self._try_odom_topic(self._odom_fallback_topic, 8.0):
+            print(_c(YELL, f"  Odometry source: {self._odom_fallback_topic}  (wheel FK)"))
+            return
+
+        self._odom_source = None
+        print(_c(RED, "\n  ⚠ No odometry at all — time-only stop (odom guard disabled)"))
         print(_c(DIM, "  Debug chain:"))
         print(_c(DIM, "    ros2 topic hz /encoder     # amr4_driver"))
-        print(_c(DIM, "    ros2 topic hz /odom_raw    # odom_node ← drive_distance uses this"))
-        print(_c(DIM, "    ros2 node list | grep odom_node"))
+        print(_c(DIM, "    ros2 topic hz /odom_raw    # odom_node"))
+        print(_c(DIM, "    ros2 topic hz /odom        # ekf_filter_node"))
+        print(_c(DIM, "    ros2 node list | grep -E 'odom_node|ekf'"))
 
     def _get_odom(self) -> tuple[float | None, float | None]:
         with self._odom_lock:
@@ -252,7 +298,7 @@ class DriveDistanceNode(Node):
         # Build velocity profile
         p = self._plan_profile(total_dist)
 
-        # Latch start position from /odom
+        # Latch start position from the selected odometry source
         start_x, start_y = self._get_odom()
         if start_x is None:
             start_x, start_y = 0.0, 0.0
@@ -371,9 +417,10 @@ class DriveDistanceNode(Node):
         print(_c(BOLD, "╔══════════════════════════════════════════════╗"))
         print(_c(BOLD, "║    AMR4  Drive-to-Distance   (SSH terminal)  ║"))
         print(_c(BOLD, "╚══════════════════════════════════════════════╝"))
+        odom_label = self._odom_source or "none — time-only"
         print(
             f"  cmd_vel topic : {_c(CYAN, self._cmd_topic)}\n"
-            f"  odom topic    : {_c(CYAN, self._odom_topic)}  (EKF only)\n"
+            f"  odom topic    : {_c(CYAN, odom_label)}\n"
             f"  max_vel       : {_c(BOLD, f'{self._max_vel:.2f}')} m/s\n"
             f"  accel / decel : {self._accel:.2f} / {self._decel:.2f} m/s²\n"
             f"  early stop    : ±{self._early_stop_m*100:.0f} cm from target\n"

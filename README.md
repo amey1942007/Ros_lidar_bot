@@ -144,9 +144,8 @@ Ros_lidar_bot/
 ├── launch/
 │   ├── launch_robot.launch.py       # hardware bringup (manual driving)
 │   ├── autonomous_robot.launch.py   # bringup + frontier exploration
-│   ├── vision.launch.py             # on-demand semantic vision (dashboard toggle)
-│   ├── rsp.launch.py                # robot_state_publisher (URDF)
-│   └── lidar_test.launch.py         # lidar-only smoke test
+│   ├── launch_odom_test.launch.py   # teleop + odometry only (no lidar/SLAM/Nav2)
+│   └── rsp.launch.py                # robot_state_publisher (URDF)
 ├── Ros_lidar_bot/
 │   ├── driver_node.py               # DDSM115 RS485 driver — /cmd_vel_safe → motors, /encoder out
 │   ├── odom_node.py                 # wheel odometry → /odom_raw
@@ -158,8 +157,7 @@ Ros_lidar_bot/
 │   ├── camera_servo_node.py         # right stick → /camera_cmd → pan/tilt head
 │   ├── yolo.py                      # YOLO-World camera detector → /yolo
 │   ├── semantic_slam_node.py        # /yolo + lidar → object map
-│   ├── imu_test_node.py / imu_calibration_node.py / drive_distance_node.py
-│   └── bringup_status_node.py       # legacy terminal status board
+│   └── imu_test_node.py / imu_calibration_node.py / drive_distance_node.py
 ├── config/
 │   ├── ekf.yaml                     # robot_localization fusion (audited timestamps)
 │   ├── nav2_params.yaml             # Nav2 stack tuning
@@ -210,6 +208,13 @@ ros2 launch Ros_lidar_bot launch_robot.launch.py
 
 ```bash
 ros2 launch Ros_lidar_bot autonomous_robot.launch.py
+```
+
+**Odometry accuracy testing (no lidar, SLAM or Nav2):**
+
+```bash
+ros2 launch Ros_lidar_bot launch_odom_test.launch.py
+ros2 run Ros_lidar_bot drive_distance
 ```
 
 Then open `http://<robot-ip>:8080` in a browser. Node logs are suppressed to

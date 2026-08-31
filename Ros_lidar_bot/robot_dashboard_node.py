@@ -2,7 +2,7 @@
 """
 robot_dashboard_node.py — Browser-based robot dashboard served from the RPi.
 
-Replaces the terminal bringup_status board with an interactive web GUI.
+Replaces the old terminal status board with an interactive web GUI.
 The Pi runs headless over SSH, so instead of opening a window there (X11
 forwarding is laggy and fragile), this node embeds a small HTTP server and
 the laptop/phone simply opens  http://<pi-ip>:8080  in a browser.

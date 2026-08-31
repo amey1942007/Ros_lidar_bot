@@ -7,7 +7,7 @@
     # ══════════════════════════════════════════════════════════════════════════════
     #
     # PIPELINE
-    #   amr4_driver_node  → /encoder       (Float32MultiArray — 4 raw wheel RPMs)
+    #   amr4_driver_node  → /encoder       (Float64MultiArray — 4 counts + Arduino ms)
     #                     → /imu           (sensor_msgs/Imu   — BNO055 from same Mega)
     #   odom_node         → /odom_raw      (nav_msgs/Odometry — mecanum FK pose+twist)
     #   ekf_node          → /odom          (nav_msgs/Odometry — fused output, remapped)
@@ -20,7 +20,7 @@
     #   (unlike differential-drive which has no lateral velocity). The EKF fuses
     #   BOTH vX and vY from /odom_raw plus vYaw from both /odom_raw and /imu.
     #
-    #   Wheel odometry (PRIMARY sensor — mecanum FK from encoder RPMs):
+    #   Wheel odometry (PRIMARY sensor — mecanum FK from encoder counts):
     #     • vX — forward velocity (precision: encoder counts directly)
     #     • vY — lateral / strafe velocity (holonomic motion, encoder-derived)
     #     • vYaw — rotation rate (4-wheel differential gives good yaw estimate)
@@ -36,7 +36,7 @@
     #       noisy aX makes the EKF's vX estimate worse, not better.
     #
     #   Anti-drift strategy:
-    #     - When stationary: all 4 wheels read 0 RPM exactly → EKF pinned to 0.
+    #     - When stationary: all 4 wheel count deltas are 0 → EKF pinned to 0.
     #       The IMU gyro, even after bias removal, has residual noise; the wheel
     #       zero-pins CANCEL this, preventing slow TF creep while parked.
     #     - When translating: HDRIVE command makes the Arduino hold heading via
@@ -46,11 +46,16 @@
     # ══════════════════════════════════════════════════════════════════════════════
 
     # ── Timing ───────────────────────────────────────────────────────────────────
-    # 30 Hz: smooth TF for RViz/SLAM. Matches odom_node publish rate.
+    # This is the PUBLISH rate, not a sensor rate. Both inputs arrive at ~10 Hz;
+    # the filter predicts between measurements, so /odom and the odom TF come out
+    # at 30 Hz. That smoothness is what RViz, SLAM and the Nav2 controller need —
+    # dropping this to the sensor rate would make TF choppy without adding any
+    # information.
     frequency: 30.0
 
     # If a sensor is silent for this long, stop fusing it and coast on prediction.
-    # /odom_raw arrives at ~10 Hz (telemetry TELEMETRY_MS=100ms), /imu at 50 Hz.
+    # /odom_raw and /imu both arrive at ~10 Hz: they are parsed from the SAME
+    # Arduino telemetry line (TELEMETRY_MS=100ms), so 0.5 s is ~5 missed frames.
     sensor_timeout: 0.5
 
     # Flat-ground robot: collapse Z, roll, and pitch. All 2D.
@@ -96,7 +101,7 @@
     # vY — USE: lateral / strafe velocity. Mecanum provides real vY, unlike diff-drive.
     #           Fusing vY closes the loop on strafe motion and prevents Y-drift during
     #           HDRIVE straight-line travel (any uncompensated lateral slip is visible).
-    # vYaw — USE: rotation rate from encoder FK. When stationary all 4 wheels = 0,
+    # vYaw — USE: rotation rate from encoder FK. When stationary all 4 deltas = 0,
     #         pinning vYaw to zero → cancels residual IMU gyro bias → no TF creep.
     odom0: /odom_raw
     odom0_config: [false, false, false,   # X, Y, Z — EKF integrates pose itself

@@ -1164,60 +1164,28 @@ void appendIMUTelemetry() {
 #endif
 
 // FUNCTION: Send Telemetry
+//   T and C1..C4 are sampled back-to-back so the host can difference the
+//   counts against the Mega clock instead of its own serial arrival time.
+//   Counts (not RPM) are the odometry source; the W* fields are PID debug.
 void sendTelemetry()
 {
-    if (usePID) {
-        Serial.print(F("T:")); Serial.print(millis()); Serial.print(F(","));
-        Serial.print(F("W1_SP:"));  Serial.print(pid1.setpoint, 1); Serial.print(F(","));
-        Serial.print(F("W1_RPM:")); Serial.print(rpm1, 4);          Serial.print(F(","));
+    Serial.print(F("T:"));  Serial.print(millis());    Serial.print(F(","));
+    Serial.print(F("C1:")); Serial.print(enc1.read()); Serial.print(F(","));
+    Serial.print(F("C2:")); Serial.print(enc2.read()); Serial.print(F(","));
+    Serial.print(F("C3:")); Serial.print(readEnc3());  Serial.print(F(","));
+    Serial.print(F("C4:")); Serial.print(readEnc4());  Serial.print(F(","));
 
-        Serial.print(F("W2_SP:"));  Serial.print(pid2.setpoint, 1); Serial.print(F(","));
-        Serial.print(F("W2_RPM:")); Serial.print(rpm2, 4);          Serial.print(F(","));
+    Serial.print(F("W1_SP:"));  Serial.print(pid1.setpoint, 1); Serial.print(F(","));
+    Serial.print(F("W1_RPM:")); Serial.print(rpm1, 2);          Serial.print(F(","));
 
-        Serial.print(F("W3_SP:"));  Serial.print(pid3.setpoint, 1); Serial.print(F(","));
-        Serial.print(F("W3_RPM:")); Serial.print(rpm3, 4);          Serial.print(F(","));
+    Serial.print(F("W2_SP:"));  Serial.print(pid2.setpoint, 1); Serial.print(F(","));
+    Serial.print(F("W2_RPM:")); Serial.print(rpm2, 2);          Serial.print(F(","));
 
-        Serial.print(F("W4_SP:"));  Serial.print(pid4.setpoint, 1); Serial.print(F(","));
-        Serial.print(F("W4_RPM:")); Serial.print(rpm4, 4);
-    } else {
-        Serial.print(F("T:")); Serial.print(millis()); Serial.print(F(","));
-        Serial.print(F("W1_Cmd:")); Serial.print(rawCmd1);          Serial.print(F(","));
-        Serial.print(F("W1_RPM:")); Serial.print(rpm1, 1);          Serial.print(F(","));
+    Serial.print(F("W3_SP:"));  Serial.print(pid3.setpoint, 1); Serial.print(F(","));
+    Serial.print(F("W3_RPM:")); Serial.print(rpm3, 2);          Serial.print(F(","));
 
-        Serial.print(F("W2_Cmd:")); Serial.print(rawCmd2);          Serial.print(F(","));
-        Serial.print(F("W2_RPM:")); Serial.print(rpm2, 1);          Serial.print(F(","));
-
-        Serial.print(F("W3_Cmd:")); Serial.print(rawCmd3);          Serial.print(F(","));
-        Serial.print(F("W3_RPM:")); Serial.print(rpm3, 1);          Serial.print(F(","));
-
-        Serial.print(F("W4_Cmd:")); Serial.print(rawCmd4);          Serial.print(F(","));
-        Serial.print(F("W4_RPM:")); Serial.print(rpm4, 1);
-    }
-
-    // Lifter state tail: combined (0=STOP, 1=UP, -1=DOWN, 2=MIXED),
-    // then per-side right (RLIFT) and left (LLIFT) states, then the
-    // independent KFS lifter (KFSLIFT) state.
-    Serial.print(F(",LIFT:"));    Serial.print(lifterCombinedState());
-    Serial.print(F(",RLIFT:"));   Serial.print(rightLifterState);
-    Serial.print(F(",LLIFT:"));   Serial.print(leftLifterState);
-    Serial.print(F(",KFSLIFT:")); Serial.print(kfsLifterState);
-    // Gripper state tail: 0=CLOSED, 1=OPEN
-    // GRIP    = staff gripper (GRIPPER command)
-    // KFSGRIP = KFS gripper   (KFSGRIP command)
-    Serial.print(F(",GRIP:"));    Serial.print(gripperState);
-    Serial.print(F(",KFSGRIP:")); Serial.print(kfsGripperState);
-    // Arm pose tail: 0=STOW, 1=MID, 2=EXTEND, -1=MANUAL (ARM / SERVO)
-    Serial.print(F(",ARM:"));     Serial.print(armState);
-    // Live servo angles (current ramping position, deg), in id order:
-    //   SB=arm base, SM=arm mid, SF=arm front, SG=staff grip, SK=KFS grip,
-    //   SR=staff rotate. These are the ACTUAL positions mid-slew, distinct
-    // from the target.
-    Serial.print(F(",SB:"));  Serial.print(servos[SRV_ARM_BASE].lastInt);
-    Serial.print(F(",SM:"));  Serial.print(servos[SRV_ARM_MID].lastInt);
-    Serial.print(F(",SF:"));  Serial.print(servos[SRV_ARM_FRONT].lastInt);
-    Serial.print(F(",SG:"));  Serial.print(servos[SRV_STAFF_GRIP].lastInt);
-    Serial.print(F(",SK:"));  Serial.print(servos[SRV_KFS_GRIP].lastInt);
-    Serial.print(F(",SR:"));  Serial.print(servos[SRV_STAFF_ROTATE].lastInt);
+    Serial.print(F("W4_SP:"));  Serial.print(pid4.setpoint, 1); Serial.print(F(","));
+    Serial.print(F("W4_RPM:")); Serial.print(rpm4, 2);
 
 #if BNO055_ENABLE
     // Heading-hold state tail: HHOLD (1=active, 0=off) and the current

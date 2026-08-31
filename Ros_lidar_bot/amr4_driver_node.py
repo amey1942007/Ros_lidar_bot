@@ -21,15 +21,19 @@ What this node does
 
 2. Reads ASCII telemetry back from the Arduino (one CSV line per TELEMETRY_MS).
    The telemetry format is:
-     T:<ms>,W1_SP:,W1_RPM:,...,W4_SP:,W4_RPM:,
-     LIFT:,RLIFT:,LLIFT:,KFSLIFT:,GRIP:,KFSGRIP:,ARM:,...,
+     T:<ms>,C1:,C2:,C3:,C4:,
+     W1_SP:,W1_RPM:,...,W4_SP:,W4_RPM:,
      HHOLD:,HTGT:,
      IMU_OK:1,HDG:,ROLL:,PITCH:,GX:,GY:,GZ:,AX:,AY:,AZ:,CAL:
 
    This node parses and re-publishes TWO topics from that single UART stream:
 
-   a) /encoder  (std_msgs/Float32MultiArray) — [W1_RPM,W2_RPM,W3_RPM,W4_RPM]
-      Consumed by odom_node which runs mecanum FK and publishes /odom_raw.
+   a) /encoder  (std_msgs/Float64MultiArray) — [C1,C2,C3,C4,T_ms]
+      Raw encoder counts plus the Arduino millis() timestamp they were
+      sampled at. odom_node differences the counts over the Arduino clock
+      (never the Jetson arrival time) and publishes /odom_raw.
+      W*_RPM stays in the stream for PID debugging but is NOT used for
+      odometry — counts are displacement, RPM is only a 100 ms average.
 
    b) /imu  (sensor_msgs/Imu) — parsed from IMU_OK/HDG/ROLL/PITCH/GX../AX..
       BNO055 Euler angles are converted to a quaternion (ROS convention).
@@ -50,6 +54,7 @@ Serial protocol (DriveMaster.ino)
                      omega = angular.z (rad/s, CCW positive)
                      heading_deg = absolute target heading from BNO055 (0..360)
   ARDUINO → HOST  : CSV telemetry line every 100 ms, fields include
+                     T, C1..C4 (encoder counts),
                      W1_SP, W1_RPM, W2_SP, W2_RPM, W3_SP, W3_RPM,
                      W4_SP, W4_RPM, HDG, ROLL, PITCH, GX,GY,GZ,
                      AX,AY,AZ, HHOLD, HTGT, CAL …
@@ -65,7 +70,7 @@ Parameters (all ROS 2 parameters, set in launch file)
                              Latest cmd is queued under rate limit (never dropped).
   omega_threshold  (float) : |angular.z| above this → use DRIVE, not HDRIVE
                              (default 0.05 rad/s)
-  encoder_topic    (str)   : topic for raw encoder output (default "/encoder")
+  encoder_topic    (str)   : topic for raw encoder counts (default "/encoder")
   frame_id         (str)   : frame for published messages (default "base_footprint")
   flush_rate       (float) : Hz for backlog-only RX wipe (default 0.0 = off)
 """
@@ -82,7 +87,7 @@ import serial
 
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Imu
-from std_msgs.msg import Float32MultiArray, String
+from std_msgs.msg import Float64MultiArray, String
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -91,7 +96,7 @@ from std_msgs.msg import Float32MultiArray, String
 def _parse_telemetry(line: str) -> dict:
     """
     Parse a DriveMaster telemetry CSV line into a dict.
-    Example:  "T:12345,W1_SP:0.0,W1_RPM:0.0000, ..."
+    Example:  "T:12345,C1:8420,C2:4310,...,W1_SP:0.0,W1_RPM:0.00, ..."
     Returns {} on parse error.
     """
     result = {}
@@ -115,7 +120,7 @@ class AMR4DriverNode(Node):
       • |angular.z| >  omega_threshold  →  DRIVE  (free rotation)
 
     Publishes from DriveMaster telemetry:
-      /encoder  (Float32MultiArray) — [rpm_FL, rpm_FR, rpm_RL, rpm_RR]
+      /encoder  (Float64MultiArray) — [c_FL, c_FR, c_RL, c_RR, t_ms]
       /imu      (sensor_msgs/Imu)   — BNO055 orientation + gyro + accel
 
     There is NO separate imu_node — this node is the sole /imu publisher.
@@ -178,7 +183,7 @@ class AMR4DriverNode(Node):
         # ── Publishers ───────────────────────────────────────────────────────
         encoder_topic = self.get_parameter("encoder_topic").value
         self._pub_encoder = self.create_publisher(
-            Float32MultiArray, encoder_topic, self._reliable_qos
+            Float64MultiArray, encoder_topic, self._reliable_qos
         )
         self._pub_imu = self.create_publisher(Imu, "/imu", self._reliable_qos)
         self._pub_status = self.create_publisher(
@@ -435,7 +440,7 @@ class AMR4DriverNode(Node):
     def _serial_reader_loop(self):
         """
         Background thread: read DriveMaster telemetry and publish
-        /encoder (wheel RPMs) plus /imu (BNO055).
+        /encoder (counts + Arduino timestamp) plus /imu (BNO055).
         """
         while rclpy.ok():
             # Guard: wait for a valid port; try light reconnect from this thread
@@ -480,18 +485,25 @@ class AMR4DriverNode(Node):
             if not data:
                 continue
 
-            # ── /encoder: raw 4-wheel RPMs from Arduino telemetry ───────────
+            # ── /encoder: raw counts + Arduino timestamp ────────────────────
+            # float64 so the monotonically growing counts and millis() stay
+            # exact integers for the life of the run.
             try:
-                enc_msg = Float32MultiArray()
+                enc_msg = Float64MultiArray()
                 enc_msg.data = [
-                    float(data.get("W1_RPM", 0.0)),
-                    float(data.get("W2_RPM", 0.0)),
-                    float(data.get("W3_RPM", 0.0)),
-                    float(data.get("W4_RPM", 0.0)),
+                    float(data["C1"]),
+                    float(data["C2"]),
+                    float(data["C3"]),
+                    float(data["C4"]),
+                    float(data["T"]),
                 ]
                 self._pub_encoder.publish(enc_msg)
-            except Exception:
-                pass
+            except (KeyError, ValueError):
+                self.get_logger().warn(
+                    "Telemetry has no C1..C4 counts — flash the current "
+                    "DriveMaster.ino, odometry needs encoder counts.",
+                    throttle_duration_sec=5.0,
+                )
 
             # ── /imu: BNO055 data parsed from DriveMaster telemetry ─────────
             try:

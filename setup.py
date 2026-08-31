@@ -42,7 +42,6 @@ setup(
             'imu_test_node = Ros_lidar_bot.imu_test_node:main',
             'imu_calibration_node = Ros_lidar_bot.imu_calibration_node:main',
             'drive_distance = Ros_lidar_bot.drive_distance_node:main',
-            'bringup_status = Ros_lidar_bot.bringup_status_node:main',
             'robot_dashboard = Ros_lidar_bot.robot_dashboard_node:main',
             'scan_min_range_filter = Ros_lidar_bot.scan_min_range_filter_node:main',
         ],
