@@ -34,8 +34,8 @@ Two complementary mechanisms work together:
 
 1. Time-based trapezoidal velocity profile
    The node computes exact accel / constant / decel phases and sends the
-   profile as Twist commands to /cmd_vel_safe at 20 Hz.  This gives a smooth
-   commanded stop at the mathematically correct time.
+   profile as Twist commands to /cmd_vel_safe at 20 Hz with angular.z=0
+   so amr4_driver uses HDRIVE (heading-hold) for pure translation.
 
 2. Odometry feedback (/odom_raw — wheel FK)
    Tracks displacement from /odom_raw (mecanum FK from odom_node).
@@ -265,7 +265,8 @@ class DriveDistanceNode(Node):
             f"\n  {_c(CYAN, '►')} Driving  "
             f"Δx={_c(BOLD, f'{dx:+.3f}')} m  "
             f"Δy={_c(BOLD, f'{dy:+.3f}')} m  "
-            f"(dist={_c(BOLD, f'{total_dist:.3f}')} m)"
+            f"(dist={_c(BOLD, f'{total_dist:.3f}')} m)  "
+            f"{_c(DIM, '[HDRIVE ω=0]')}"
         )
         print(
             f"    Profile: peak={p['v_peak']:.3f} m/s  "
@@ -307,11 +308,12 @@ class DriveDistanceNode(Node):
                 print(_c(RED, f"\n  ⚠ OVERSHOOT GUARD — stopping! odom={odom_dist:.3f} m > target={total_dist:.3f} m"))
                 break
 
-            # ── Compute and publish Twist ──────────────────────────────────────
+            # ── Publish Twist — omega forced 0 → amr4_driver HDRIVE ───────────
             speed = self._velocity_at(elapsed, p)
-            cmd        = Twist()
+            cmd = Twist()
             cmd.linear.x = ux * speed
             cmd.linear.y = uy * speed
+            cmd.angular.z = 0.0  # required: nonzero omega → DRIVE, not HDRIVE
             self._pub.publish(cmd)
 
             # ── Draw progress bar ──────────────────────────────────────────────
