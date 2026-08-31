@@ -38,6 +38,7 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    LogInfo,
     OpaqueFunction,
     SetEnvironmentVariable,
     TimerAction,
@@ -81,6 +82,11 @@ def _launch_setup(context, *args, **kwargs):
         "yes",
     )
     expect_frontier = LaunchConfiguration("expect_frontier").perform(context).lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    use_ekf = LaunchConfiguration("use_ekf").perform(context).lower() in (
         "1",
         "true",
         "yes",
@@ -145,7 +151,8 @@ def _launch_setup(context, *args, **kwargs):
             "max_send_rate":    15.0,  # keep latest cmd under rate limit
             "omega_threshold":  0.05,
             "frame_id":         "base_footprint",
-            "imu_frame_id":     "imu_link",   # BNO055 on the same Mega
+            # Same frame as base_footprint — avoids EKF waiting on imu_link TF.
+            "imu_frame_id":     "base_footprint",
             # Blind RX flush wiped telemetry → no /encoder → no /odom_raw.
             # Off by default; backlog-only wipe when in_waiting > 4 KB.
             "flush_rate":       0.0,
@@ -179,11 +186,10 @@ def _launch_setup(context, *args, **kwargs):
             "ppr4":            280,
             # Topics
             "encoder_topic":  "/encoder",    # counts + Arduino ms from driver
-            "odom_topic":     "/odom_raw",   # FK odometry → EKF input
+            "odom_topic":     "/odom_raw" if use_ekf else "/odom",
             "base_frame_id": "base_footprint",
             "odom_frame_id": "odom",
-            # EKF publishes odom→base_footprint; odom_node must NOT also do it
-            "broadcast_tf":   False,
+            "broadcast_tf":   not use_ekf,
             # Covariance — tune per robot (higher = trust EKF IMU fusion more)
             "pose_cov_x":      0.01,
             "pose_cov_y":      0.01,
@@ -264,26 +270,19 @@ def _launch_setup(context, *args, **kwargs):
         }],
     )
 
-    # ── 7. EKF Node (fuses /odom_raw + /imu → /odom) ─────────────────────────
-    # Fuses:
-    #   /odom_raw — mecanum FK odometry (vX, vY, vYaw) from odom_node
-    #   /imu      — BNO055 (from amr4_driver_node, parsed from telemetry)
-    # Outputs /odometry/filtered remapped to /odom.
-    # Is the SOLE publisher of odom→base_footprint TF (broadcast_tf=False in odom_node).
-    ekf_node = Node(
-        package="robot_localization",
-        executable="ekf_node",
-        name="ekf_filter_node",
-        output=out,
-        arguments=log_args,
-        respawn=True,
-        respawn_delay=2.0,
-        parameters=[
-            os.path.join(pkg_share, "config", "ekf.yaml"),
-            _EKF_INLINE_PARAMS,
-        ],
-        remappings=[("/odometry/filtered", "/odom")],
-    )
+    # ── 7. EKF Node (optional — fuses /odom_raw + /imu → /odom) ───────────────
+    ekf_node = None
+    if use_ekf:
+        ekf_node = Node(
+            package="robot_localization",
+            executable="ekf_node",
+            name="ekf_filter_node",
+            output="screen",
+            respawn=True,
+            respawn_delay=2.0,
+            parameters=[_EKF_INLINE_PARAMS],
+            remappings=[("/odometry/filtered", "/odom")],
+        )
 
     # ── 8. SLAM Toolbox ───────────────────────────────────────────────────────
     slam_toolbox = IncludeLaunchDescription(
@@ -324,12 +323,23 @@ def _launch_setup(context, *args, **kwargs):
         # ── Stage 1 (T=0s): Hardware drivers + localization ──────────────────────
         rsp,
         driver_node,     # /dev/ttyACM0 → /encoder + /imu (driver + BNO055)
-        odom_node,       # /encoder → /odom_raw (mecanum FK)
+        odom_node,       # /encoder → /odom_raw or /odom
         lidar_node,      # /dev/ttyUSB0 → /scan (RPLidar A1 sensitivity mode)
         joy_node,
         joy_teleop,      # /cmd_vel — left=translate, right=rotate
-        ekf_node,        # /odom_raw + /imu → /odom + odom TF
+    ])
+    if use_ekf:
+        actions.append(ekf_node)
+        actions.append(LogInfo(
+            msg="EKF enabled — /odom_raw + /imu → /odom. "
+                "If /odom has no publisher: sudo apt install ros-humble-robot-localization"
+        ))
+    else:
+        actions.append(LogInfo(
+            msg="EKF disabled — odom_node publishes /odom + TF directly."
+        ))
 
+    actions.extend([
         # ── Stage 2 (T=5s): SLAM — needs /scan + odom TF ─────────────────────
         TimerAction(period=5.0, actions=[slam_toolbox]),
 
@@ -350,6 +360,12 @@ def generate_launch_description():
             "expect_frontier",
             default_value="false",
             description="If true, dashboard waits for frontier_explorer (autonomous).",
+        ),
+        DeclareLaunchArgument(
+            "use_ekf",
+            default_value="true",
+            description="Fuse /odom_raw + /imu with EKF → /odom. "
+                        "Set false if robot_localization is missing.",
         ),
         DeclareLaunchArgument(
             "lidar_port",

@@ -39,6 +39,7 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    LogInfo,
     OpaqueFunction,
     SetEnvironmentVariable,
 )
@@ -82,6 +83,11 @@ def _launch_setup(context, *args, **kwargs):
         "yes",
     )
     use_joy = LaunchConfiguration("use_joy").perform(context).lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    use_ekf = LaunchConfiguration("use_ekf").perform(context).lower() in (
         "1",
         "true",
         "yes",
@@ -144,10 +150,10 @@ def _launch_setup(context, *args, **kwargs):
             "ppr3":            400,
             "ppr4":            280,
             "encoder_topic":  "/encoder",
-            "odom_topic":     "/odom_raw",
+            "odom_topic":     "/odom_raw" if use_ekf else "/odom",
             "base_frame_id":  "base_footprint",
             "odom_frame_id":  "odom",
-            "broadcast_tf":   False,
+            "broadcast_tf":   not use_ekf,
             "pose_cov_x":      0.01,
             "pose_cov_y":      0.01,
             "pose_cov_yaw":    0.01,
@@ -157,22 +163,28 @@ def _launch_setup(context, *args, **kwargs):
         }],
     )
 
-    ekf_node = Node(
-        package="robot_localization",
-        executable="ekf_node",
-        name="ekf_filter_node",
-        # Always screen for odom bringup — silent EKF is hard to debug.
-        output="screen",
-        respawn=True,
-        respawn_delay=2.0,
-        parameters=[
-            os.path.join(pkg_share, "config", "ekf.yaml"),
-            _EKF_INLINE_PARAMS,
-        ],
-        remappings=[("/odometry/filtered", "/odom")],
-    )
+    actions.extend([rsp, driver_node, odom_node])
 
-    actions.extend([rsp, driver_node, odom_node, ekf_node])
+    if use_ekf:
+        ekf_node = Node(
+            package="robot_localization",
+            executable="ekf_node",
+            name="ekf_filter_node",
+            output="screen",
+            respawn=True,
+            respawn_delay=2.0,
+            parameters=[_EKF_INLINE_PARAMS],
+            remappings=[("/odometry/filtered", "/odom")],
+        )
+        actions.append(ekf_node)
+        actions.append(LogInfo(
+            msg="EKF enabled — /odom_raw + /imu → /odom. "
+                "If /odom has no publisher: sudo apt install ros-humble-robot-localization"
+        ))
+    else:
+        actions.append(LogInfo(
+            msg="EKF disabled — odom_node publishes /odom + odom→base_footprint TF directly."
+        ))
 
     if use_joy:
         actions.append(Node(
@@ -215,6 +227,12 @@ def generate_launch_description():
             "verbose",
             default_value="true",
             description="Show node logs (default true for odom debugging).",
+        ),
+        DeclareLaunchArgument(
+            "use_ekf",
+            default_value="true",
+            description="Fuse /odom_raw + /imu with robot_localization EKF → /odom. "
+                        "Set false if EKF is missing or /odom has no publisher.",
         ),
         DeclareLaunchArgument(
             "use_joy",
