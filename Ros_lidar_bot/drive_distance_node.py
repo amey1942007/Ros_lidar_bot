@@ -34,8 +34,10 @@ Two complementary mechanisms work together:
 
 1. Time-based trapezoidal velocity profile
    The node computes exact accel / constant / decel phases and sends the
-   profile as Twist commands to /cmd_vel at 20 Hz with angular.z=0
-   so amr4_driver uses HDRIVE (heading-hold) for pure translation.
+   profile as Twist commands to /cmd_vel at 20 Hz with angular.z=0.
+   At move start it latches the current BNO055 heading on /hdrive/heading
+   so amr4_driver sends explicit HDRIVE,vy,vx,heading to the Mega (heading
+   held for the whole move, not updated every telemetry tick).
 
 2. Odometry feedback — stop condition, not path tracking
    Travelled distance is measured from odometry and the move ends on early
@@ -50,14 +52,20 @@ running, it says so and falls back to /odom_raw (wheel FK only). With
 neither, it degrades to a time-only profile with the odom guard disabled.
 
 Publishes    : /cmd_vel  (geometry_msgs/Twist)
+               /hdrive/heading  (std_msgs/Float64 — latched BNO055 deg, -1 clears)
 Subscribes   : /odom          (nav_msgs/Odometry — EKF fused, preferred)
                /odom_raw      (nav_msgs/Odometry — wheel FK, fallback)
+               /imu           (sensor_msgs/Imu — BNO055 heading for HDRIVE latch)
 
 Parameters (ROS 2, settable on the command line)
 ------------------------------------------------
     cmd_topic      (str)   default "/cmd_vel"
+    hdrive_heading_topic (str) default "/hdrive/heading"
     odom_topic     (str)   default "/odom"       preferred (EKF fused)
     odom_fallback_topic (str) default "/odom_raw"
+    distance       (float) default 0.0    forward metres (non-interactive)
+    strafe         (float) default 0.0    lateral metres (non-interactive)
+    non_interactive (bool) default false   run one move from distance/strafe and exit
     max_vel        (float) default 0.35   m/s    peak velocity
     accel          (float) default 0.20   m/s²   acceleration rate
     decel          (float) default 0.25   m/s²   deceleration rate (slightly
@@ -78,6 +86,8 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Imu
+from std_msgs.msg import Float64
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -98,6 +108,25 @@ def _progress_bar(fraction: float, width: int = 24) -> str:
     """Return an ASCII progress bar like [████░░░░░░░░]."""
     filled = max(0, min(width, int(fraction * width)))
     return "[" + "█" * filled + "░" * (width - filled) + "]"
+
+
+def _quat_yaw(q) -> float:
+    """ROS yaw (rad, CCW from +X) from a geometry quaternion."""
+    siny = 2.0 * (q.w * q.z + q.x * q.y)
+    cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+    return math.atan2(siny, cosy)
+
+
+def _ros_yaw_to_bno_hdg(yaw_rad: float) -> float:
+    """Match amr4_driver: yaw_rad = -radians(HDG)."""
+    return (-math.degrees(yaw_rad)) % 360.0
+
+
+def _odom_to_body(ux: float, uy: float, yaw_rad: float) -> tuple[float, float]:
+    """Map-frame unit direction → body-frame vx/vy for HDRIVE translation."""
+    c = math.cos(yaw_rad)
+    s = math.sin(yaw_rad)
+    return c * ux + s * uy, -s * ux + c * uy
 
 
 def _ask_float(prompt: str) -> float:
@@ -127,10 +156,16 @@ class DriveDistanceNode(Node):
 
         # ── Parameters ────────────────────────────────────────────────────────
         self._cmd_topic    = self.declare_parameter("cmd_topic",   "/cmd_vel").value
+        self._hdrive_topic = self.declare_parameter(
+            "hdrive_heading_topic", "/hdrive/heading").value
         # EKF-fused odometry preferred; wheel-FK-only odometry as fallback.
         self._odom_topic   = self.declare_parameter("odom_topic",  "/odom").value
         self._odom_fallback_topic = self.declare_parameter(
             "odom_fallback_topic", "/odom_raw").value
+        self._distance     = self.declare_parameter("distance", 0.0).value
+        self._strafe       = self.declare_parameter("strafe",   0.0).value
+        self._non_interactive = self.declare_parameter(
+            "non_interactive", False).value
         self._max_vel      = self.declare_parameter("max_vel",      0.35).value
         self._accel        = self.declare_parameter("accel",        0.20).value
         self._decel        = self.declare_parameter("decel",        0.25).value
@@ -141,16 +176,23 @@ class DriveDistanceNode(Node):
 
         self._dt = 1.0 / self._rate_hz
 
-        # ── Publisher ─────────────────────────────────────────────────────────
+        # ── Publishers ─────────────────────────────────────────────────────────
         self._pub = self.create_publisher(Twist, self._cmd_topic, 10)
+        self._pub_hdrive = self.create_publisher(Float64, self._hdrive_topic, 10)
 
         # ── Odometry state ────────────────────────────────────────────────────
         self._odom_lock  = threading.Lock()
         self._odom_x: float | None = None
         self._odom_y: float | None = None
+        self._odom_yaw: float | None = None
         self._odom_last  = time.monotonic()
         # Topic actually feeding the stop guard, resolved at startup.
         self._odom_source: str | None = None
+
+        # BNO055 heading for explicit HDRIVE latch (from /imu).
+        self._imu_lock = threading.Lock()
+        self._imu_hdg_deg: float | None = None
+        self.create_subscription(Imu, "/imu", self._imu_cb, 10)
 
         self._sub_odom = None
         self._select_odom_source()
@@ -160,7 +202,12 @@ class DriveDistanceNode(Node):
         with self._odom_lock:
             self._odom_x = msg.pose.pose.position.x
             self._odom_y = msg.pose.pose.position.y
+            self._odom_yaw = _quat_yaw(msg.pose.pose.orientation)
             self._odom_last = time.monotonic()
+
+    def _imu_cb(self, msg: Imu):
+        with self._imu_lock:
+            self._imu_hdg_deg = _ros_yaw_to_bno_hdg(_quat_yaw(msg.orientation))
 
     def _try_odom_topic(self, topic: str, timeout: float) -> bool:
         """Subscribe to *topic* and spin until a pose arrives or time runs out."""
@@ -169,6 +216,7 @@ class DriveDistanceNode(Node):
         with self._odom_lock:
             self._odom_x = None
             self._odom_y = None
+            self._odom_yaw = None
         self._sub_odom = self.create_subscription(
             Odometry, topic, self._odom_cb, 10
         )
@@ -217,9 +265,42 @@ class DriveDistanceNode(Node):
         print(_c(DIM, "    ros2 topic hz /odom        # ekf_filter_node"))
         print(_c(DIM, "    ros2 node list | grep -E 'odom_node|ekf'"))
 
-    def _get_odom(self) -> tuple[float | None, float | None]:
+    def _get_odom(self) -> tuple[float | None, float | None, float | None]:
         with self._odom_lock:
-            return self._odom_x, self._odom_y
+            return self._odom_x, self._odom_y, self._odom_yaw
+
+    def _get_imu_hdg(self) -> float | None:
+        with self._imu_lock:
+            return self._imu_hdg_deg
+
+    def _wait_imu_hdg(self, timeout: float = 3.0) -> float | None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            hdg = self._get_imu_hdg()
+            if hdg is not None:
+                return hdg
+            rclpy.spin_once(self, timeout_sec=0.1)
+        return None
+
+    def _latch_hdrive_heading(self) -> float | None:
+        """Publish BNO055 heading so amr4_driver sends HDRIVE,vy,vx,heading."""
+        hdg = self._wait_imu_hdg()
+        if hdg is None:
+            print(_c(YELL, "  ⚠ /imu not available — HDRIVE will use live HDG from driver"))
+            return None
+        msg = Float64()
+        msg.data = hdg
+        for _ in range(3):
+            self._pub_hdrive.publish(msg)
+            time.sleep(0.02)
+        return hdg
+
+    def _clear_hdrive_heading(self):
+        msg = Float64()
+        msg.data = -1.0
+        for _ in range(3):
+            self._pub_hdrive.publish(msg)
+            time.sleep(0.02)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Velocity profile
@@ -291,28 +372,37 @@ class DriveDistanceNode(Node):
             print(_c(DIM, "  (zero distance — skipping)"))
             return
 
-        # Unit vector in the (dx, dy) direction
+        # Unit vector in the odom-frame (dx, dy) direction
         ux = dx / total_dist
         uy = dy / total_dist
 
         # Build velocity profile
         p = self._plan_profile(total_dist)
 
-        # Latch start position from the selected odometry source
-        start_x, start_y = self._get_odom()
+        # Latch start pose from the selected odometry source
+        start_x, start_y, start_yaw = self._get_odom()
         if start_x is None:
-            start_x, start_y = 0.0, 0.0
+            start_x, start_y, start_yaw = 0.0, 0.0, 0.0
             print(_c(YELL, "  ⚠ No odom start position — odometry guard disabled."))
             odom_guard = False
         else:
             odom_guard = True
+
+        if start_yaw is None:
+            start_yaw = 0.0
+
+        # Body-frame direction for HDRIVE (heading held in map frame).
+        bx, by = _odom_to_body(ux, uy, start_yaw)
+
+        latched_hdg = self._latch_hdrive_heading()
+        hdg_label = f"{latched_hdg:.1f}°" if latched_hdg is not None else "live HDG"
 
         print(
             f"\n  {_c(CYAN, '►')} Driving  "
             f"Δx={_c(BOLD, f'{dx:+.3f}')} m  "
             f"Δy={_c(BOLD, f'{dy:+.3f}')} m  "
             f"(dist={_c(BOLD, f'{total_dist:.3f}')} m)  "
-            f"{_c(DIM, '[HDRIVE ω=0]')}"
+            f"{_c(DIM, f'[HDRIVE heading={hdg_label}]')}"
         )
         print(
             f"    Profile: peak={p['v_peak']:.3f} m/s  "
@@ -326,57 +416,60 @@ class DriveDistanceNode(Node):
         stop_reason = "profile"
         odom_dist   = 0.0
 
-        while rclpy.ok():
-            elapsed = time.monotonic() - start_time
+        try:
+            while rclpy.ok():
+                elapsed = time.monotonic() - start_time
 
-            # ── Compute odom displacement ──────────────────────────────────────
-            if odom_guard:
-                cx, cy = self._get_odom()
-                if cx is not None:
-                    odom_dist = math.sqrt(
-                        (cx - start_x) ** 2 + (cy - start_y) ** 2
-                    )
+                # ── Compute odom displacement ──────────────────────────────────
+                if odom_guard:
+                    cx, cy, _ = self._get_odom()
+                    if cx is not None:
+                        odom_dist = math.sqrt(
+                            (cx - start_x) ** 2 + (cy - start_y) ** 2
+                        )
 
-            # ── Stop conditions ────────────────────────────────────────────────
-            # 1. Time profile finished
-            if elapsed >= p["T"]:
-                stop_reason = "profile"
-                break
+                # ── Stop conditions ────────────────────────────────────────────
+                # 1. Time profile finished
+                if elapsed >= p["T"]:
+                    stop_reason = "profile"
+                    break
 
-            # 2. Odom reached target (early stop)
-            if odom_guard and odom_dist >= total_dist - self._early_stop_m:
-                stop_reason = "odom_early"
-                break
+                # 2. Odom reached target (early stop)
+                if odom_guard and odom_dist >= total_dist - self._early_stop_m:
+                    stop_reason = "odom_early"
+                    break
 
-            # 3. Overshoot guard (safety)
-            if odom_guard and odom_dist >= total_dist + self._overshoot_m:
-                stop_reason = "overshoot"
-                print(_c(RED, f"\n  ⚠ OVERSHOOT GUARD — stopping! odom={odom_dist:.3f} m > target={total_dist:.3f} m"))
-                break
+                # 3. Overshoot guard (safety)
+                if odom_guard and odom_dist >= total_dist + self._overshoot_m:
+                    stop_reason = "overshoot"
+                    print(_c(RED, f"\n  ⚠ OVERSHOOT GUARD — stopping! odom={odom_dist:.3f} m > target={total_dist:.3f} m"))
+                    break
 
-            # ── Publish Twist — omega forced 0 → amr4_driver HDRIVE ───────────
-            speed = self._velocity_at(elapsed, p)
-            cmd = Twist()
-            cmd.linear.x = ux * speed
-            cmd.linear.y = uy * speed
-            cmd.angular.z = 0.0  # required: nonzero omega → DRIVE, not HDRIVE
-            self._pub.publish(cmd)
+                # ── Publish Twist — body-frame HDRIVE translation ───────────────
+                speed = self._velocity_at(elapsed, p)
+                cmd = Twist()
+                cmd.linear.x = bx * speed
+                cmd.linear.y = by * speed
+                cmd.angular.z = 0.0
+                self._pub.publish(cmd)
 
-            # ── Draw progress bar ──────────────────────────────────────────────
-            frac  = min(1.0, elapsed / p["T"])
-            phase = self._phase_name(elapsed, p)
-            bar   = _progress_bar(frac)
-            print(
-                f"\r  {_c(CYAN, phase):20s} {bar}  "
-                f"{speed:5.3f} m/s  "
-                f"{odom_dist:5.3f} m → {total_dist:.3f} m  ",
-                end="",
-                flush=True,
-            )
+                # ── Draw progress bar ──────────────────────────────────────────
+                frac  = min(1.0, elapsed / p["T"])
+                phase = self._phase_name(elapsed, p)
+                bar   = _progress_bar(frac)
+                print(
+                    f"\r  {_c(CYAN, phase):20s} {bar}  "
+                    f"{speed:5.3f} m/s  "
+                    f"{odom_dist:5.3f} m → {total_dist:.3f} m  ",
+                    end="",
+                    flush=True,
+                )
 
-            # ── Spin ROS callbacks then sleep ──────────────────────────────────
-            rclpy.spin_once(self, timeout_sec=0.0)
-            time.sleep(self._dt)
+                # ── Spin ROS callbacks then sleep ──────────────────────────────
+                rclpy.spin_once(self, timeout_sec=0.0)
+                time.sleep(self._dt)
+        finally:
+            self._clear_hdrive_heading()
 
         # ── Hard stop ─────────────────────────────────────────────────────────
         print()   # newline after progress bar
@@ -386,7 +479,7 @@ class DriveDistanceNode(Node):
 
         # ── Result summary ────────────────────────────────────────────────────
         if odom_guard:
-            cx, cy = self._get_odom()
+            cx, cy, _ = self._get_odom()
             if cx is not None:
                 odom_dist = math.sqrt((cx - start_x) ** 2 + (cy - start_y) ** 2)
             error = abs(odom_dist - total_dist)
@@ -420,6 +513,7 @@ class DriveDistanceNode(Node):
         odom_label = self._odom_source or "none — time-only"
         print(
             f"  cmd_vel topic : {_c(CYAN, self._cmd_topic)}\n"
+            f"  hdrive topic  : {_c(CYAN, self._hdrive_topic)}\n"
             f"  odom topic    : {_c(CYAN, odom_label)}\n"
             f"  max_vel       : {_c(BOLD, f'{self._max_vel:.2f}')} m/s\n"
             f"  accel / decel : {self._accel:.2f} / {self._decel:.2f} m/s²\n"
@@ -428,7 +522,7 @@ class DriveDistanceNode(Node):
 
         while rclpy.ok():
             # Show current position from odom
-            cx, cy = self._get_odom()
+            cx, cy, _ = self._get_odom()
             if cx is not None:
                 print(_c(DIM, f"  Current position  x={cx:+.3f} m  y={cy:+.3f} m"))
 
@@ -490,8 +584,17 @@ def main(args=None):
     rclpy.init(args=args)
     node = DriveDistanceNode()
     try:
-        node.run_interactive()
+        if node._non_interactive:
+            dx = float(node._distance)
+            dy = float(node._strafe)
+            if dx == 0.0 and dy == 0.0:
+                print(_c(YELL, "non_interactive: distance and strafe are both zero — nothing to do."))
+            else:
+                node._execute_move(dx, dy)
+        else:
+            node.run_interactive()
     finally:
+        node._clear_hdrive_heading()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

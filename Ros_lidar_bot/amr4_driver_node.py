@@ -87,7 +87,7 @@ import serial
 
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Imu
-from std_msgs.msg import Float64MultiArray, String
+from std_msgs.msg import Float64, Float64MultiArray, String
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -140,6 +140,7 @@ class AMR4DriverNode(Node):
         self.declare_parameter("imu_frame_id",     "imu_link")   # frame for /imu
         self.declare_parameter("flush_rate",       0.0)    # Hz (0 = off)
         self.declare_parameter("encoder_topic",    "/encoder")
+        self.declare_parameter("hdrive_heading_topic", "/hdrive/heading")
 
         self._port_name       = self.get_parameter("serial_port").value
         self._baud            = self.get_parameter("baud_rate").value
@@ -151,6 +152,7 @@ class AMR4DriverNode(Node):
         self._imu_frame_id    = self.get_parameter("imu_frame_id").value
         self._flush_rate      = self.get_parameter("flush_rate").value
         self._encoder_topic   = self.get_parameter("encoder_topic").value
+        self._hdrive_heading_topic = self.get_parameter("hdrive_heading_topic").value
 
         self._min_send_interval = (
             1.0 / self._max_send_rate if self._max_send_rate > 0 else 0.0
@@ -169,6 +171,8 @@ class AMR4DriverNode(Node):
         # Current heading latched from DriveMaster HDG (deg, 0..360 CW).
         self._current_heading_deg: float = 0.0
         self._imu_received: bool = False
+        # Optional HDRIVE target from /hdrive/heading (e.g. drive_distance).
+        self._hdrive_latch_deg: float | None = None
 
         # ── QoS — RELIABLE so odom_node / EKF always match ───────────────────
         self._reliable_qos = QoSProfile(
@@ -195,6 +199,12 @@ class AMR4DriverNode(Node):
             Twist,
             self._cmd_topic,
             self._cmd_vel_callback,
+            self._reliable_qos,
+        )
+        self._sub_hdrive_heading = self.create_subscription(
+            Float64,
+            self._hdrive_heading_topic,
+            self._hdrive_heading_callback,
             self._reliable_qos,
         )
 
@@ -328,6 +338,25 @@ class AMR4DriverNode(Node):
         cmd = f"DRIVE,{vy:.4f},{vx:.4f},{omega:.4f}"
         self._write_cmd(cmd)
 
+    def _hdrive_heading_callback(self, msg: Float64):
+        """
+        Latch an explicit BNO055 heading target for HDRIVE.
+
+        drive_distance publishes the heading at move start; values < 0 clear
+        the latch so teleop resumes using live HDG from telemetry.
+        """
+        h = msg.data
+        if h < 0.0:
+            self._hdrive_latch_deg = None
+        else:
+            self._hdrive_latch_deg = h % 360.0
+
+    def _hdrive_target_deg(self) -> float:
+        """Heading sent in HDRIVE,vy,vx,heading — latched or live IMU."""
+        if self._hdrive_latch_deg is not None:
+            return self._hdrive_latch_deg
+        return self._current_heading_deg
+
     def _send_stop(self):
         """Send a zero-velocity DRIVE command (robot stops, heading-hold cleared)."""
         with self._serial_lock:
@@ -410,7 +439,7 @@ class AMR4DriverNode(Node):
                 )
                 self._send_drive(vx, vy, 0.0)
             else:
-                self._send_hdrive(vx, vy, self._current_heading_deg)
+                self._send_hdrive(vx, vy, self._hdrive_target_deg())
 
     # ──────────────────────────────────────────────────────────────────────────
     # Watchdog: stop the robot if /cmd_vel goes silent

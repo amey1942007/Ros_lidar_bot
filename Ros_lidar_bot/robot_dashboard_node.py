@@ -117,6 +117,7 @@ def _tool_drive_distance(params):
     vel = _f(params, "max_vel", 0.3, 0.05, 0.5)
     return [
         "ros2", "run", "Ros_lidar_bot", "drive_distance", "--ros-args",
+        "-p", "non_interactive:=true",
         "-p", f"distance:={dist}",
         "-p", f"max_vel:={vel}",
     ]
