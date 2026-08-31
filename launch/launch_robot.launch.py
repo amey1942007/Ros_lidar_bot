@@ -281,7 +281,8 @@ def _launch_setup(context, *args, **kwargs):
             respawn=True,
             respawn_delay=2.0,
             parameters=[_EKF_INLINE_PARAMS],
-            remappings=[("/odometry/filtered", "/odom")],
+            # Package default output is "odometry/filtered" — remap to /odom only.
+            remappings=[("odometry/filtered", "/odom")],
         )
 
     # ── 8. SLAM Toolbox ───────────────────────────────────────────────────────
@@ -363,9 +364,9 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "use_ekf",
-            default_value="true",
-            description="Fuse /odom_raw + /imu with EKF → /odom. "
-                        "Set false if robot_localization is missing.",
+            default_value="false",
+            description="If true, fuse /odom_raw + /imu with robot_localization → /odom. "
+                        "Default false: odom_node publishes /odom directly.",
         ),
         DeclareLaunchArgument(
             "lidar_port",

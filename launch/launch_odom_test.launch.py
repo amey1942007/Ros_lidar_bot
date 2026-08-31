@@ -174,7 +174,9 @@ def _launch_setup(context, *args, **kwargs):
             respawn=True,
             respawn_delay=2.0,
             parameters=[_EKF_INLINE_PARAMS],
-            remappings=[("/odometry/filtered", "/odom")],
+            # robot_localization's internal topic is "odometry/filtered" (package default).
+            # Remap it to /odom — you should only ever use /odom in this stack.
+            remappings=[("odometry/filtered", "/odom")],
         )
         actions.append(ekf_node)
         actions.append(LogInfo(
@@ -230,9 +232,9 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "use_ekf",
-            default_value="true",
-            description="Fuse /odom_raw + /imu with robot_localization EKF → /odom. "
-                        "Set false if EKF is missing or /odom has no publisher.",
+            default_value="false",
+            description="If true, fuse /odom_raw + /imu with robot_localization → /odom. "
+                        "Default false: odom_node publishes /odom directly (simpler, reliable).",
         ),
         DeclareLaunchArgument(
             "use_joy",
