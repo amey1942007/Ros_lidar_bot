@@ -34,7 +34,7 @@ Two complementary mechanisms work together:
 
 1. Time-based trapezoidal velocity profile
    The node computes exact accel / constant / decel phases and sends the
-   profile as Twist commands to /cmd_vel_safe at 20 Hz with angular.z=0
+   profile as Twist commands to /cmd_vel at 20 Hz with angular.z=0
    so amr4_driver uses HDRIVE (heading-hold) for pure translation.
 
 2. Odometry feedback — stop condition, not path tracking
@@ -49,13 +49,13 @@ Prefers the EKF-fused /odom (wheel FK + BNO055 gyro). If the EKF is not
 running, it says so and falls back to /odom_raw (wheel FK only). With
 neither, it degrades to a time-only profile with the odom guard disabled.
 
-Publishes    : /cmd_vel_safe  (geometry_msgs/Twist)
+Publishes    : /cmd_vel  (geometry_msgs/Twist)
 Subscribes   : /odom          (nav_msgs/Odometry — EKF fused, preferred)
                /odom_raw      (nav_msgs/Odometry — wheel FK, fallback)
 
 Parameters (ROS 2, settable on the command line)
 ------------------------------------------------
-    cmd_topic      (str)   default "/cmd_vel_safe"
+    cmd_topic      (str)   default "/cmd_vel"
     odom_topic     (str)   default "/odom"       preferred (EKF fused)
     odom_fallback_topic (str) default "/odom_raw"
     max_vel        (float) default 0.35   m/s    peak velocity
@@ -126,7 +126,7 @@ class DriveDistanceNode(Node):
         super().__init__("drive_distance")
 
         # ── Parameters ────────────────────────────────────────────────────────
-        self._cmd_topic    = self.declare_parameter("cmd_topic",   "/cmd_vel_safe").value
+        self._cmd_topic    = self.declare_parameter("cmd_topic",   "/cmd_vel").value
         # EKF-fused odometry preferred; wheel-FK-only odometry as fallback.
         self._odom_topic   = self.declare_parameter("odom_topic",  "/odom").value
         self._odom_fallback_topic = self.declare_parameter(

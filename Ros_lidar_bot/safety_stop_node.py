@@ -170,6 +170,9 @@ class SafetyStop(Node):
         else:
             out.linear.x = cmd.linear.x
 
+        # Mecanum strafe — must pass through; this node only gates forward/back
+        # (linear.x) from the front/rear lidar arcs.
+        out.linear.y = cmd.linear.y
         out.angular.z = cmd.angular.z
         self._pub.publish(out)
 

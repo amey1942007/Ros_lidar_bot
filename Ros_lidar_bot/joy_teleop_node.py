@@ -7,8 +7,9 @@ controller and publishes sensor_msgs/Joy on /joy. This node converts /joy
 into /cmd_vel (geometry_msgs/Twist).
 
 Controls (Xbox-style; USB/xpad defaults — override axes if needed):
-  Left stick  — translate only  → /cmd_vel with omega=0 → amr4 HDRIVE
-  Right stick left/right — rotate only → /cmd_vel omega → amr4 DRIVE
+  Left stick  — mecanum translate: forward/back (linear.x) + strafe (linear.y)
+                → /cmd_vel with omega=0 → amr4 HDRIVE (heading held)
+  Right stick left/right — rotate in place (angular.z) → amr4 DRIVE
   Right stick up/down   — camera tilt        (→ /camera_cmd)
   RT (right trigger)    — increase linear speed by lin_step per press
   LT (left trigger)     — decrease linear speed by lin_step per press
@@ -64,7 +65,7 @@ class JoyTeleop(Node):
         self.declare_parameter('axis_strafe',  0)     # left stick horizontal → linear.y (strafe)
         # USB/xpad RX is usually 3. BT Xbox often uses 2 — override if needed.
         # Wrong map to a trigger (rests at +1) causes continuous spin.
-        self.declare_parameter('axis_angular', 3)     # right stick horizontal → angular.z
+        self.declare_parameter('axis_angular', 2)     # right stick horizontal → angular.z (BT RX)
         self.declare_parameter('axis_rt', 5)          # right trigger
         self.declare_parameter('axis_lt', 4)          # left trigger (BT; USB xpad = 2)
         self.declare_parameter('button_rb', 7)       # right bumper

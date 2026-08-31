@@ -7,11 +7,10 @@ Purpose  : Test /odom (EKF) with drive_distance — NO lidar, SLAM, or Nav2.
 
 Starts only:
   rsp              → TF (base / imu / laser frames from URDF)
-  amr4_driver      → /cmd_vel_safe → Mega; publishes /encoder + /imu
+  amr4_driver      → /cmd_vel → Mega; publishes /encoder + /imu
   odom_node        → /encoder (counts + Arduino ms) → /odom_raw
   ekf_node         → /odom_raw + /imu → /odom (+ odom→base_footprint TF)
-  safety_stop      → /cmd_vel → /cmd_vel_safe (odom-stale guard; no laser without lidar)
-  joy + joy_teleop → optional manual positioning
+  joy + joy_teleop → optional manual positioning (left=vx/vy, right=rotate)
 
 NOT started: lidar_node, slam_toolbox, Nav2, dashboard, frontier.
 
@@ -91,7 +90,7 @@ def _launch_setup(context, *args, **kwargs):
         parameters=[{
             "serial_port":      "/dev/ttyACM0",
             "baud_rate":        115200,
-            "cmd_vel_topic":    "/cmd_vel_safe",
+            "cmd_vel_topic":    "/cmd_vel",
             "cmd_timeout":      0.5,
             "max_send_rate":    15.0,
             "omega_threshold":  0.05,
@@ -154,27 +153,7 @@ def _launch_setup(context, *args, **kwargs):
         remappings=[("odometry/filtered", "odom")],
     )
 
-    # Keeps joy → /cmd_vel → /cmd_vel_safe. Without lidar, laser gate never
-    # blocks; odom_raw-stale watchdog still protects if encoders drop.
-    safety_stop = Node(
-        package=package_name,
-        executable="safety_stop_node",
-        name="safety_stop",
-        output=out,
-        arguments=log_args,
-        respawn=True,
-        respawn_delay=2.0,
-        parameters=[{
-            "min_safe_distance":     0.35,
-            "ignore_below":          0.15,
-            "front_opening_deg":     50.0,
-            "rear_opening_deg":      50.0,
-            "clear_margin":          0.10,
-            "odom_raw_timeout_sec":  0.5,
-        }],
-    )
-
-    actions.extend([rsp, driver_node, odom_node, ekf_node, safety_stop])
+    actions.extend([rsp, driver_node, odom_node, ekf_node])
 
     if use_joy:
         actions.append(Node(
@@ -198,7 +177,11 @@ def _launch_setup(context, *args, **kwargs):
             output=out,
             arguments=log_args,
             parameters=[{
-                "axis_angular": 3,
+                # Mecanum: left stick vx/vy, right stick rotate (BT Xbox RX=axis 2).
+                "axis_linear": 1,
+                "axis_strafe": 0,
+                "axis_angular": 2,
+                "axis_cam_tilt": -1,
                 "ang_deadzone": 0.30,
                 "stick_exclusive": True,
             }],

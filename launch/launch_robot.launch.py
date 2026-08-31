@@ -8,9 +8,8 @@ Robot    : AMR4 mecanum 4WD with RPLidar A1
 Node pipeline summary
 ---------------------
   joy_node       → /joy
-  joy_teleop     → /cmd_vel
-  safety_stop    : /cmd_vel → /cmd_vel_safe  (laser-based obstacle gate)
-  amr4_driver    : /cmd_vel_safe → Arduino Mega (HDRIVE/DRIVE)
+  joy_teleop     → /cmd_vel  (left stick: vx/vy, right stick: rotate)
+  amr4_driver    : /cmd_vel → Arduino Mega (HDRIVE/DRIVE)
                    telemetry → /encoder (4 wheel RPMs) + /imu (BNO055)
   odom_node      : /encoder → /odom_raw  (mecanum FK dead-reckoning)
   ekf_node       : /odom_raw + /imu → /odom  (sole odom→base_footprint TF)
@@ -117,14 +116,14 @@ def _launch_setup(context, *args, **kwargs):
         parameters=[{
             "serial_port":      "/dev/ttyACM0",
             "baud_rate":        115200,
-            "cmd_vel_topic":    "/cmd_vel_safe",
+            "cmd_vel_topic":    "/cmd_vel",
             "cmd_timeout":      0.5,
             "max_send_rate":    15.0,  # keep latest cmd under rate limit
             "omega_threshold":  0.05,
             "frame_id":         "base_footprint",
             "imu_frame_id":     "imu_link",   # BNO055 on the same Mega
-            # Blind 1 Hz RX flush wiped telemetry → no /encoder → no /odom_raw
-            # → safety_stop zeroes /cmd_vel_safe. Off by default; backlog-only wipe.
+            # Blind RX flush wiped telemetry → no /encoder → no /odom_raw.
+            # Off by default; backlog-only wipe when in_waiting > 4 KB.
             "flush_rate":       0.0,
             "encoder_topic":    "/encoder",
         }],
@@ -204,28 +203,9 @@ def _launch_setup(context, *args, **kwargs):
         }],
     )
 
-    # ── 6. Safety Stop Node ───────────────────────────────────────────────────
-    # Scan-based velocity filter: /cmd_vel → /cmd_vel_safe
-    # Stops the robot if obstacles are detected within min_safe_distance.
-    safety_stop = Node(
-        package=package_name,
-        executable="safety_stop_node",
-        name="safety_stop",
-        output=out,
-        arguments=log_args,
-        respawn=True,
-        respawn_delay=2.0,
-        parameters=[{
-            "min_safe_distance":     0.35,
-            "ignore_below":          0.15,   # matches lidar min_range
-            "front_opening_deg":     50.0,
-            "rear_opening_deg":      50.0,
-            "clear_margin":          0.10,
-            "odom_raw_timeout_sec":  0.5,
-        }],
-    )
-
-    # ── 6b. Gamepad teleop ────────────────────────────────────────────────────
+    # ── 6. Gamepad teleop (mecanum) ─────────────────────────────────────────
+    # Left stick  → linear.x (forward) + linear.y (strafe) → HDRIVE on Mega
+    # Right stick → angular.z (yaw) only → DRIVE on Mega
     joy_node = Node(
         package="joy",
         executable="joy_node",
@@ -248,9 +228,13 @@ def _launch_setup(context, *args, **kwargs):
         output=out,
         arguments=log_args,
         parameters=[{
-            # Left stick → translate (HDRIVE). Right stick → rotate (DRIVE).
-            # USB/xpad RX is usually axis 3; if rotate does nothing on BT, use 2.
-            "axis_angular": 3,
+            # Mecanum teleop — BT Xbox layout (live-measured on this robot):
+            #   left stick  : axis 1 = forward/back, axis 0 = strafe left/right
+            #   right stick : axis 2 = rotate (RX). USB/xpad: try axis_angular:=3.
+            "axis_linear": 1,
+            "axis_strafe": 0,
+            "axis_angular": 2,
+            "axis_cam_tilt": -1,   # disabled — right stick is rotate-only
             "ang_deadzone": 0.30,
             "stick_exclusive": True,
         }],
@@ -321,9 +305,8 @@ def _launch_setup(context, *args, **kwargs):
         driver_node,     # /dev/ttyACM0 → /encoder + /imu (driver + BNO055)
         odom_node,       # /encoder → /odom_raw (mecanum FK)
         lidar_node,      # /dev/ttyUSB0 → /scan (RPLidar A1 sensitivity mode)
-        safety_stop,     # /cmd_vel → /cmd_vel_safe
         joy_node,
-        joy_teleop,
+        joy_teleop,      # /cmd_vel — left=translate, right=rotate
         ekf_node,        # /odom_raw + /imu → /odom + odom TF
 
         # ── Stage 2 (T=5s): SLAM — needs /scan + odom TF ─────────────────────
