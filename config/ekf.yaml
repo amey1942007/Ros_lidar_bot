@@ -1,6 +1,5 @@
-# /** applies regardless of node name / namespace (avoids silent empty params
-# when the launch node name does not exactly match "ekf_filter_node").
-/**:
+# Must match launch node name exactly (ekf_filter_node).
+ekf_filter_node:
   ros__parameters:
     # ══════════════════════════════════════════════════════════════════════════════
     # AMR4 EKF Configuration — robot_localization ekf_node

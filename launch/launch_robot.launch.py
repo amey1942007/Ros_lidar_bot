@@ -47,6 +47,30 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+_EKF_INLINE_PARAMS = {
+    "use_sim_time": False,
+    "odom0": "/odom_raw",
+    "imu0": "/imu",
+    "publish_tf": True,
+    "print_diagnostics": True,
+    "frequency": 30.0,
+    "two_d_mode": True,
+    "world_frame": "odom",
+    "odom_frame": "odom",
+    "base_link_frame": "base_footprint",
+    "odom0_config": [
+        False, False, False, False, False, False,
+        True, True, False, False, False, True,
+        False, False, False,
+    ],
+    "imu0_config": [
+        False, False, False, False, False, False,
+        False, False, False, False, False, True,
+        False, False, False,
+    ],
+}
+
+
 def _launch_setup(context, *args, **kwargs):
     package_name = "Ros_lidar_bot"
     pkg_share = get_package_share_directory(package_name)
@@ -252,16 +276,13 @@ def _launch_setup(context, *args, **kwargs):
         name="ekf_filter_node",
         output=out,
         arguments=log_args,
+        respawn=True,
+        respawn_delay=2.0,
         parameters=[
             os.path.join(pkg_share, "config", "ekf.yaml"),
-            {
-                "use_sim_time": False,
-                "odom0": "/odom_raw",
-                "imu0": "/imu",
-                "publish_tf": True,
-            },
+            _EKF_INLINE_PARAMS,
         ],
-        remappings=[("odometry/filtered", "odom")],
+        remappings=[("/odometry/filtered", "/odom")],
     )
 
     # ── 8. SLAM Toolbox ───────────────────────────────────────────────────────

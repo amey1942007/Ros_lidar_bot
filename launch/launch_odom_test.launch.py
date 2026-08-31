@@ -47,6 +47,31 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+# Critical EKF params inlined so /odom still works if ekf.yaml is stale on disk.
+_EKF_INLINE_PARAMS = {
+    "use_sim_time": False,
+    "odom0": "/odom_raw",
+    "imu0": "/imu",
+    "publish_tf": True,
+    "print_diagnostics": True,
+    "frequency": 30.0,
+    "two_d_mode": True,
+    "world_frame": "odom",
+    "odom_frame": "odom",
+    "base_link_frame": "base_footprint",
+    "odom0_config": [
+        False, False, False, False, False, False,
+        True, True, False, False, False, True,
+        False, False, False,
+    ],
+    "imu0_config": [
+        False, False, False, False, False, False,
+        False, False, False, False, False, True,
+        False, False, False,
+    ],
+}
+
+
 def _launch_setup(context, *args, **kwargs):
     package_name = "Ros_lidar_bot"
     pkg_share = get_package_share_directory(package_name)
@@ -138,19 +163,13 @@ def _launch_setup(context, *args, **kwargs):
         name="ekf_filter_node",
         # Always screen for odom bringup — silent EKF is hard to debug.
         output="screen",
+        respawn=True,
+        respawn_delay=2.0,
         parameters=[
             os.path.join(pkg_share, "config", "ekf.yaml"),
-            {
-                "use_sim_time": False,
-                # Reinforce critical inputs in case YAML node-key missed.
-                "odom0": "/odom_raw",
-                "imu0": "/imu",
-                "publish_tf": True,
-                "print_diagnostics": True,
-            },
+            _EKF_INLINE_PARAMS,
         ],
-        # Prefer unscoped names — more reliable remaps on Humble.
-        remappings=[("odometry/filtered", "odom")],
+        remappings=[("/odometry/filtered", "/odom")],
     )
 
     actions.extend([rsp, driver_node, odom_node, ekf_node])
