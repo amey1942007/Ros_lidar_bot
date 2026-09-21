@@ -889,9 +889,9 @@ class Dashboard(Node):
             except Exception:
                 pass
 
-        # Flag appears immediately (odom frame, matches canvas).
+        # Flag appears immediately in map frame.
         with self._lock:
-            self._state["goal"] = [round(float(x_odom), 2), round(float(y_odom), 2)]
+            self._state["goal"] = [round(float(gx), 2), round(float(gy), 2)]
             self._state["path"] = []
 
         goal = NavigateToPose.Goal()
@@ -1689,9 +1689,10 @@ function draw(){
     ctx.stroke();ctx.setLineDash([]);
   }
 
-  // Goal flag
+  // Goal flag (stored in map frame, transformed to odom for canvas)
   if(S.goal){
-    const[gx,gy]=W(S.goal[0],S.goal[1]);
+    const[wX,wY]=MAP?mapToOdom(S.goal[0],S.goal[1]):[S.goal[0],S.goal[1]];
+    const[gx,gy]=W(wX,wY);
     ctx.strokeStyle="#ff5d5d";ctx.fillStyle="#ff5d5d";ctx.lineWidth=2;
     ctx.beginPath();ctx.moveTo(gx,gy);ctx.lineTo(gx,gy-28);ctx.stroke();
     ctx.beginPath();ctx.moveTo(gx,gy-28);ctx.lineTo(gx+16,gy-22);ctx.lineTo(gx,gy-16);ctx.closePath();ctx.fill();
