@@ -369,16 +369,17 @@ def _launch_setup(context, *args, **kwargs):
     js_detected = len(js_devices) > 0 or os.path.exists("/dev/input/js0")
 
     if use_joystick_mode in ("1", "true", "yes"):
-        # Physical controller: launch joy_node (SDL) + joy_teleop
+        # Explicit physical controller requested
         actions.extend([joy_node, joy_teleop])
-    elif use_joystick_mode in ("0", "false", "no"):
+    elif use_joystick_mode in ("curses", "keyboard", "terminal"):
+        # Explicit terminal keyboard teleop requested
         actions.append(teleop_interface)
-    else:  # 'auto' mode — default: web gamepad (no physical pad needed)
-        if js_detected:
-            # Physical gamepad port detected → use it
+    else:  # Default / auto / false: focus on Web Gamepad
+        if js_detected and use_joystick_mode not in ("0", "false", "no"):
+            # Physical controller detected on /dev/input/js*
             actions.extend([joy_node, joy_teleop])
         else:
-            # No physical pad → launch web gamepad + joy_teleop
+            # Primary mode: Web Gamepad + joy_teleop (virtual Xbox controller on port 8765)
             actions.extend([web_gamepad, joy_teleop])
 
     actions.extend([

@@ -64,11 +64,12 @@ class JoyTeleop(Node):
         self.declare_parameter('axis_angular', 0)    # left stick horizontal
         self.declare_parameter('axis_rt', 5)         # right trigger
         self.declare_parameter('axis_lt', 4)         # left trigger (BT; USB xpad = 2)
-        self.button_rb = self.declare_parameter('button_rb', 7)       # right bumper
-        self.button_lb = self.declare_parameter('button_lb', 6)       # left bumper
-        self.declare_parameter('button_save_map', 1) # B (stick clicks were unreliable)
-        self.declare_parameter('button_vision', 3)   # X
+        self.declare_parameter('button_rb', 5)       # right bumper (index 5)
+        self.declare_parameter('button_lb', 4)       # left bumper (index 4)
+        self.declare_parameter('button_save_map', 1) # B (save map)
+        self.declare_parameter('button_vision', 2)   # X (toggle vision)
         self.declare_parameter('button_seq_toggle', 0) # A (waypoint sequence start/stop)
+        self.declare_parameter('button_imu_cal', 3)  # Y (IMU calibration on touch screen)
         self.declare_parameter('dashboard_url', 'http://127.0.0.1:8080')
 
         # ── Speed setpoints ───────────────────────────────────────────────────
@@ -83,15 +84,15 @@ class JoyTeleop(Node):
         self.declare_parameter('ang_min', 0.2)
         self.declare_parameter('ang_max', 2.0)
 
-        self.declare_parameter('deadzone', 0.15)     # stick idle threshold
+        self.declare_parameter('deadzone', 0.10)     # stick idle threshold
         self.declare_parameter('publish_hz', 20.0)
-        self.declare_parameter('joy_timeout', 0.5)   # s without /joy → stop
+        self.declare_parameter('joy_timeout', 1.5)   # s without /joy → stop (tolerant to Wi-Fi jitter)
 
         # ── Right stick → camera pan/tilt (camera_servo_node) ─────────────────
         # Publishes normalised rate cmds on /camera_cmd; drive path is untouched.
         self.declare_parameter('axis_cam_pan', 2)    # RX (BT layout)
         self.declare_parameter('axis_cam_tilt', 3)   # RY
-        self.declare_parameter('cam_deadzone', 0.15)
+        self.declare_parameter('cam_deadzone', 0.10)
         self.declare_parameter('invert_cam_pan', False)
         self.declare_parameter('invert_cam_tilt', False)
 
@@ -117,6 +118,7 @@ class JoyTeleop(Node):
         self._btn_save = gp('button_save_map')
         self._btn_vision = gp('button_vision')
         self._btn_seq = gp('button_seq_toggle')
+        self._btn_imu = gp('button_imu_cal')
         self._dash_url = str(gp('dashboard_url')).rstrip('/')
         self._lin_speed = gp('lin_speed')
         self._ang_speed = gp('ang_speed')
@@ -130,8 +132,7 @@ class JoyTeleop(Node):
         self._ax_cam_tilt = gp('axis_cam_tilt')
         self._cam_deadzone = gp('cam_deadzone')
         self._cam_pan_sign = -1.0 if gp('invert_cam_pan') else 1.0
-        # Stick up reads negative on SDL, so default maps up → tilt-up (+).
-        self._cam_tilt_sign = 1.0 if gp('invert_cam_tilt') else -1.0
+        self._cam_tilt_sign = -1.0 if gp('invert_cam_tilt') else 1.0
         self._cam_pan = 0.0
         self._cam_tilt = 0.0
 
@@ -208,9 +209,9 @@ class JoyTeleop(Node):
         self._rb_was_pressed, self._lb_was_pressed = rb, lb
 
         # Dashboard actions — edge triggered, 2 s cooldown each.
-        # (The four-button combo also fires the ± speed steps above, but the
-        # +/− pairs cancel out, so the setpoints are unchanged.)
-        combo = rt and lt and rb and lb
+        # Either the four-button combo OR single button Y (on virtual gamepad)
+        y_btn = button(self._btn_imu)
+        combo = (rt and lt and rb and lb) or y_btn
         if combo and not self._combo_was_pressed:
             self._fire_action('imu_cal')
         self._combo_was_pressed = combo
