@@ -229,32 +229,39 @@ def _launch_setup(context, *args, **kwargs):
         }],
     )
 
-    # ── 6b. Gamepad teleop (Bluetooth or USB controller) ─────────────────────
-    # joy_node (SDL) reads the controller and publishes /joy; joy_teleop maps
-    # it to /cmd_vel. Left stick = movement, RT/LT = linear speed ±,
-    # RB/LB = angular speed ±. joy_teleop yields /cmd_vel to Nav2 whenever
-    # the stick is centered, so both can coexist on the same topic.
+    # ── 6b. Gamepad teleop ────────────────────────────────────────────────────
+    # web_gamepad_node hosts a virtual Xbox controller webpage on the RPi5
+    # (port 8765). Open http://<tailscale-ip>:8765 on any phone that is on the
+    # same Tailscale network. It publishes /joy; joy_teleop converts that to
+    # /cmd_vel exactly as a physical controller would.
     #
-    # Bluetooth: pair once on the Pi with bluetoothctl (scan on / pair / trust
-    # / connect) — "trust" makes it auto-reconnect on power-up. NOTE: over
-    # Bluetooth many pads expose a DIFFERENT axis/button order than over a
-    # USB dongle (e.g. Xbox BT without xpadneo puts triggers elsewhere).
-    # If controls act wrong, check `ros2 topic echo /joy` and override the
-    # axis_*/button_* parameters on joy_teleop below.
+    # If a physical USB/BT controller IS attached, set use_joystick:=true to
+    # launch joy_node (SDL) + joy_teleop instead.
+    web_gamepad = Node(
+        package=package_name,
+        executable="web_gamepad",
+        name="web_gamepad",
+        output=out,
+        arguments=log_args,
+        parameters=[{
+            "host": "0.0.0.0",
+            "port": 8765,
+            "publish_hz": 30.0,
+        }],
+    )
+
+    # Physical controller fallback (set use_joystick:=true on the CLI)
     joy_node = Node(
         package="joy",
         executable="joy_node",
         name="joy_node",
         output=out,
         arguments=log_args,
-        # Survive controller disconnect/reconnect (BT dropout or USB unplug).
         respawn=True,
         respawn_delay=2.0,
         parameters=[{
             "device_id": 0,
             "deadzone": 0.05,
-            # Keep /joy streaming while a stick is held so joy_teleop's
-            # 0.5 s watchdog never fires mid-motion.
             "autorepeat_rate": 20.0,
         }],
     )
@@ -362,16 +369,17 @@ def _launch_setup(context, *args, **kwargs):
     js_detected = len(js_devices) > 0 or os.path.exists("/dev/input/js0")
 
     if use_joystick_mode in ("1", "true", "yes"):
+        # Physical controller: launch joy_node (SDL) + joy_teleop
         actions.extend([joy_node, joy_teleop])
     elif use_joystick_mode in ("0", "false", "no"):
         actions.append(teleop_interface)
-    else:  # 'auto' mode
+    else:  # 'auto' mode — default: web gamepad (no physical pad needed)
         if js_detected:
-            # Gamepad port detected -> Launch joy_node + joy_teleop
+            # Physical gamepad port detected → use it
             actions.extend([joy_node, joy_teleop])
         else:
-            # Gamepad port missing -> Launch keyboard teleop interface
-            actions.append(teleop_interface)
+            # No physical pad → launch web gamepad + joy_teleop
+            actions.extend([web_gamepad, joy_teleop])
 
     actions.extend([
         # ── Stage 2 (T=5s): SLAM ──────────────────────────────────────────────

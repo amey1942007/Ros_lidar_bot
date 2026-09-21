@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-joy_teleop_node.py — Gamepad teleop (Bluetooth or USB controller).
+joy_teleop_node.py — Gamepad teleop (web gamepad via web_gamepad_node).
 
-Pairs with the standard `joy` package's joy_node (SDL), which reads the
-controller and publishes sensor_msgs/Joy on /joy. This node converts /joy
-into /cmd_vel (geometry_msgs/Twist).
+This node converts sensor_msgs/Joy messages on /joy into /cmd_vel
+(geometry_msgs/Twist) and /camera_cmd.  Gamepad input is published to /joy
+by the companion web_gamepad_node, which hosts a virtual Xbox controller
+webpage on the RPi5 accessible via Tailscale.
 
-Controls (Xbox-style layout, xpad driver mapping):
+Controls (Xbox-style layout):
   Left stick up/down    — forward / reverse at current linear speed
   Left stick left/right — turn left / right at current angular speed
   Right stick           — pan / tilt the camera head (→ /camera_cmd)
@@ -30,18 +31,13 @@ Behaviour:
   - Stick centered → one zero Twist is published, then this node goes silent
     so Nav2 goals on /cmd_vel can drive the robot (same yield scheme the old
     keyboard teleop used).
-  - If /joy stops arriving mid-motion (Bluetooth dropout / dongle yanked)
-    → immediate stop.
+  - If /joy stops arriving mid-motion → immediate stop.
 
-Axis/button indices are parameters. Defaults match this robot's pad over
-BLUETOOTH (re-measured live on /joy, 2026-07-20):
+Axis/button indices are parameters. Defaults match the web gamepad layout
+(web_gamepad_node.py):
   axes:    0=LX  1=LY  2=RX  3=RY  4=LT  5=RT  6=DX  7=DY
-           (triggers rest +1, pressed -1;
-            D-pad: axis 6 left=+1/right=-1, axis 7 up=+1/down=-1)
-  buttons: 6=LB  7=RB  13=L3  14=R3   (sparse Xbox-BT hid layout)
-NOTE: the same pad over a USB dongle (xpad) usually has LT on axis 2 and
-RT on axis 5 instead. If controls act wrong after changing transport,
-verify with:  ros2 topic echo /joy  and override the parameters.
+           (triggers: 0=rest, -1=fully pressed)
+  buttons: 0=A  1=B  2=X  3=Y  4=LB  5=RB  6=Back  7=Start  8=Xbox  9=L3  10=R3
 
 Feedback: every accepted speed change fires a short rumble pulse on
 /joy/set_feedback (strong double-length pulse when hitting a limit), since
@@ -424,6 +420,7 @@ class JoyTeleop(Node):
         msg.linear.x = self._cmd_lin
         msg.angular.z = self._cmd_ang
         self._pub.publish(msg)
+
 
 
 def main(args=None):
