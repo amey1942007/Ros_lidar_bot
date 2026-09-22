@@ -146,8 +146,8 @@ def _launch_setup(context, *args, **kwargs):
         parameters=[{
             "serial_port":      "/dev/ttyACM0",
             "baud_rate":        115200,
-            "cmd_vel_topic":    "/cmd_vel",
-            "cmd_timeout":      0.5,
+            "cmd_vel_topic":    "/cmd_vel_safe",  # safety_stop bridges /cmd_vel → /cmd_vel_safe
+            "cmd_timeout":      1.0,              # generous — web controller publishes at 30 Hz
             "max_send_rate":    15.0,  # keep latest cmd under rate limit
             "omega_threshold":  0.05,
             "frame_id":         "base_footprint",
@@ -233,7 +233,29 @@ def _launch_setup(context, *args, **kwargs):
         }],
     )
 
-    # ── 6. Gamepad teleop (mecanum) ─────────────────────────────────────────
+    # ── 6. Safety Stop (velocity filter) ────────────────────────────────────
+    # Sits between teleop/Nav2 (/cmd_vel) and the driver (/cmd_vel_safe).
+    # Blocks forward motion when the lidar sees an obstacle in the front arc,
+    # and zeroes all motion if /odom_raw goes stale (encoder/driver drop).
+    safety_stop = Node(
+        package=package_name,
+        executable="safety_stop_node",
+        name="safety_stop",
+        output=out,
+        arguments=log_args,
+        respawn=True,
+        respawn_delay=2.0,
+        parameters=[{
+            "min_safe_distance":    0.35,
+            "ignore_below":         0.20,
+            "front_opening_deg":    50.0,
+            "rear_opening_deg":     50.0,
+            "clear_margin":         0.10,
+            "odom_raw_timeout_sec": 2.0,  # relaxed — tolerate brief odom gaps at startup
+        }],
+    )
+
+    # ── 7. Gamepad teleop (mecanum) ─────────────────────────────────────────
     # Web Gamepad (primary) hosts a virtual Xbox controller on port 8765.
     # Left stick  → linear.x (forward) + linear.y (strafe) → HDRIVE on Mega
     # Right stick → angular.z (yaw) only → DRIVE on Mega
@@ -338,11 +360,12 @@ def _launch_setup(context, *args, **kwargs):
 
         # ── Stage 1 (T=0s): Hardware drivers + localization ──────────────────────
         rsp,
-        driver_node,     # /dev/ttyACM0 → /encoder + /imu (driver + BNO055)
+        driver_node,     # /dev/ttyACM0 → /cmd_vel_safe → Arduino (HDRIVE/DRIVE)
         odom_node,       # /encoder → /odom_raw or /odom
         lidar_node,      # /dev/ttyUSB0 → /scan (RPLidar A1 sensitivity mode)
+        safety_stop,     # /cmd_vel → (lidar filter) → /cmd_vel_safe → driver
         web_gamepad,     # Web Controller: virtual Xbox pad on http://<ip>:8765
-        joy_teleop,      # /cmd_vel — left=translate (HDRIVE), right=rotate (DRIVE)
+        joy_teleop,      # /joy → /cmd_vel (left=translate HDRIVE, right=rotate DRIVE)
     ])
 
     # Optional physical USB/BT joystick (only if explicitly enabled with use_joystick:=true)

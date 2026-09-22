@@ -1,64 +1,49 @@
 #!/usr/bin/env python3
 """
-web_gamepad_node.py — Virtual Xbox gamepad served directly from the RPi5.
+web_gamepad_node.py — Virtual Xbox Gamepad served directly from the robot.
 
-Hosts a high-performance, mobile-optimized virtual Xbox controller webpage
-(HTTP + WebSocket) directly on the RPi5. Accessible from any phone on the
-same Wi-Fi or Tailscale network without needing a physical controller plugged in.
+Zero external dependencies: uses Python standard library only (http.server,
+socket, threading). Works out-of-the-box on Jetson Orin, Raspberry Pi, Ubuntu,
+macOS, and any Linux without needing pip or aiohttp.
 
-Key Architectural Improvements:
-  1. Decoupled ROS 2 Publishing:
-     A dedicated ROS 2 timer publishes /joy at a rock-solid 30 Hz. WebSocket
-     frames update node state asynchronously, completely eliminating packet-drop
-     stutters and false timeouts caused by Wi-Fi latency.
-  2. Pointer Events & Multi-Touch:
-     Uses Pointer Events with setPointerCapture() so driving with the left thumb
-     while operating camera or buttons with the right thumb works with 100%
-     independence. Gestures (pinch, scroll, swipe) cannot hijack or reset stick input.
-  3. Correct ROS 2 Conventions:
-     - Left stick horizontal: Left = +1.0 (turn left), Right = -1.0 (turn right).
-     - Left stick vertical: Up = +1.0 (forward), Down = -1.0 (reverse).
-     - Camera right stick: Up = +1.0 (tilt up), Down = -1.0 (tilt down).
-     - Camera pan: Left = +1.0 (pan left), Right = -1.0 (pan right).
-     - Matching Xbox button indices:
-       0=A (seq), 1=B (save map), 2=X (vision), 3=Y (imu cal),
-       4=LB (turn-), 5=RB (turn+), 6=Back, 7=Start, 8=Xbox/Stop.
-  4. Live HUD & E-STOP:
-     Interactive speed controls with live visual feedback, haptic vibration,
-     and an instant Emergency Stop.
+Features:
+  • Built-in HTTP server serving responsive mobile & desktop Cyberpunk gamepad UI.
+  • RFC 6455 compliant native WebSocket server + HTTP POST fallback.
+  • Decoupled ROS 2 30Hz publisher timer for smooth, uninterrupted /joy stream.
+  • Multi-touch Pointer Events with setPointerCapture for simultaneous stick
+    and button operation without gesture interruption.
+  • Mecanum & Differential drive support:
+    - Left stick: linear.x (forward/back) + linear.y (strafe left/right)
+    - Right stick: angular.z (yaw rotate) + camera tilt
 """
 
-import asyncio
+import base64
+import hashlib
 import json
 import socket
+import struct
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Joy
 
-try:
-    from aiohttp import web
-    _AIOHTTP_OK = True
-except ImportError:
-    _AIOHTTP_OK = False
-
-# ── High-Tech Cyberpunk Mobile Gamepad HTML ───────────────────────────────────
+# ── Cyberpunk Mobile & Desktop Web Controller HTML ────────────────────────────
 _GAMEPAD_HTML = """\
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"/>
-<title>RPi5 Bot Controller</title>
+<title>Robot Web Controller</title>
 <style>
   :root {
     --bg-primary: #0b0f19;
-    --bg-card: rgba(18, 24, 38, 0.75);
-    --border-card: rgba(255, 255, 255, 0.12);
+    --bg-card: rgba(18, 24, 38, 0.85);
+    --border-card: rgba(255, 255, 255, 0.14);
     --cyan: #00f0ff;
-    --blue: #3b82f6;
     --emerald: #10b981;
     --amber: #f59e0b;
     --red: #ef4444;
@@ -88,12 +73,12 @@ _GAMEPAD_HTML = """\
     justify-content: space-between;
   }
 
-  /* ── Top Status Bar ── */
+  /* ── Header ── */
   #header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 8px 16px;
+    padding: 10px 16px;
     background: var(--bg-card);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
@@ -131,16 +116,17 @@ _GAMEPAD_HTML = """\
     50% { transform: scale(1.25); opacity: 0.75; }
   }
   .ip-info {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-dim);
     font-family: monospace;
+    font-weight: 600;
   }
   .estop-btn {
     background: linear-gradient(135deg, #ef4444, #991b1b);
     color: #fff;
     border: 1px solid rgba(255, 255, 255, 0.3);
     border-radius: 8px;
-    padding: 6px 14px;
+    padding: 7px 16px;
     font-size: 12px;
     font-weight: 800;
     letter-spacing: 1px;
@@ -158,7 +144,7 @@ _GAMEPAD_HTML = """\
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 6px 14px 0 14px;
+    padding: 8px 16px 0 16px;
     gap: 8px;
   }
   .shoulder-group {
@@ -179,6 +165,8 @@ _GAMEPAD_HTML = """\
     gap: 2px;
     min-width: 60px;
     box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+    cursor: pointer;
+    touch-action: none;
     transition: transform 0.08s, background 0.08s, border-color 0.08s;
   }
   .trigger-btn span {
@@ -197,11 +185,11 @@ _GAMEPAD_HTML = """\
   /* ── Live Speed HUD (Center) ── */
   #speed-hud {
     display: flex;
-    gap: 12px;
-    background: rgba(0, 0, 0, 0.4);
-    padding: 6px 14px;
+    gap: 16px;
+    background: rgba(0, 0, 0, 0.5);
+    padding: 6px 16px;
     border-radius: 20px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.1);
   }
   .hud-item {
     display: flex;
@@ -255,6 +243,7 @@ _GAMEPAD_HTML = """\
     border: 2px solid rgba(255, 255, 255, 0.15);
     box-shadow: 0 0 25px rgba(0, 0, 0, 0.8) inset, 0 8px 20px rgba(0, 0, 0, 0.5);
     touch-action: none;
+    cursor: grab;
   }
   .stick-cross {
     position: absolute;
@@ -287,7 +276,7 @@ _GAMEPAD_HTML = """\
     box-shadow: 0 8px 20px rgba(0, 0, 0, 0.8), 0 0 26px var(--cyan);
   }
 
-  /* ── Center D-Pad & Actions ── */
+  /* ── Center Column: D-Pad & System Buttons ── */
   #center-column {
     display: flex;
     flex-direction: column;
@@ -296,7 +285,6 @@ _GAMEPAD_HTML = """\
     gap: 16px;
   }
 
-  /* D-Pad */
   .dpad-grid {
     display: grid;
     grid-template-columns: 36px 36px 36px;
@@ -328,7 +316,6 @@ _GAMEPAD_HTML = """\
     border-radius: 4px;
   }
 
-  /* Middle System Buttons */
   .middle-group {
     display: flex;
     gap: 10px;
@@ -406,7 +393,7 @@ _GAMEPAD_HTML = """\
       <div id="pulse-dot" class="pulse-dot"></div>
       <span id="conn-text">CONNECTING…</span>
     </div>
-    <div class="ip-info" id="ip-badge">HOST: --</div>
+    <div class="ip-info" id="ip-badge">PORT 8765</div>
     <button class="estop-btn" id="btn-estop">E-STOP ⏹</button>
   </div>
 
@@ -438,7 +425,7 @@ _GAMEPAD_HTML = """\
   <!-- Main Gamepad Workspace -->
   <div id="workspace">
 
-    <!-- Left Stick (Drive: Linear + Angular) -->
+    <!-- Left Stick (Drive: Forward/Back + Strafe) -->
     <div class="stick-container">
       <div class="stick-base" id="left-stick-base">
         <div class="stick-cross"></div>
@@ -493,19 +480,18 @@ _GAMEPAD_HTML = """\
 
 <script>
 // ── State Representation ──────────────────────────────────────────────────────
-// axes: [0: LX, 1: LY, 2: RX, 3: RY, 4: LT, 5: RT, 6: DX, 7: DY]
 const axes = new Float32Array(8);
 let buttonsMask = 0;
 let ws = null;
 let streamInterval = null;
+let useHttpFallback = false;
 
-const pulseDot  = document.getElementById('pulse-dot');
-const connText  = document.getElementById('conn-text');
-const ipBadge   = document.getElementById('ip-badge');
-const hudLin    = document.getElementById('hud-lin');
-const hudAng    = document.getElementById('hud-ang');
+const pulseDot = document.getElementById('pulse-dot');
+const connText = document.getElementById('conn-text');
+const ipBadge  = document.getElementById('ip-badge');
+const hudLin   = document.getElementById('hud-lin');
+const hudAng   = document.getElementById('hud-ang');
 
-// Local speed state tracker for UI
 let curLin = 0.25;
 let curAng = 0.80;
 
@@ -515,54 +501,61 @@ function vibrate(ms = 20) {
   }
 }
 
-// ── WebSocket Client ──────────────────────────────────────────────────────────
+// ── Connection: WebSocket with HTTP POST Fallback ─────────────────────────────
 function connectWebSocket() {
-  const host = location.host || 'localhost:8765';
+  const host = location.host || (location.hostname + ':8765');
   ipBadge.textContent = host;
   const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + host + '/ws';
 
-  ws = new WebSocket(wsUrl);
+  try {
+    ws = new WebSocket(wsUrl);
 
-  ws.onopen = () => {
-    pulseDot.className = 'pulse-dot online';
-    connText.textContent = 'ONLINE (30Hz)';
-    if (streamInterval) clearInterval(streamInterval);
-    streamInterval = setInterval(sendState, 33); // 30 Hz stream
-    vibrate(40);
-  };
+    ws.onopen = () => {
+      useHttpFallback = false;
+      pulseDot.className = 'pulse-dot online';
+      connText.textContent = 'ONLINE (WS 30Hz)';
+      if (streamInterval) clearInterval(streamInterval);
+      streamInterval = setInterval(sendState, 33);
+      vibrate(40);
+    };
 
-  ws.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      if (data.lin_speed != null) {
-        curLin = data.lin_speed;
-        hudLin.textContent = curLin.toFixed(2) + ' m/s';
-      }
-      if (data.ang_speed != null) {
-        curAng = data.ang_speed;
-        hudAng.textContent = curAng.toFixed(2) + ' rad/s';
-      }
-    } catch (e) {}
-  };
+    ws.onclose = () => {
+      ws = null;
+      startHttpFallback();
+      setTimeout(connectWebSocket, 2000);
+    };
 
-  ws.onclose = () => {
-    pulseDot.className = 'pulse-dot offline';
-    connText.textContent = 'RECONNECTING…';
-    if (streamInterval) clearInterval(streamInterval);
-    setTimeout(connectWebSocket, 1200);
-  };
+    ws.onerror = () => {
+      if (ws) ws.close();
+    };
+  } catch (err) {
+    startHttpFallback();
+  }
+}
 
-  ws.onerror = () => {
-    ws.close();
-  };
+function startHttpFallback() {
+  if (useHttpFallback) return;
+  useHttpFallback = true;
+  pulseDot.className = 'pulse-dot online';
+  connText.textContent = 'ONLINE (HTTP 20Hz)';
+  if (streamInterval) clearInterval(streamInterval);
+  streamInterval = setInterval(sendState, 50);
 }
 
 function sendState() {
+  const payload = JSON.stringify({
+    a: Array.from(axes),
+    b: buttonsMask
+  });
+
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      a: Array.from(axes),
-      b: buttonsMask
-    }));
+    ws.send(payload);
+  } else if (useHttpFallback) {
+    fetch('/api/joy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload
+    }).catch(() => {});
   }
 }
 
@@ -589,13 +582,9 @@ function setupJoystick(baseId, thumbId, axisXIdx, axisYIdx, invertX = false, inv
 
     thumb.style.transform = `translate(calc(-50% + ${clampedX}px), calc(-50% + ${clampedY}px))`;
 
-    // Normalised [-1.0 .. 1.0]
     let normX = clampedX / maxRadius;
     let normY = clampedY / maxRadius;
 
-    // Apply polarity:
-    // For ROS linear: Up = +1.0, Down = -1.0. (Screen coords have down = +y, so negate normY).
-    // For ROS angular: Left = +1.0, Right = -1.0. (Screen coords have right = +x, so negate normX).
     axes[axisXIdx] = invertX ? normX : -normX;
     axes[axisYIdx] = invertY ? normY : -normY;
   }
@@ -639,15 +628,10 @@ function setupJoystick(baseId, thumbId, axisXIdx, axisYIdx, invertX = false, inv
   });
 }
 
-// ── Setup Left & Right Sticks ─────────────────────────────────────────────────
-// Left stick: Drive
-//   axis 0 (LX): Left = +1.0 (turn left), Right = -1.0 (turn right)
-//   axis 1 (LY): Up = +1.0 (forward), Down = -1.0 (reverse)
+// Left stick: Translate (Strafe left/right, Forward/Back)
 setupJoystick('left-stick-base', 'left-stick-thumb', 0, 1, false, false);
 
-// Right stick: Camera
-//   axis 2 (RX): Left = +1.0 (pan left), Right = -1.0 (pan right)
-//   axis 3 (RY): Up = -1.0 (SDL style: joy_teleop inverts it to tilt up)
+// Right stick: Rotate + Camera Tilt
 setupJoystick('right-stick-base', 'right-stick-thumb', 2, 3, false, true);
 
 // ── Standard Button Binding with PointerCapture ───────────────────────────────
@@ -675,7 +659,6 @@ function bindButton(btn) {
     press(true);
     vibrate(25);
 
-    // Speed adjustment feedback simulation
     if (btn.id === 'btn-rt') {
       curLin = Math.min(0.50, +(curLin + 0.05).toFixed(2));
       hudLin.textContent = curLin.toFixed(2) + ' m/s';
@@ -706,7 +689,6 @@ function bindButton(btn) {
   });
 }
 
-// Bind all standard action and shoulder buttons
 document.querySelectorAll('.trigger-btn, .face-btn, .sys-btn').forEach(bindButton);
 
 // ── D-Pad (Camera Snap-to-Limit) ──────────────────────────────────────────────
@@ -757,7 +739,6 @@ estopBtn.addEventListener('pointerdown', (e) => {
   sendState();
 });
 
-// Initialize connection on page load
 window.addEventListener('DOMContentLoaded', connectWebSocket);
 </script>
 </body>
@@ -765,172 +746,245 @@ window.addEventListener('DOMContentLoaded', connectWebSocket);
 """
 
 
+# ── Shared Node Reference for HTTP Handler ────────────────────────────────────
+_NODE_INSTANCE = None
+
+
+class GamepadHTTPRequestHandler(BaseHTTPRequestHandler):
+    """
+    Standard Library HTTP Request Handler supporting:
+      1. GET /         → Serves virtual gamepad HTML interface
+      2. GET /ws       → RFC 6455 WebSocket Upgrade
+      3. POST /api/joy → HTTP POST state update fallback
+    """
+
+    def do_GET(self):
+        if self.path in ('/', '/index.html'):
+            content = _GAMEPAD_HTML.encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Length', str(len(content)))
+            self.send_header('Cache-Control', 'no-cache')
+            self.end_headers()
+            self.wfile.write(content)
+        elif self.path == '/ws':
+            self._handle_websocket_upgrade()
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        if self.path == '/api/joy':
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length) if length > 0 else b'{}'
+            if _NODE_INSTANCE is not None:
+                _NODE_INSTANCE.process_payload(body.decode('utf-8', errors='ignore'))
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def _handle_websocket_upgrade(self):
+        """RFC 6455 WebSocket Handshake & Masked Frame Parser."""
+        key = self.headers.get('Sec-WebSocket-Key', '')
+        if not key:
+            self.send_response(400)
+            self.end_headers()
+            return
+
+        guid = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
+        accept_key = base64.b64encode(hashlib.sha1((key.strip() + guid).encode('utf-8')).digest()).decode('utf-8')
+
+        self.send_response(101, 'Switching Protocols')
+        self.send_header('Upgrade', 'websocket')
+        self.send_header('Connection', 'Upgrade')
+        self.send_header('Sec-WebSocket-Accept', accept_key)
+        self.end_headers()
+
+        sock = self.request
+        sock.settimeout(5.0)
+
+        if _NODE_INSTANCE is not None:
+            _NODE_INSTANCE.on_client_connected(self.client_address)
+
+        try:
+            while True:
+                head = sock.recv(2)
+                if not head or len(head) < 2:
+                    break
+                b1, b2 = head[0], head[1]
+                opcode = b1 & 0x0F
+
+                # Close frame
+                if opcode == 8:
+                    break
+                # Ping frame → reply with pong
+                elif opcode == 9:
+                    sock.sendall(bytes([0x8A, 0x00]))
+                    continue
+
+                payload_len = b2 & 0x7F
+                if payload_len == 126:
+                    ext = sock.recv(2)
+                    if len(ext) < 2:
+                        break
+                    payload_len = struct.unpack('>H', ext)[0]
+                elif payload_len == 127:
+                    ext = sock.recv(8)
+                    if len(ext) < 8:
+                        break
+                    payload_len = struct.unpack('>Q', ext)[0]
+
+                mask = sock.recv(4)
+                if len(mask) < 4:
+                    break
+
+                payload = bytearray()
+                while len(payload) < payload_len:
+                    chunk = sock.recv(min(payload_len - len(payload), 4096))
+                    if not chunk:
+                        break
+                    payload.extend(chunk)
+
+                unmasked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+
+                # Text frame
+                if opcode == 1 and _NODE_INSTANCE is not None:
+                    _NODE_INSTANCE.process_payload(unmasked.decode('utf-8', errors='ignore'))
+        except (socket.timeout, ConnectionResetError, BrokenPipeError, OSError):
+            pass
+        finally:
+            if _NODE_INSTANCE is not None:
+                _NODE_INSTANCE.on_client_disconnected()
+
+    def log_message(self, format, *args):
+        # Suppress noisy HTTP access logs
+        pass
+
+
 # ── ROS 2 Web Gamepad Node ────────────────────────────────────────────────────
 class WebGamepadNode(Node):
     """
     Hosts the virtual Xbox controller web interface and publishes /joy
-    at a rock-solid, periodic rate to completely eliminate wireless stutters.
+    at a steady 30 Hz using standard library only.
     """
 
     def __init__(self):
         super().__init__('web_gamepad')
+        global _NODE_INSTANCE
+        _NODE_INSTANCE = self
 
         self.declare_parameter('host', '0.0.0.0')
         self.declare_parameter('port', 8765)
         self.declare_parameter('publish_hz', 30.0)
 
         self._host = self.get_parameter('host').value
-        self._port = self.get_parameter('port').value
+        self._port = int(self.get_parameter('port').value)
         self._publish_hz = float(self.get_parameter('publish_hz').value)
 
         self._pub = self.create_publisher(Joy, '/joy', 10)
 
-        # Internal state updated by WebSocket and published periodically by ROS timer
+        # State storage
         self._axes = [0.0] * 8
         self._buttons_mask = 0
         self._last_rx_time = 0.0
         self._client_connected = False
         self._had_active_motion = False
+        self._lock = threading.Lock()
 
-        # Periodic ROS 2 publisher timer (eliminates network rate-limiting jitter)
+        # Periodic ROS 2 publisher timer
         self._pub_timer = self.create_timer(1.0 / self._publish_hz, self._timer_publish_joy)
 
-        # aiohttp web server objects
-        self._app = None
-        self._runner = None
-        self._loop = None
-        self._ws_clients = set()
+        # Start standard library ThreadingHTTPServer
+        self._server = ThreadingHTTPServer((self._host, self._port), GamepadHTTPRequestHandler)
+        self._server_thread = threading.Thread(target=self._server.serve_forever, daemon=True, name='web_server')
+        self._server_thread.start()
 
-        if not _AIOHTTP_OK:
-            self.get_logger().error(
-                'aiohttp is not installed! Run:\n'
-                '  sudo apt install -y python3-aiohttp\n'
-                'or\n'
-                '  pip install aiohttp --break-system-packages')
-            return
+        # Log connection banner to terminal
+        self._log_banner()
 
-        # Start aiohttp in a dedicated background daemon thread
-        self._web_thread = threading.Thread(
-            target=self._run_server, daemon=True, name='web_gamepad_server')
-        self._web_thread.start()
+    def _log_banner(self):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(('8.8.8.8', 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+        except Exception:
+            local_ip = '127.0.0.1'
 
-        # Log connection information
-        self._log_timer = self.create_timer(1.0, self._log_url)
+        print(
+            f'\n\033[1;36m'
+            f'╔═══════════════════════════════════════════════════════════════╗\n'
+            f'║ 🎮 WEB GAMEPAD READY (Port {self._port})                              ║\n'
+            f'╠───────────────────────────────────────────────────────────────╣\n'
+            f'║  Local / Wi-Fi URL:  http://{local_ip}:{self._port:<5}                  ║\n'
+            f'║  Tailscale URL:      http://<tailscale-ip>:{self._port:<5}            ║\n'
+            f'║  Open either address on your laptop or phone browser!         ║\n'
+            f'╚═══════════════════════════════════════════════════════════════╝\033[0m\n',
+            flush=True,
+        )
 
-    # ── Periodic ROS 2 Publisher Timer ─────────────────────────────────────────
+    def on_client_connected(self, client_addr):
+        with self._lock:
+            self._client_connected = True
+        self.get_logger().info(f'Web Controller connected from {client_addr}')
+
+    def on_client_disconnected(self):
+        with self._lock:
+            self._client_connected = False
+            self._axes = [0.0] * 8
+            self._buttons_mask = 0
+        self.get_logger().info('Web Controller disconnected')
+
+    def process_payload(self, text: str):
+        try:
+            data = json.loads(text)
+            raw_axes = data.get('a', [0.0] * 8)
+            buttons = int(data.get('b', 0))
+
+            padded_axes = [float(v) for v in raw_axes[:8]]
+            while len(padded_axes) < 8:
+                padded_axes.append(0.0)
+
+            with self._lock:
+                self._axes = padded_axes
+                self._buttons_mask = buttons
+                self._last_rx_time = time.monotonic()
+                self._client_connected = True
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+
     def _timer_publish_joy(self):
-        """
-        Runs at steady publish_hz (e.g. 30 Hz).
-        Publishes the latest received controller state if client is active,
-        or ensures zero stop commands are sent if client disconnects.
-        """
         now = time.monotonic()
-        is_fresh = (self._client_connected and (now - self._last_rx_time) < 1.5)
+        with self._lock:
+            is_fresh = self._client_connected and ((now - self._last_rx_time) < 1.5)
+            axes = list(self._axes)
+            buttons_mask = self._buttons_mask
 
         if is_fresh:
             msg = Joy()
             msg.header.stamp = self.get_clock().now().to_msg()
-            msg.axes = list(self._axes)
-            msg.buttons = [(self._buttons_mask >> i) & 1 for i in range(11)]
+            msg.axes = axes
+            msg.buttons = [(buttons_mask >> i) & 1 for i in range(11)]
             self._pub.publish(msg)
             self._had_active_motion = True
         elif self._had_active_motion:
-            # Client timed out or disconnected mid-motion: publish safe-stop
             msg = Joy()
             msg.header.stamp = self.get_clock().now().to_msg()
             msg.axes = [0.0] * 8
             msg.buttons = [0] * 11
             self._pub.publish(msg)
             self._had_active_motion = False
-            self.get_logger().warn('Web gamepad stream paused/disconnected — sent safe stop',
-                                   throttle_duration_sec=3.0)
 
-    # ── aiohttp Server ─────────────────────────────────────────────────────────
-    def _run_server(self):
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self._start_app())
-        self._loop.run_forever()
-
-    async def _start_app(self):
-        self._app = web.Application()
-        self._app.router.add_get('/', self._handle_index)
-        self._app.router.add_get('/ws', self._handle_ws)
-
-        self._runner = web.AppRunner(self._app)
-        await self._runner.setup()
-        site = web.TCPSite(self._runner, self._host, self._port)
-        await site.start()
-
-    def _log_url(self):
-        self.destroy_timer(self._log_timer)
+    def shutdown(self):
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            local_ip = s.getsockname()[0]
-            s.close()
+            self._server.shutdown()
+            self._server.server_close()
         except Exception:
-            local_ip = '127.0.0.1'
-
-        self.get_logger().info(
-            f'\n╔═══════════════════════════════════════════════════════════════╗\n'
-            f'║ 🎮 WEB GAMEPAD READY (Listening on 0.0.0.0:{self._port})             ║\n'
-            f'╠───────────────────────────────────────────────────────────────╣\n'
-            f'║  Wi-Fi Network URL:   http://{local_ip}:{self._port:<5}                   ║\n'
-            f'║  Tailscale Network:   http://<tailscale-ip>:{self._port:<5}             ║\n'
-            f'║  Open either address on your mobile phone browser to drive!   ║\n'
-            f'╚═══════════════════════════════════════════════════════════════╝')
-
-    # ── HTTP & WebSocket Handlers ──────────────────────────────────────────────
-    async def _handle_index(self, _request):
-        return web.Response(text=_GAMEPAD_HTML, content_type='text/html', charset='utf-8')
-
-    async def _handle_ws(self, request):
-        # heartbeat=3.0 sends ping frames every 3s to keep wireless connection alive
-        ws_resp = web.WebSocketResponse(heartbeat=3.0)
-        await ws_resp.prepare(request)
-        self._ws_clients.add(ws_resp)
-        self._client_connected = True
-        self.get_logger().info(f'Phone connected from {request.remote}')
-
-        try:
-            async for msg in ws_resp:
-                if msg.type == web.WSMsgType.TEXT:
-                    try:
-                        data = json.loads(msg.data)
-                        raw_axes = data.get('a', [0.0] * 8)
-                        self._buttons_mask = int(data.get('b', 0))
-
-                        # Ensure 8 axes: [LX, LY, RX, RY, LT, RT, DX, DY]
-                        padded_axes = [float(v) for v in raw_axes[:8]]
-                        while len(padded_axes) < 8:
-                            padded_axes.append(0.0)
-                        self._axes = padded_axes
-                        self._last_rx_time = time.monotonic()
-                    except (json.JSONDecodeError, TypeError, ValueError):
-                        pass
-                elif msg.type in (web.WSMsgType.ERROR, web.WSMsgType.CLOSE):
-                    break
-        except Exception as exc:
-            self.get_logger().warn(f'WebSocket connection notice: {exc}')
-        finally:
-            self._ws_clients.discard(ws_resp)
-            if not self._ws_clients:
-                self._client_connected = False
-                self._axes = [0.0] * 8
-                self._buttons_mask = 0
-            self.get_logger().info('Phone disconnected')
-
-        return ws_resp
-
-    # ── Clean Shutdown ────────────────────────────────────────────────────────
-    def shutdown_server(self):
-        if self._runner and self._loop and self._loop.is_running():
-            try:
-                asyncio.run_coroutine_threadsafe(
-                    self._runner.cleanup(), self._loop).result(timeout=2.0)
-            except Exception:
-                pass
+            pass
 
 
 def main(args=None):
@@ -941,10 +995,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        try:
-            node.shutdown_server()
-        except Exception:
-            pass
+        node.shutdown()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
