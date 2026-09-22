@@ -234,8 +234,22 @@ def _launch_setup(context, *args, **kwargs):
     )
 
     # ── 6. Gamepad teleop (mecanum) ─────────────────────────────────────────
+    # Web Gamepad (primary) hosts a virtual Xbox controller on port 8765.
     # Left stick  → linear.x (forward) + linear.y (strafe) → HDRIVE on Mega
     # Right stick → angular.z (yaw) only → DRIVE on Mega
+    web_gamepad = Node(
+        package=package_name,
+        executable="web_gamepad",
+        name="web_gamepad",
+        output=out,
+        arguments=log_args,
+        parameters=[{
+            "host": "0.0.0.0",
+            "port": 8765,
+            "publish_hz": 30.0,
+        }],
+    )
+
     joy_node = Node(
         package="joy",
         executable="joy_node",
@@ -258,15 +272,16 @@ def _launch_setup(context, *args, **kwargs):
         output=out,
         arguments=log_args,
         parameters=[{
-            # Mecanum teleop — BT Xbox layout (live-measured on this robot):
+            # Mecanum teleop — BT / Web Gamepad layout:
             #   left stick  : axis 1 = forward/back, axis 0 = strafe left/right
             #   right stick : axis 2 = rotate (RX). USB/xpad: try axis_angular:=3.
             "axis_linear": 1,
             "axis_strafe": 0,
             "axis_angular": 2,
             "axis_cam_tilt": -1,   # disabled — right stick is rotate-only
-            "ang_deadzone": 0.30,
+            "ang_deadzone": 0.20,
             "stick_exclusive": True,
+            "joy_timeout": 1.5,
         }],
     )
 
@@ -326,9 +341,25 @@ def _launch_setup(context, *args, **kwargs):
         driver_node,     # /dev/ttyACM0 → /encoder + /imu (driver + BNO055)
         odom_node,       # /encoder → /odom_raw or /odom
         lidar_node,      # /dev/ttyUSB0 → /scan (RPLidar A1 sensitivity mode)
-        joy_node,
-        joy_teleop,      # /cmd_vel — left=translate, right=rotate
     ])
+
+    # ── Teleop Selection: Highest Priority to Web Gamepad ──────────────────────
+    import glob
+    use_joystick_mode = LaunchConfiguration("use_joystick").perform(context).lower()
+    js_devices = glob.glob("/dev/input/js*")
+    js_detected = len(js_devices) > 0 or os.path.exists("/dev/input/js0")
+
+    if use_joystick_mode in ("1", "true", "yes", "physical"):
+        # Explicit physical USB/BT joystick requested
+        actions.extend([joy_node, joy_teleop])
+    else:
+        # Default / web / auto: Web Gamepad is primary
+        if js_detected and use_joystick_mode == "auto_physical":
+            actions.extend([joy_node, joy_teleop])
+        else:
+            # Primary mode: Web Gamepad (hosts virtual Xbox pad on port 8765) + joy_teleop
+            actions.extend([web_gamepad, joy_teleop])
+
     if use_ekf:
         actions.append(ekf_node)
         actions.append(LogInfo(
@@ -356,6 +387,12 @@ def generate_launch_description():
             "verbose",
             default_value="false",
             description="If true, all node logs go to the terminal.",
+        ),
+        DeclareLaunchArgument(
+            "use_joystick",
+            default_value="web",
+            description="Joystick mode: 'web' (default, virtual Xbox pad on port 8765), "
+                        "or 'true'/'physical' (for physical controller on /dev/input/js*).",
         ),
         DeclareLaunchArgument(
             "expect_frontier",

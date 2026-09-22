@@ -68,10 +68,11 @@ class JoyTeleop(Node):
         self.declare_parameter('axis_angular', 2)     # right stick horizontal → angular.z (BT RX)
         self.declare_parameter('axis_rt', 5)          # right trigger
         self.declare_parameter('axis_lt', 4)          # left trigger (BT; USB xpad = 2)
-        self.declare_parameter('button_rb', 7)       # right bumper
-        self.declare_parameter('button_lb', 6)       # left bumper
-        self.declare_parameter('button_save_map', 1) # B (stick clicks were unreliable)
-        self.declare_parameter('button_vision', 3)   # X
+        self.declare_parameter('button_rb', 5)       # right bumper (index 5)
+        self.declare_parameter('button_lb', 4)       # left bumper (index 4)
+        self.declare_parameter('button_save_map', 1) # B (save map)
+        self.declare_parameter('button_vision', 2)   # X (toggle vision)
+        self.declare_parameter('button_imu_cal', 3)  # Y (IMU calibration on touch screen)
         self.declare_parameter('dashboard_url', 'http://127.0.0.1:8080')
 
         # ── Speed setpoints ───────────────────────────────────────────────────
@@ -91,7 +92,7 @@ class JoyTeleop(Node):
         # leak angular.z every tick → amr4_driver stayed in DRIVE and spun.
         self.declare_parameter('ang_deadzone', 0.30)
         self.declare_parameter('publish_hz', 20.0)
-        self.declare_parameter('joy_timeout', 0.5)   # s without /joy → stop
+        self.declare_parameter('joy_timeout', 1.5)   # s without /joy → stop (tolerant to Wi-Fi jitter)
 
         # Right stick → camera tilt; pan disabled (RX used for rotate / DRIVE).
         # USB/xpad: RX is usually axis 3. Xbox Bluetooth often uses axis 2 —
@@ -115,6 +116,7 @@ class JoyTeleop(Node):
         self._btn_lb = gp('button_lb')
         self._btn_save = gp('button_save_map')
         self._btn_vision = gp('button_vision')
+        self._btn_imu = gp('button_imu_cal')
         self._dash_url = str(gp('dashboard_url')).rstrip('/')
         self._lin_speed = gp('lin_speed')
         self._ang_speed = gp('ang_speed')
@@ -201,9 +203,9 @@ class JoyTeleop(Node):
         self._rb_was_pressed, self._lb_was_pressed = rb, lb
 
         # Dashboard actions — edge triggered, 2 s cooldown each.
-        # (The four-button combo also fires the ± speed steps above, but the
-        # +/− pairs cancel out, so the setpoints are unchanged.)
-        combo = rt and lt and rb and lb
+        # Either the four-button combo OR single button Y (on virtual gamepad)
+        y_btn = button(self._btn_imu)
+        combo = (rt and lt and rb and lb) or y_btn
         if combo and not self._combo_was_pressed:
             self._fire_action('imu_cal')
         self._combo_was_pressed = combo
