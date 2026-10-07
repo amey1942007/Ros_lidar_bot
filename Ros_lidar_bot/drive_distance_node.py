@@ -107,6 +107,7 @@ import threading
 import time
 
 import rclpy
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
@@ -202,62 +203,65 @@ class DriveDistanceNode(Node):
         self._pub_hdrive = self.create_publisher(Float64, self._hdrive_topic, 10)
 
         # ── Odometry state ────────────────────────────────────────────────────
-        self._odom_lock  = threading.Lock()
-        self._odom_x: float | None = None
-        self._odom_y: float | None = None
-        self._odom_yaw: float | None = None
-        self._odom_speed = 0.0
-        self._odom_last  = time.monotonic()
-        # Topic actually feeding the controller, resolved at startup.
+        # Latest (x, y, yaw, speed, monotonic receive time) per odom topic.
+        self._odom_lock = threading.Lock()
+        self._odom_latest: dict[str, tuple] = {}
+        # Topic actually feeding the controller, resolved in start().
         self._odom_source: str | None = None
         self._odom_label = "none — time-only"
+        for topic in (self._odom_topic, self._odom_fallback_topic):
+            self.create_subscription(
+                Odometry, topic, lambda m, t=topic: self._odom_cb(t, m), 10
+            )
 
         # BNO055 heading for explicit HDRIVE latch (from /imu).
         self._imu_lock = threading.Lock()
         self._imu_hdg_deg: float | None = None
         self.create_subscription(Imu, "/imu", self._imu_cb, 10)
 
-        self._sub_odom = None
+        # Callbacks run on a background thread so odometry stays fresh while
+        # the main thread blocks in input() at the prompt.
+        self._executor = SingleThreadedExecutor()
+        self._executor.add_node(self)
+        self._spin_thread = threading.Thread(target=self._executor.spin, daemon=True)
+
+    def start(self):
+        self._spin_thread.start()
         self._select_odom_source()
+
+    def shutdown(self):
+        self._executor.shutdown()
 
     # ──────────────────────────────────────────────────────────────────────────
     # Odometry / IMU
     # ──────────────────────────────────────────────────────────────────────────
-    def _odom_cb(self, msg: Odometry):
+    def _odom_cb(self, topic: str, msg: Odometry):
+        sample = (
+            msg.pose.pose.position.x,
+            msg.pose.pose.position.y,
+            _quat_yaw(msg.pose.pose.orientation),
+            math.hypot(msg.twist.twist.linear.x, msg.twist.twist.linear.y),
+            time.monotonic(),
+        )
         with self._odom_lock:
-            self._odom_x = msg.pose.pose.position.x
-            self._odom_y = msg.pose.pose.position.y
-            self._odom_yaw = _quat_yaw(msg.pose.pose.orientation)
-            self._odom_speed = math.hypot(msg.twist.twist.linear.x,
-                                          msg.twist.twist.linear.y)
-            self._odom_last = time.monotonic()
+            self._odom_latest[topic] = sample
 
     def _imu_cb(self, msg: Imu):
         with self._imu_lock:
             self._imu_hdg_deg = _ros_yaw_to_bno_hdg(_quat_yaw(msg.orientation))
 
     def _try_odom_topic(self, topic: str, timeout: float) -> bool:
-        """Subscribe to *topic* and spin until a pose arrives or time runs out."""
-        if self._sub_odom is not None:
-            self.destroy_subscription(self._sub_odom)
-        with self._odom_lock:
-            self._odom_x = None
-            self._odom_y = None
-            self._odom_yaw = None
-        self._sub_odom = self.create_subscription(
-            Odometry, topic, self._odom_cb, 10
-        )
-
+        """Wait until a pose arrives on *topic* or time runs out."""
         deadline = time.monotonic() + timeout
         print(_c(DIM, f"  Waiting for {topic} …"), end="", flush=True)
         dots = 0
         while time.monotonic() < deadline:
-            rclpy.spin_once(self, timeout_sec=0.2)
             with self._odom_lock:
-                if self._odom_x is not None:
+                if topic in self._odom_latest:
                     print(_c(GREEN, " ✓"))
                     self._odom_source = topic
                     return True
+            time.sleep(0.2)
             dots += 1
             if dots % 5 == 0:
                 print(".", end="", flush=True)
@@ -292,9 +296,21 @@ class DriveDistanceNode(Node):
         print(_c(DIM, "    ros2 node list | grep -E 'odom_node|ekf'"))
 
     def _get_odom(self):
+        """(x, y, yaw, speed, receive_time) from the selected source, or Nones."""
         with self._odom_lock:
-            return (self._odom_x, self._odom_y, self._odom_yaw,
-                    self._odom_speed, self._odom_last)
+            sample = self._odom_latest.get(self._odom_source)
+        return sample if sample is not None else (None, None, None, 0.0, 0.0)
+
+    def _wait_fresh_odom(self, timeout: float = 2.0) -> bool:
+        """True once the selected source has a sample younger than odom_timeout."""
+        deadline = time.monotonic() + timeout
+        while True:
+            stamp = self._get_odom()[4]
+            if time.monotonic() - stamp <= self._odom_timeout:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
 
     # ──────────────────────────────────────────────────────────────────────────
     # HDRIVE heading latch
@@ -305,7 +321,7 @@ class DriveDistanceNode(Node):
             with self._imu_lock:
                 if self._imu_hdg_deg is not None:
                     return self._imu_hdg_deg
-            rclpy.spin_once(self, timeout_sec=0.1)
+            time.sleep(0.1)
         return None
 
     def _latch_hdrive_heading(self) -> float | None:
@@ -340,20 +356,11 @@ class DriveDistanceNode(Node):
         v_peak = math.sqrt(2.0 * dist * a * d / (a + d))
         return v_peak / a + v_peak / d
 
-    def _spin_for(self, seconds: float):
-        """Process callbacks for *seconds* (keeps odometry fresh while waiting)."""
-        end = time.monotonic() + seconds
-        while True:
-            wait = end - time.monotonic()
-            if wait <= 0.0:
-                return
-            rclpy.spin_once(self, timeout_sec=wait)
-
     def _send_stop(self, seconds: float = 0.1):
         end = time.monotonic() + seconds
         while time.monotonic() < end:
             self._pub.publish(Twist())
-            self._spin_for(0.02)
+            time.sleep(0.02)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Core movement executor
@@ -374,6 +381,11 @@ class DriveDistanceNode(Node):
 
         # Commanded direction in the robot frame (fixed for the whole move).
         bx, by = dx / total, dy / total
+
+        if self._odom_source is not None and not self._wait_fresh_odom():
+            print(_c(RED, f"  ⚠ {self._odom_source} has gone silent — not moving."))
+            print(_c(DIM, "    Check: ros2 topic hz /encoder /odom"))
+            return
 
         sx, sy, syaw, _, _ = self._get_odom()
         odom_guard = sx is not None
@@ -495,11 +507,11 @@ class DriveDistanceNode(Node):
                     flush=True,
                 )
 
-                # ── Fixed-rate tick, servicing callbacks while waiting ─────────
+                # ── Fixed-rate tick ────────────────────────────────────────────
                 next_tick += self._dt
                 if next_tick < time.monotonic():
                     next_tick = time.monotonic()
-                self._spin_for(next_tick - time.monotonic())
+                time.sleep(max(0.0, next_tick - time.monotonic()))
         finally:
             self._clear_hdrive_heading()
 
@@ -557,7 +569,6 @@ class DriveDistanceNode(Node):
         )
 
         while rclpy.ok():
-            self._spin_for(0.05)
             cx, cy, cyaw, _, _ = self._get_odom()
             if cx is not None:
                 print(_c(DIM, f"  Odom pose  x={cx:+.3f} m  y={cy:+.3f} m  "
@@ -614,6 +625,7 @@ def main(args=None):
     rclpy.init(args=args)
     node = DriveDistanceNode()
     try:
+        node.start()
         if node._non_interactive:
             dx = float(node._distance)
             dy = float(node._strafe)
@@ -627,6 +639,7 @@ def main(args=None):
         node._send_stop()
     finally:
         node._clear_hdrive_heading()
+        node.shutdown()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
