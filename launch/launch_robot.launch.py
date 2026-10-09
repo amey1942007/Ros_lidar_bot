@@ -334,25 +334,8 @@ def _launch_setup(context, *args, **kwargs):
         ekf_node,
     ])
     
-    # Dynamic auto-detection for /dev/input/js* port
-    import glob
-    use_joystick_mode = LaunchConfiguration("use_joystick").perform(context).lower()
-    js_devices = glob.glob("/dev/input/js*")
-    js_detected = len(js_devices) > 0 or os.path.exists("/dev/input/js0")
-
-    if use_joystick_mode in ("1", "true", "yes"):
-        # Explicit physical controller requested
-        actions.extend([joy_node, joy_teleop])
-    elif use_joystick_mode in ("curses", "keyboard", "terminal"):
-        # Explicit terminal keyboard teleop requested
-        actions.append(teleop_interface)
-    else:  # Default / auto / false: focus on Web Gamepad
-        if js_detected and use_joystick_mode not in ("0", "false", "no"):
-            # Physical controller detected on /dev/input/js*
-            actions.extend([joy_node, joy_teleop])
-        else:
-            # Primary mode: Web Gamepad + joy_teleop (virtual Xbox controller on port 8765)
-            actions.extend([web_gamepad, joy_teleop])
+    # Always launch physical joystick node (joy_node), web gamepad, and teleop converter
+    actions.extend([joy_node, joy_teleop, web_gamepad])
 
     actions.extend([
         # ── Stage 2 (T=5s): SLAM ──────────────────────────────────────────────
@@ -377,8 +360,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "use_joystick",
-            default_value="auto",
-            description="Joystick teleop mode: auto (detects /dev/input/js0), true (force gamepad), or false (force keyboard teleop).",
+            default_value="true",
+            description="Enable joystick teleop (joy_node + joy_teleop).",
         ),
         OpaqueFunction(function=_launch_setup),
     ])
