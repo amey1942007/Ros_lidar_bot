@@ -152,47 +152,20 @@ def _launch_setup(context, *args, **kwargs):
     # 1.12 — that build is serial-only and ignores channel_type:=udp.
     # Install: git clone https://github.com/Slamtec/sllidar_ros2.git into src/
     lidar_node = Node(
-        package="sllidar_ros2",
-        executable="sllidar_node",
+        package="rplidar_ros",
+        executable="rplidar_node",
         name="rplidar_node",
         output=out,
         arguments=log_args,
-        # Respawn if the driver ever exits (cable yank, power dip). UDP needs
-        # no motor spin-down grace period like the A1 did, so 5 s is plenty.
         respawn=True,
-        respawn_delay=5.0,
-        # Raw hardware scan — chassis/mast returns still present. Filtered to
-        # /scan by scan_min_range_filter so RViz/SLAM/Nav2 never see them.
-        remappings=[("scan", "scan_raw"), ("/scan", "/scan_raw")],
+        respawn_delay=3.0,
         parameters=[{
-            "channel_type":      "udp",
-            "udp_ip":            "192.168.11.2",   # S2E factory default
-            "udp_port":          8089,             # S2E factory default
+            "channel_type":      "serial",
+            "serial_port":       "/dev/ttyUSB0",
+            "serial_baudrate":   115200,
             "frame_id":          "laser_frame",
             "inverted":          False,
             "angle_compensate":  True,
-            # DenseBoost per user requirement — full ~3200 pts/rev resolution
-            # matters for their use case; do NOT downgrade this again.
-            # Trade-off (measured 2026-07-17): the extra scan-match/raytrace
-            # CPU makes map→odom run ~0.6 s stale on the RPi5. The Nav2/SLAM
-            # transform tolerances are set to 1.0 s specifically to absorb
-            # that — if they are ever lowered, this mode is why things break.
-            "scan_mode":         "DenseBoost",
-        }],
-    )
-
-    # Drop returns within 0.30 m of the lidar (chassis/mast frame hits).
-    # Without this, RViz /scan still shows the body even if Nav2 ignores it.
-    scan_filter = Node(
-        package=package_name,
-        executable="scan_min_range_filter",
-        name="scan_min_range_filter",
-        output=out,
-        arguments=log_args,
-        respawn=True,
-        respawn_delay=2.0,
-        parameters=[{
-            "min_range": 0.30,  # per user: nothing within 30 cm of the bot
         }],
     )
 
@@ -357,7 +330,6 @@ def _launch_setup(context, *args, **kwargs):
         safety_stop,
         odom_node,
         lidar_node,
-        scan_filter,
         camera_servo,
         ekf_node,
     ])
