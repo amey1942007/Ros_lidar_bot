@@ -159,7 +159,6 @@ Ros_lidar_bot/
 │   ├── yolo.py                      # YOLO-World camera detector → /yolo
 │   ├── semantic_slam_node.py        # /yolo + lidar → object map
 │   ├── imu_test_node.py / imu_calibration_node.py / drive_distance_node.py
-│   └── bringup_status_node.py       # legacy terminal status board
 ├── config/
 │   ├── ekf.yaml                     # robot_localization fusion (audited timestamps)
 │   ├── nav2_params.yaml             # Nav2 stack tuning

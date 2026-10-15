@@ -51,7 +51,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'output',
             default_value='log',
-            description='screen or log — use log so bringup_status owns the terminal'),
+            description='screen or log — use log to keep the terminal quiet for the dashboard'),
 
         node_robot_state_publisher,
         node_joint_state_publisher

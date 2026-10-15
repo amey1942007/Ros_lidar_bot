@@ -32,7 +32,7 @@ def _launch_setup(context, *args, **kwargs):
     )
 
     out = "screen" if verbose else "log"
-    # FATAL = only crashes; keeps bringup_status board alone on the TTY.
+    # FATAL = only crashes; keeps the dashboard TTY quiet.
     log_args = [] if verbose else ["--ros-args", "--log-level", "fatal"]
     nav2_log_level = "info" if verbose else "fatal"
 
@@ -43,13 +43,11 @@ def _launch_setup(context, *args, **kwargs):
         # Soften CycloneDDS discovery chatter when RViz joins from another host.
         actions.append(SetEnvironmentVariable("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] [{name}]: {message}"))
 
-    # ── Web dashboard (replaces the terminal bringup_status board) ───────────
+    # ── Web dashboard ───────────────────────────────────────────────────────
     # Serves the interactive GUI at http://<pi-ip>:8080 — open it in a
     # browser on the laptop (the Pi is headless over SSH, so no X11 needed).
     # Status board + live robot/lidar view + on-demand tools (IMU test,
     # IMU calibration, drive-distance) + click-to-send nav goals + E-STOP.
-    # The old terminal board is still available:
-    #   ros2 run Ros_lidar_bot bringup_status
     dashboard = Node(
         package=package_name,
         executable="robot_dashboard",
@@ -401,7 +399,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "expect_frontier",
             default_value="false",
-            description="If true, bringup_status waits for frontier_explorer (autonomous).",
+            description="If true, robot_dashboard expects frontier_explorer (autonomous).",
         ),
         DeclareLaunchArgument(
             "use_joystick",
