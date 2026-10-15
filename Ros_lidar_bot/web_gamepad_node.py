@@ -856,6 +856,9 @@ class WebGamepadNode(Node):
         self._app = web.Application()
         self._app.router.add_get('/', self._handle_index)
         self._app.router.add_get('/ws', self._handle_ws)
+        # Cloud bridge (amr_telemetry_bridge) posts Xbox state here from
+        # https://amrslam.tech/control — same payload shape as the phone WS.
+        self._app.router.add_post('/api/joy', self._handle_api_joy)
 
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
@@ -884,6 +887,32 @@ class WebGamepadNode(Node):
     # ── HTTP & WebSocket Handlers ──────────────────────────────────────────────
     async def _handle_index(self, _request):
         return web.Response(text=_GAMEPAD_HTML, content_type='text/html', charset='utf-8')
+
+    async def _handle_api_joy(self, request):
+        """POST /api/joy  body: {"a":[8 floats], "b": <button bitmask int>}
+
+        Used by amr_telemetry_bridge so cloud Xbox control publishes /joy the
+        same way the local phone WebSocket does.
+        """
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"ok": False, "error": "invalid json"}, status=400)
+
+        try:
+            raw_axes = data.get("a", [0.0] * 8)
+            padded = [float(v) for v in list(raw_axes)[:8]]
+            while len(padded) < 8:
+                padded.append(0.0)
+            self._axes = padded
+            self._buttons_mask = int(data.get("b", 0))
+            self._last_rx_time = time.monotonic()
+            self._client_connected = True
+            self._had_active_motion = True
+        except (TypeError, ValueError) as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+
+        return web.json_response({"ok": True})
 
     async def _handle_ws(self, request):
         # heartbeat=3.0 sends ping frames every 3s to keep wireless connection alive
