@@ -5,3 +5,8 @@ log/
 __pycache__/
 *.pyc
 .antigravityignore
+# AMR cloud bridge secrets / local venv (never commit)
+amr-bridge/.venv/
+amr-bridge/.env.pi
+.env.pi
+**/amr-bridge.env

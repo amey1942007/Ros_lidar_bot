@@ -19,6 +19,7 @@ mapping, and a browser control dashboard served from the robot.
 - [System Architecture](#system-architecture)
 - [Robot Hardware](#robot-hardware)
 - [Web Dashboard](#web-dashboard)
+- [Cloud control (amrslam.tech)](#cloud-control-amrslamtech)
 - [Semantic Vision Pipeline](#semantic-vision-pipeline)
 - [Project Structure](#project-structure)
 - [Installation](#installation)
@@ -115,6 +116,42 @@ work with the S2E.
 
 ---
 
+## Cloud control (amrslam.tech)
+
+Bringup starts `amr_telemetry_bridge` ~5 s after `robot_dashboard` so
+[https://amrslam.tech/control](https://amrslam.tech/control) can show live
+telemetry and drive the robot (via Supabase Realtime). Full playbook:
+[`amr-bridge/AGENT_SETUP_AND_INTEGRATION.md`](amr-bridge/AGENT_SETUP_AND_INTEGRATION.md).
+
+**One-time on the Pi (you must do this — secrets stay off git):**
+
+```bash
+# 1) Secrets — get the real .env.pi from the AMR website owner (never commit it)
+sudo install -m 600 /path/to/.env.pi /etc/amr-bridge.env
+# Edit AMR_BOT_ID=hardware-bot  (or amr4) to match the site bot picker
+
+# 2) Python deps for the bridge
+cd ~/ros2_ws/src/Ros_lidar_bot/amr-bridge
+python3 -m venv .venv && source .venv/bin/activate
+pip install -U pip && pip install -e .
+
+# 3) Rebuild so launch finds the vendored package under share/
+cd ~/ros2_ws && colcon build --packages-select Ros_lidar_bot && source install/setup.bash
+```
+
+Then launch as usual, pointing at the venv Python:
+
+```bash
+ros2 launch Ros_lidar_bot launch_robot.launch.py \
+  amr_bot_id:=hardware-bot \
+  amr_bridge_python:=$HOME/ros2_ws/src/Ros_lidar_bot/amr-bridge/.venv/bin/python
+```
+
+Disable with `enable_amr_bridge:=false`. Optional: set `AMR_CAMERA_URL` in
+`/etc/amr-bridge.env` for a public MJPEG tunnel.
+
+---
+
 ## Semantic Vision Pipeline
 
 Started on demand from the dashboard toggle (or manually:
@@ -142,8 +179,9 @@ Requires `pip3 install ultralytics` and the `yolov8s-world.pt` weights
 ```
 Ros_lidar_bot/
 ├── launch/
-│   ├── launch_robot.launch.py       # hardware bringup (manual driving)
+│   ├── launch_robot.launch.py       # hardware bringup (manual driving + cloud bridge)
 │   ├── autonomous_robot.launch.py   # bringup + frontier exploration
+│   ├── amr_bridge.launch.py         # Supabase bridge → amrslam.tech/control
 │   ├── vision.launch.py             # on-demand semantic vision (dashboard toggle)
 │   ├── rsp.launch.py                # robot_state_publisher (URDF)
 │   └── lidar_test.launch.py         # lidar-only smoke test
@@ -154,11 +192,16 @@ Ros_lidar_bot/
 │   ├── safety_stop_node.py          # /cmd_vel → /cmd_vel_safe scan-based filter
 │   ├── frontier_explorer_node.py    # autonomous exploration (Nav2 action client)
 │   ├── robot_dashboard_node.py      # web GUI server (port 8080)
+│   ├── web_gamepad_node.py          # virtual Xbox page → /joy (port 8765)
 │   ├── joy_teleop_node.py           # gamepad → /cmd_vel
 │   ├── camera_servo_node.py         # right stick → /camera_cmd → pan/tilt head
 │   ├── yolo.py                      # YOLO-World camera detector → /yolo
 │   ├── semantic_slam_node.py        # /yolo + lidar → object map
 │   ├── imu_test_node.py / imu_calibration_node.py / drive_distance_node.py
+├── amr-bridge/                      # cloud telemetry bridge (vendored from AMR website)
+│   ├── amr_telemetry_bridge/        # Python package (no ROS deps)
+│   ├── .env.pi.example              # template → /etc/amr-bridge.env on the Pi
+│   └── AGENT_SETUP_AND_INTEGRATION.md
 ├── config/
 │   ├── ekf.yaml                     # robot_localization fusion (audited timestamps)
 │   ├── nav2_params.yaml             # Nav2 stack tuning

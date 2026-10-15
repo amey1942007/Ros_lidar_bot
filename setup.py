@@ -4,6 +4,28 @@ from glob import glob
 
 package_name = 'Ros_lidar_bot'
 
+
+def _amr_bridge_data_files():
+    """Install vendored amr-bridge into share so launch can set PYTHONPATH."""
+    entries = []
+    root = 'amr-bridge'
+    if not os.path.isdir(root):
+        return entries
+    for dirpath, _dirnames, filenames in os.walk(root):
+        # Skip local venvs / caches if present
+        parts = set(dirpath.split(os.sep))
+        if '.venv' in parts or '__pycache__' in parts or '.git' in parts:
+            continue
+        files = [
+            os.path.join(dirpath, f)
+            for f in filenames
+            if not f.endswith('.pyc') and f != '.env.pi'
+        ]
+        if files:
+            entries.append((os.path.join('share', package_name, dirpath), files))
+    return entries
+
+
 setup(
     name=package_name,
     version='0.0.0',
@@ -13,7 +35,8 @@ setup(
         ('share/' + package_name + '/launch', glob('launch/*.py')),
         ('share/' + package_name + '/config', glob('config/*.yaml')),
         ('share/' + package_name + '/description', glob('description/*.xacro')),
-        ('share/ament_index/resource_index/packages',['resource/' + package_name]),
+        ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
+        *_amr_bridge_data_files(),
     ],
 
     install_requires=['setuptools'],

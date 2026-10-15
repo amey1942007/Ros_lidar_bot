@@ -30,6 +30,14 @@ def _launch_setup(context, *args, **kwargs):
         "true",
         "yes",
     )
+    enable_amr_bridge = LaunchConfiguration("enable_amr_bridge").perform(context).lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    amr_bot_id = LaunchConfiguration("amr_bot_id").perform(context)
+    amr_bridge_python = LaunchConfiguration("amr_bridge_python").perform(context)
+    amr_bridge_env = LaunchConfiguration("amr_bridge_env").perform(context)
 
     out = "screen" if verbose else "log"
     # FATAL = only crashes; keeps the dashboard TTY quiet.
@@ -386,6 +394,24 @@ def _launch_setup(context, *args, **kwargs):
         # Nav2 starts after SLAM's map and map→odom transform are available.
         TimerAction(period=8.0, actions=[nav2]),
     ])
+
+    # ── Cloud bridge → https://amrslam.tech/control (after dashboard :8080) ─
+    # Skips cleanly if /etc/amr-bridge.env is missing secrets.
+    if enable_amr_bridge:
+        bridge = IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(pkg_share, "launch", "amr_bridge.launch.py")
+            ),
+            launch_arguments={
+                "bot_id": amr_bot_id,
+                "env_file": amr_bridge_env,
+                "dashboard": "http://127.0.0.1:8080",
+                "gamepad": "http://127.0.0.1:8765",
+                "python": amr_bridge_python,
+            }.items(),
+        )
+        actions.append(TimerAction(period=5.0, actions=[bridge]))
+
     return actions
 
 
@@ -405,6 +431,26 @@ def generate_launch_description():
             "use_joystick",
             default_value="auto",
             description="Joystick teleop mode: auto (detects /dev/input/js0), true (force gamepad), or false (force keyboard teleop).",
+        ),
+        DeclareLaunchArgument(
+            "enable_amr_bridge",
+            default_value="true",
+            description="If true, start amr_telemetry_bridge (cloud → amrslam.tech/control).",
+        ),
+        DeclareLaunchArgument(
+            "amr_bot_id",
+            default_value="hardware-bot",
+            description="Supabase /control bot id: hardware-bot | amr4",
+        ),
+        DeclareLaunchArgument(
+            "amr_bridge_env",
+            default_value="/etc/amr-bridge.env",
+            description="Pi secrets file for the cloud bridge (chmod 600).",
+        ),
+        DeclareLaunchArgument(
+            "amr_bridge_python",
+            default_value="python3",
+            description="Python for the bridge (prefer amr-bridge/.venv/bin/python on the Pi).",
         ),
         OpaqueFunction(function=_launch_setup),
     ])
