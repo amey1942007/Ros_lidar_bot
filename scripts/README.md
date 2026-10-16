@@ -45,9 +45,10 @@ Run the robot without the bridge:
 ~/run_robot_with_bridge.sh enable_amr_bridge:=false
 ```
 
-Return the repo to the branch and commit saved on the first run:
+Put the repo back on the commit saved on the first run:
 
 ```bash
-git -C ~/Desktop/ros2_ws/src/Ros_lidar_bot checkout "$(cat ~/amr_bridge_rollback_branch.txt)"
 git -C ~/Desktop/ros2_ws/src/Ros_lidar_bot checkout "$(cat ~/amr_bridge_rollback_commit.txt)"
 ```
+
+`~/amr_bridge_rollback_branch.txt` is only the branch name from that first run. You do not need a second checkout.

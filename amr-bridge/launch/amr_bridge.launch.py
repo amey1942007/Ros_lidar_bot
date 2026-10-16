@@ -169,9 +169,9 @@ def _launch_bridge_body(context):
         ))
         file_env = {}
 
-    # File overrides process env. Drop ROS PYTHONPATH / PYTHONHOME so they
-    # cannot shadow the venv. additional_env merges onto the parent environment,
-    # so PYTHONPATH must be set (not merely omitted) to replace the ROS path.
+    # File overrides process env. This dict is the child's entire environment
+    # (ExecuteProcess env=, not additional_env). additional_env is merged onto
+    # the parent, so omitting PYTHONPATH / PYTHONHOME would not remove them.
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME")}
     env.update(file_env)
     # bot_id's default is non-empty, so the launch arg overrides AMR_BOT_ID.
@@ -211,23 +211,26 @@ def _launch_bridge_body(context):
     env["PYTHONPATH"] = str(bridge_root)
     env["PYTHONUNBUFFERED"] = "1"
 
+    # Same isolated env the process will get: venv imports, and the bridge
+    # package via PYTHONPATH (not the ROS site-packages).
+    probe_code = "import supabase, httpx, amr_telemetry_bridge"
     try:
         probe = subprocess.run(
-            [python_exe, "-c", "import supabase, httpx"],
+            [python_exe, "-c", probe_code],
             env=env,
             capture_output=True,
             timeout=20,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return notes + [_skipped(
-            f"{python_exe} cannot import supabase/httpx ({exc})",
+            f"{python_exe} cannot import supabase/httpx/amr_telemetry_bridge ({exc})",
             "create the venv: see amr-bridge/PI_SETUP.md",
         )]
     if probe.returncode != 0:
         err = (probe.stderr or b"").decode("utf-8", "replace").strip().splitlines()
         first = err[0] if err else f"exit {probe.returncode}"
         return notes + [_skipped(
-            f"{python_exe} cannot import supabase/httpx ({first})",
+            f"{python_exe} cannot import supabase/httpx/amr_telemetry_bridge ({first})",
             "create the venv: see amr-bridge/PI_SETUP.md",
         )]
 
@@ -239,7 +242,7 @@ def _launch_bridge_body(context):
             cmd=cmd,
             name="amr_telemetry_bridge",
             output="screen",
-            additional_env=env,
+            env=env,
             respawn=True,
             respawn_delay=3.0,
         ),

@@ -130,7 +130,7 @@ Setup finished. Your only manual step:
   2) ~/run_robot_with_bridge.sh
 Then check: ps aux | grep amr_telemetry_bridge
             amrslam.tech/control -> pick "Hardware bot" -> online in ~3 s
-Rollback: ~/run_robot_with_bridge.sh enable_amr_bridge:=false   (bridge off)
-          git -C $REPO checkout "\$(cat ~/amr_bridge_rollback_branch.txt)"
-          git -C $REPO checkout "\$(cat ~/amr_bridge_rollback_commit.txt)"
+Rollback (bridge off): ~/run_robot_with_bridge.sh enable_amr_bridge:=false
+Rollback (repo):       git -C $REPO checkout "\$(cat ~/amr_bridge_rollback_commit.txt)"
+                       # branch you were on: \$(cat ~/amr_bridge_rollback_branch.txt)
 DONE
