@@ -78,6 +78,35 @@ Browsers request `full` (10 Hz + lidar/camera/3D) or `board` (1 Hz vitals). When
 
 Legacy public topics (flag `AMR_PUBLIC_CHANNEL`, default off): `amr-bot-amr4`, `amr-bot-hardware-bot`. Events: `telemetry`, `map`, `log`, `hb`, `command`.
 
-Private topics: `bot:<id>:status` (bridge sends `telemetry`, `map`, `log`, `hb`), `bot:<id>:cmd` and `bot:<id>:cmdq` (bridge receives `command`), `bot:<id>:ctl` (bridge receives `control`). Sign-in uses `AMR_BRIDGE_EMAIL` / `AMR_BRIDGE_PASSWORD`. Motion still goes out through the dashboard and gamepad HTTP APIs onto `/cmd_vel`.
+Private topics: `bot:<id>:status` (bridge sends `telemetry`, `map`, `log`, `hb`, `cmd_ack`), `bot:<id>:cmd` and `bot:<id>:cmdq` (bridge receives `command`), `bot:<id>:ctl` (bridge receives `control`). Sign-in uses `AMR_BRIDGE_EMAIL` / `AMR_BRIDGE_PASSWORD`. Motion still goes out through the dashboard and gamepad HTTP APIs onto `/cmd_vel`.
+
+## Command acks
+
+The site opens `bot:<id>:cmd` as a private channel with broadcast ack. That transport ack only means the realtime server took the broadcast. The bridge still answers **every** command on `bot:<id>:cmd` and `bot:<id>:cmdq` with one application event:
+
+- topic: `bot:<id>:status`
+- event: `cmd_ack`
+- payload: `{seq: number, ok: boolean, reason?: string}`
+
+`seq` is the command seq. A message with no integer seq is acked as `0`. `reason` is omitted when `ok` is true. It is one of:
+
+| reason | when |
+| --- | --- |
+| `bad_token` | `:cmd` token does not match, or a token carried on `:cmdq` does not match |
+| `bad_sender` | `:cmdq` sender is missing or is not the current controller |
+| `stale_epoch` | epoch is missing or is not the current epoch |
+| `lower_seq` | seq is below the last accepted seq and the restart gap has not elapsed |
+| `duplicate_seq` | seq repeats the last accepted seq for this epoch |
+| `no_lease` | lease is missing or already expired |
+| `invalid_payload` | body, bot id, timestamp, or a field value is not usable |
+| `unknown_type` | `type` is not a command the bridge handles |
+| `estop_hold` | joy, nudge, or drive ignored after an e-stop, or dropped because an e-stop cleared it before it was checked |
+| `rate_limited` | the callback cap was full, or a newer stick replaced this one before it was checked |
+
+E-stop still skips seq, timestamp, and lease checks. It still requires the bot, the current epoch, and the token (`:cmd`) or sender (`:cmdq`). An accepted e-stop is acked `ok: true` only after the stop/zero posts have been scheduled. The ack is queued at that moment, while those posts and any joy POST already in flight are still running. A failed stop is retried; that retry does not send a second ack.
+
+Ack sends run on their own task. The queue holds at most 64 and drops the oldest. E-stop and motion only append. A stalled realtime send stays on the ack task. The ack and the logs carry `seq`, `ok`, and `reason` only.
+
+Motion is unchanged: the dashboard and gamepad HTTP APIs publish `/cmd_vel`, and `safety_stop` is still the only publisher of `/cmd_vel_safe`.
 
 Env names (values stay in `/etc/amr-bridge.env`, never in git): `AMR_SUPABASE_URL`, `AMR_SUPABASE_KEY` (publishable), `AMR_BRIDGE_TOKEN`, `AMR_BRIDGE_EMAIL`, `AMR_BRIDGE_PASSWORD`, `AMR_PUBLIC_CHANNEL`. Do not set `AMR_SUPABASE_SERVICE_KEY`.

@@ -37,6 +37,7 @@ from amr_telemetry_bridge.control import (  # noqa: E402
 from amr_telemetry_bridge.protocol import (  # noqa: E402
     BOARD_RATE_HZ,
     BOT_IDS,
+    CMD_ACK_EVENT,
     CMD_EVENT,
     CTL_EVENT,
     FULL_RATE_HZ,
@@ -88,8 +89,9 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(private_topic("hardware-bot", "cmd"), "bot:hardware-bot:cmd")
         self.assertEqual(private_topic("hardware-bot", "cmdq"), "bot:hardware-bot:cmdq")
         self.assertEqual(private_topic("hardware-bot", "ctl"), "bot:hardware-bot:ctl")
-        self.assertEqual(STATUS_EVENTS, ("telemetry", "map", "log", "hb"))
+        self.assertEqual(STATUS_EVENTS, ("telemetry", "map", "log", "hb", "cmd_ack"))
         self.assertEqual(CMD_EVENT, "command")
+        self.assertEqual(CMD_ACK_EVENT, "cmd_ack")
         self.assertEqual(CTL_EVENT, "control")
         with self.assertRaises(ValueError):
             private_topic("hardware-bot", "presence")
@@ -960,6 +962,23 @@ class BridgeSourceSafetyTests(unittest.TestCase):
         self.assertIn("COMMAND_HTTP_TIMEOUT_S", src)
         self.assertIn("MAX_SCHEDULED_COMMANDS", src)
         self.assertIn('"/api/estop"', src)
+        self.assertIn("send_status", src)
+        self.assertIn("ACK_QUEUE_MAX", src)
+        self.assertIn("CMD_ACK_EVENT", src)
+        protocol = (BRIDGE_ROOT / "amr_telemetry_bridge" / "protocol.py").read_text()
+        self.assertIn('CMD_ACK_EVENT = "cmd_ack"', protocol)
+        readme = (BRIDGE_ROOT / "README.md").read_text()
+        self.assertIn("cmd_ack", readme)
+        for reason in (
+            "bad_token",
+            "stale_epoch",
+            "lower_seq",
+            "no_lease",
+            "invalid_payload",
+            "unknown_type",
+            "rate_limited",
+        ):
+            self.assertIn(f"`{reason}`", readme)
         control = (BRIDGE_ROOT / "amr_telemetry_bridge" / "control.py").read_text()
         self.assertIn("hmac.compare_digest", control)
         self.assertIn("sb_secret_", control)
@@ -1744,6 +1763,395 @@ class BridgeDispatchTests(unittest.TestCase):
             ])
         self.assertIn("service key", str(caught.exception))
         self.assertNotIn(secret, str(caught.exception))
+
+
+class CmdAckTests(unittest.TestCase):
+    """cmd_ack on bot:<id>:status for every private command."""
+
+    def _open(self):
+        bridge = _dispatch_bridge()
+        _arm_gate(bridge)
+        return bridge
+
+    def _assert_ack(self, payload, *, seq, ok, reason=None):
+        self.assertEqual(payload["seq"], seq)
+        self.assertIs(payload["ok"], ok)
+        if ok:
+            self.assertEqual(set(payload), {"seq", "ok"})
+        else:
+            self.assertEqual(set(payload), {"seq", "ok", "reason"})
+            self.assertEqual(payload["reason"], reason)
+
+    def test_accepted_joy_and_cmdq(self):
+        bridge = self._open()
+        try:
+            cmd = bridge._accept_motion(_cmd_env(1, _stick(0.4)), "cmd")
+            self.assertEqual(cmd["type"], "joy")
+            self._assert_ack(bridge._ack_q[-1], seq=1, ok=True)
+            cmdq = {
+                "sender": "user-1",
+                "epoch": 3,
+                "seq": 2,
+                "ts": int(time.time() * 1000),
+                "cmd": _stick(0.3),
+            }
+            self.assertEqual(bridge._accept_motion(cmdq, "cmdq")["type"], "joy")
+            self._assert_ack(bridge._ack_q[-1], seq=2, ok=True)
+            public = {
+                "botId": "hardware-bot",
+                "from": {"rank": 1},
+                "cmd": _stick(0.2),
+            }
+            self.assertIsNotNone(bridge._accept_motion(public, "public"))
+            self.assertEqual(len(bridge._ack_q), 2)
+        finally:
+            _close_bridge(bridge)
+
+    def test_accepted_nav_on_handler(self):
+        import asyncio
+
+        async def run():
+            bridge = self._open()
+            posts = []
+            bridge.dash.post = _recording_dash(posts)
+            try:
+                await bridge._handle_private_command(
+                    _cmd_env(6, {"type": "nav_goal", "x": 1.0, "y": 2.0}),
+                    "cmd",
+                )
+                self._assert_ack(bridge._ack_q[-1], seq=6, ok=True)
+                self.assertTrue(any(item[1] == "/api/nav_goal" for item in posts))
+            finally:
+                await bridge.dash.close()
+
+        asyncio.run(run())
+
+    def test_bad_token_on_cmd_and_cmdq(self):
+        bridge = self._open()
+        secret = "lease-token-secret"
+        try:
+            bridge._gate.apply_poll(
+                {
+                    "bot_id": "hardware-bot",
+                    "controller": "user-1",
+                    "epoch": 3,
+                    "lease_expires_at": time.time() + 3600,
+                },
+                {"epoch": 3, "token": secret},
+                time.monotonic(),
+            )
+            with self.assertLogs("amr_bridge", level="INFO") as captured:
+                env = _cmd_env(2, _stick(0.2))
+                env["token"] = "presented-token-value"
+                self.assertIsNone(bridge._accept_motion(env, "cmd"))
+                cmdq = {
+                    "sender": "user-1",
+                    "epoch": 3,
+                    "token": "presented-token-value",
+                    "seq": 3,
+                    "ts": int(time.time() * 1000),
+                    "cmd": _stick(0.2),
+                }
+                self.assertIsNone(bridge._accept_motion(cmdq, "cmdq"))
+            self._assert_ack(bridge._ack_q[0], seq=2, ok=False, reason="bad_token")
+            self._assert_ack(bridge._ack_q[1], seq=3, ok=False, reason="bad_token")
+            text = "\n".join(captured.output)
+            self.assertNotIn(secret, text)
+            self.assertNotIn("presented-token-value", text)
+            self.assertNotIn(secret, str(list(bridge._ack_q)))
+        finally:
+            _close_bridge(bridge)
+
+    def test_bad_sender(self):
+        bridge = self._open()
+        try:
+            env = {
+                "sender": "someone-else",
+                "epoch": 3,
+                "seq": 4,
+                "ts": int(time.time() * 1000),
+                "cmd": _stick(0.2),
+            }
+            self.assertIsNone(bridge._accept_motion(env, "cmdq"))
+            self._assert_ack(bridge._ack_q[-1], seq=4, ok=False, reason="bad_sender")
+        finally:
+            _close_bridge(bridge)
+
+    def test_stale_epoch(self):
+        bridge = self._open()
+        try:
+            env = _cmd_env(2, _stick(0.2))
+            env["epoch"] = 2
+            self.assertIsNone(bridge._accept_motion(env, "cmd"))
+            self._assert_ack(bridge._ack_q[-1], seq=2, ok=False, reason="stale_epoch")
+        finally:
+            _close_bridge(bridge)
+
+    def test_lower_seq_and_duplicate_seq(self):
+        bridge = self._open()
+        try:
+            self.assertIsNotNone(bridge._accept_motion(_cmd_env(5, _stick(0.2)), "cmd"))
+            bridge._ack_q.clear()
+            self.assertIsNone(bridge._accept_motion(_cmd_env(2, _stick(0.2)), "cmd"))
+            self._assert_ack(bridge._ack_q[-1], seq=2, ok=False, reason="lower_seq")
+            self.assertIsNone(bridge._accept_motion(_cmd_env(5, _stick(0.2)), "cmd"))
+            self._assert_ack(bridge._ack_q[-1], seq=5, ok=False, reason="duplicate_seq")
+        finally:
+            _close_bridge(bridge)
+
+    def test_no_lease_motion_estop_still_open(self):
+        bridge = self._open()
+        try:
+            bridge._gate.lease_expires_at = time.time() - 5
+            self.assertIsNone(bridge._accept_motion(_cmd_env(2, _stick(0.2)), "cmd"))
+            self._assert_ack(bridge._ack_q[-1], seq=2, ok=False, reason="no_lease")
+            # E-stop skips the lease. ok waits until the stop path starts.
+            self.assertTrue(bridge._accept_estop(_cmd_env(1, {"type": "estop"}), "cmd"))
+            self.assertEqual(len(bridge._ack_q), 1)
+        finally:
+            _close_bridge(bridge)
+
+    def test_invalid_payload(self):
+        import asyncio
+
+        async def run():
+            bridge = self._open()
+            try:
+                skewed = _cmd_env(4, _stick(0.2))
+                skewed["ts"] = float("nan")
+                self.assertIsNone(bridge._accept_motion(skewed, "cmd"))
+                self._assert_ack(bridge._ack_q[-1], seq=4, ok=False, reason="invalid_payload")
+                await bridge._handle_private_command({"epoch": 3, "token": "tok-1"}, "cmd")
+                self._assert_ack(bridge._ack_q[-1], seq=0, ok=False, reason="invalid_payload")
+                bridge._ack(
+                    {"seq": 7, "token": "lease-token-secret"},
+                    False,
+                    "lease-token-secret",
+                )
+                self._assert_ack(bridge._ack_q[-1], seq=7, ok=False, reason="invalid_payload")
+                self.assertNotIn("lease-token-secret", str(bridge._ack_q[-1]))
+            finally:
+                await bridge.dash.close()
+
+        asyncio.run(run())
+
+    def test_unknown_type(self):
+        bridge = self._open()
+        try:
+            self.assertIsNone(bridge._accept_motion(_cmd_env(3, {"type": "teleport"}), "cmd"))
+            self._assert_ack(bridge._ack_q[-1], seq=3, ok=False, reason="unknown_type")
+        finally:
+            _close_bridge(bridge)
+
+    def test_estop_hold(self):
+        bridge = self._open()
+        try:
+            self.assertTrue(bridge._accept_estop(_cmd_env(3, {"type": "estop"}), "cmd"))
+            self.assertEqual(len(bridge._ack_q), 0)
+            self.assertIsNone(bridge._accept_motion(_cmd_env(3, _stick(0.4)), "cmd"))
+            self._assert_ack(bridge._ack_q[-1], seq=3, ok=False, reason="estop_hold")
+        finally:
+            _close_bridge(bridge)
+
+    def test_rate_limited_when_cap_is_full_and_when_stick_is_replaced(self):
+        import asyncio
+
+        from amr_telemetry_bridge.bridge import ACK_QUEUE_MAX, MAX_SCHEDULED_COMMANDS
+
+        bridge = self._open()
+        try:
+            bridge._offer_motion(_cmd_env(1, _stick(0.5)), "cmd")
+            bridge._offer_motion(_cmd_env(2, _stick(0.6)), "cmd")
+            self._assert_ack(bridge._ack_q[-1], seq=1, ok=False, reason="rate_limited")
+            self.assertEqual(bridge._motion_pending[0]["seq"], 2)
+            bridge._ack_q.clear()
+            for i in range(ACK_QUEUE_MAX + 5):
+                bridge._ack({"seq": i, "token": "lease-token-secret"}, False, "rate_limited")
+            self.assertEqual(len(bridge._ack_q), ACK_QUEUE_MAX)
+            self.assertEqual(bridge._ack_q[0]["seq"], 5)
+            self.assertNotIn("lease-token-secret", str(list(bridge._ack_q)))
+        finally:
+            _close_bridge(bridge)
+
+        async def run():
+            bridge = self._open()
+            bridge._loop = asyncio.get_running_loop()
+            release = asyncio.Event()
+
+            async def hang():
+                await release.wait()
+
+            try:
+                for _ in range(MAX_SCHEDULED_COMMANDS):
+                    self.assertEqual(bridge._schedule(hang()), "queued")
+                await asyncio.sleep(0.05)
+                secret = "lease-token-secret"
+                env = _cmd_env(9, {"type": "nav_goal", "x": 1, "y": 1})
+                env["token"] = secret
+                bridge._queue_private(env, "cmd")
+                self._assert_ack(bridge._ack_q[-1], seq=9, ok=False, reason="rate_limited")
+                self.assertNotIn(secret, str(bridge._ack_q[-1]))
+                # Loop is down: the command is not claimed as rate_limited.
+                idle = self._open()
+                try:
+                    idle._queue_private(_cmd_env(1, {"type": "nav_cancel"}), "cmd")
+                    self.assertEqual(len(idle._ack_q), 0)
+                finally:
+                    await idle.dash.close()
+            finally:
+                release.set()
+                await asyncio.sleep(0.05)
+                await bridge.dash.close()
+
+        asyncio.run(run())
+
+    def test_cmd_ack_stays_on_status_channel(self):
+        import asyncio
+
+        async def run():
+            bridge = self._open()
+
+            class _Hub:
+                def __init__(self):
+                    self.status = []
+                    self.public = []
+
+                def send_status(self, event, payload):
+                    self.status.append((event, dict(payload)))
+
+                def send(self, event, payload):
+                    self.public.append((event, dict(payload)))
+
+            hub = _Hub()
+            bridge._hub = hub
+            try:
+                await bridge._broadcast("cmd_ack", {"seq": 1, "ok": True})
+                await bridge._broadcast("hb", {"t": 1})
+                self.assertEqual(hub.status, [("cmd_ack", {"seq": 1, "ok": True})])
+                self.assertEqual(hub.public, [("hb", {"t": 1})])
+            finally:
+                await bridge.dash.close()
+
+        asyncio.run(run())
+
+    def test_estop_ack_not_blocked_by_stalled_joy(self):
+        import asyncio
+        import threading
+
+        async def run():
+            bridge = self._open()
+            bridge._loop = asyncio.get_running_loop()
+            posts = []
+            order = []
+            joy_entered = asyncio.Event()
+            release_joy = asyncio.Event()
+            release_send = threading.Event()
+            estop_seq = 1
+            secret = "lease-token-secret"
+            bridge._gate.apply_poll(
+                {
+                    "bot_id": "hardware-bot",
+                    "controller": "user-1",
+                    "epoch": 3,
+                    "lease_expires_at": time.time() + 3600,
+                },
+                {"epoch": 3, "token": secret},
+                time.monotonic(),
+            )
+
+            class _Hub:
+                def __init__(self):
+                    self.sent = []
+
+                def send_status(self, event, payload):
+                    self.sent.append((event, dict(payload)))
+                    if (
+                        event == "cmd_ack"
+                        and payload.get("seq") == estop_seq
+                        and payload.get("ok") is True
+                    ):
+                        order.append("ack")
+                    release_send.wait(timeout=3)
+
+                def send(self, event, payload):
+                    raise AssertionError(event)
+
+            hub = _Hub()
+            bridge._hub = hub
+
+            class _Resp:
+                def raise_for_status(self):
+                    return None
+
+            async def dash_post(path, payload=None, timeout=None):
+                posts.append(("dash", path, payload, timeout))
+                return {"ok": True}
+
+            async def http_post(url, json=None, timeout=None):
+                joy_entered.set()
+                await release_joy.wait()
+                posts.append(("http", url, json, timeout))
+                return _Resp()
+
+            original_http = bridge.dash._http
+            bridge.dash.post = dash_post
+            bridge.dash._http = _RecordingHttp(http_post)
+            old_gamepad = os.environ.get("AMR_GAMEPAD_URL")
+            os.environ["AMR_GAMEPAD_URL"] = "http://127.0.0.1:8765"
+            original_estop = bridge._estop_once
+
+            async def wrapped(accepted=None):
+                order.append("started")
+                return await original_estop(accepted)
+
+            bridge._estop_once = wrapped
+            motion_task = asyncio.create_task(bridge._motion_slot_loop())
+            estop_task = asyncio.create_task(bridge._estop_loop())
+            ack_task = asyncio.create_task(bridge._ack_loop())
+            try:
+                joy = _cmd_env(5, _stick(0.8))
+                joy["token"] = secret
+                bridge._queue_private(joy, "cmd")
+                await asyncio.wait_for(joy_entered.wait(), timeout=1.0)
+                bridge._gate.lease_expires_at = time.time() - 10
+                bridge._queue_private(
+                    {
+                        "epoch": 3,
+                        "token": secret,
+                        "seq": estop_seq,
+                        "ts": float("nan"),
+                        "cmd": {"type": "estop"},
+                    },
+                    "cmd",
+                )
+                await _wait_until(lambda: any(item[1] == "/api/estop" for item in posts))
+                self.assertFalse(release_joy.is_set())
+                self.assertFalse(release_send.is_set())
+                self.assertIn("started", order)
+                self.assertNotIn("ack", order)
+                release_send.set()
+                await _wait_until(lambda: "ack" in order)
+                self.assertFalse(release_joy.is_set())
+                self.assertLess(order.index("started"), order.index("ack"))
+                estop_ack = next(
+                    item[1] for item in hub.sent
+                    if item[0] == "cmd_ack" and item[1].get("seq") == estop_seq
+                )
+                self._assert_ack(estop_ack, seq=estop_seq, ok=True)
+                blob = str(hub.sent)
+                self.assertNotIn(secret, blob)
+                self.assertFalse(any(
+                    item[0] == "cmd_ack" and item[1].get("seq") == estop_seq and item[1].get("ok") is False
+                    for item in hub.sent
+                ))
+            finally:
+                release_send.set()
+                release_joy.set()
+                await _stop_loops(bridge, motion_task, original_http, old_gamepad, estop_task)
+                ack_task.cancel()
+                await asyncio.gather(ack_task, return_exceptions=True)
+
+        asyncio.run(run())
 
 
 if __name__ == "__main__":

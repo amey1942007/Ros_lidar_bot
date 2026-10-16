@@ -8,6 +8,10 @@ through that API (or the gamepad HTTP API). Both publish /cmd_vel, so
 safety_stop stays in front of the motors. This process never publishes
 /cmd_vel_safe.
 
+Private commands on bot:<id>:cmd and bot:<id>:cmdq are answered with one
+cmd_ack broadcast on bot:<id>:status. That send is queued and is not awaited
+by e-stop or motion. The lease token is never copied into the ack or into logs.
+
 Env (see /etc/amr-bridge.env — also loaded by amr_bridge.launch.py):
   AMR_BOT_ID=hardware-bot
   AMR_SUPABASE_URL=https://….supabase.co
@@ -43,6 +47,7 @@ import httpx
 
 from . import __version__
 from .control import (
+    ACK_REJECTION_REASONS,
     ControlTracker,
     MotionGuard,
     clamp_poll_interval,
@@ -58,6 +63,7 @@ from .protocol import (
     BOARD_RATE_HZ,
     BOT_IDS,
     BRIDGE_VERSION,
+    CMD_ACK_EVENT,
     CMD_EVENT,
     CTL_EVENT,
     FULL_RATE_HZ,
@@ -87,6 +93,10 @@ ESTOP_QUEUE_MAX = 16
 # for 1.5 s. Ignore stick commands for this long after an accepted e-stop
 # unless their seq is newer than the e-stop's.
 ESTOP_MOTION_HOLD_S = 1.0
+# cmd_ack broadcasts waiting on Realtime. Oldest falls off the left so a new
+# e-stop ack is kept when the sender is stalled. Enqueue never waits.
+ACK_QUEUE_MAX = 64
+_PRIVATE_SOURCES = ("cmd", "cmdq")
 
 
 def _public_rank(env: Any) -> int:
@@ -274,6 +284,13 @@ class RealtimeHub:
             return
         if self._public_ready and self._public_channel is not None:
             self._send_one(self._public_channel, event, payload)
+        if self._private_ready and self._status_channel is not None:
+            self._send_one(self._status_channel, event, payload)
+
+    def send_status(self, event: str, payload: dict) -> None:
+        """Broadcast on bot:<id>:status only. cmd_ack stays off the public topic."""
+        if event not in STATUS_EVENTS:
+            return
         if self._private_ready and self._status_channel is not None:
             self._send_one(self._status_channel, event, payload)
 
@@ -619,6 +636,10 @@ class Bridge:
         self._estop_q: deque[tuple[dict, str]] = deque(maxlen=ESTOP_QUEUE_MAX)
         self._estop_needed = False
         self._estop_wake = asyncio.Event()
+        # cmd_ack is fire-and-forget. The e-stop and motion tasks only append.
+        self._ack_lock = threading.Lock()
+        self._ack_q: deque[dict] = deque(maxlen=ACK_QUEUE_MAX)
+        self._ack_wake = asyncio.Event()
         # :ctl is coalesced and is not subject to the callback cap.
         self._ctl_lock = threading.Lock()
         self._ctl_latest: dict | None = None
@@ -642,7 +663,9 @@ class Bridge:
         if typ in _MOTION_SLOT_TYPES:
             self._offer_motion(env, source)
             return
-        self._schedule(self._handle_private_command(env, source))
+        queued = self._schedule(self._handle_private_command(env, source))
+        if queued == "capped":
+            self._ack(env, False, "rate_limited")
 
     def _queue_control(self, env: dict) -> None:
         with self._ctl_lock:
@@ -655,8 +678,12 @@ class Bridge:
 
     def _offer_motion(self, env: dict, source: str) -> None:
         with self._motion_lock:
+            dropped = self._motion_pending
             self._motion_gen += 1
             self._motion_pending = (env, source)
+        if dropped is not None and dropped[1] in _PRIVATE_SOURCES:
+            # Replaced before it was checked. Seq is not consumed.
+            self._ack(dropped[0], False, "rate_limited")
         self._signal(self._motion_wake)
 
     def _take_motion(self) -> tuple[tuple[dict, str] | None, int, int]:
@@ -675,8 +702,11 @@ class Bridge:
         whenever a post is slower than the stick rate.
         """
         with self._motion_lock:
+            dropped = self._motion_pending
             self._estop_gen += 1
             self._motion_pending = None
+        if dropped is not None and dropped[1] in _PRIVATE_SOURCES:
+            self._ack(dropped[0], False, "estop_hold")
 
     def _motion_current(self, gen: int) -> bool:
         with self._motion_lock:
@@ -732,15 +762,16 @@ class Bridge:
         # Subscribe is not contact. note_contact runs after a poll or a command.
         del up
 
-    def _schedule(self, coro) -> None:
+    def _schedule(self, coro) -> str:
         """Hop a Realtime callback onto the bridge loop, with a hard cap.
 
         A hung HTTP call used to leave every later callback queued behind it.
-        Past the cap the coroutine is closed and dropped.
+        Past the cap the coroutine is closed and dropped. Returns ``queued``,
+        ``capped``, or ``idle`` (loop not running). Callers ack ``capped``.
         """
         if not (self._loop and self._loop.is_running()):
             coro.close()
-            return
+            return "idle"
         with self._sched_lock:
             if self._scheduled >= MAX_SCHEDULED_COMMANDS:
                 coro.close()
@@ -748,7 +779,7 @@ class Bridge:
                     "dropping realtime callback; %s already scheduled",
                     MAX_SCHEDULED_COMMANDS,
                 )
-                return
+                return "capped"
             self._scheduled += 1
 
         async def _bounded() -> None:
@@ -759,6 +790,7 @@ class Bridge:
                     self._scheduled -= 1
 
         asyncio.run_coroutine_threadsafe(_bounded(), self._loop)
+        return "queued"
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -784,6 +816,7 @@ class Bridge:
             self._watchdog_loop(),
             self._motion_slot_loop(),
             self._estop_loop(),
+            self._ack_loop(),
         ]
         if self.private_channel:
             tasks.append(self._control_poll_loop())
@@ -841,12 +874,23 @@ class Bridge:
     async def _handle_private_command(self, env: dict, source: str) -> None:
         now_s = time.time()
         now_mono = time.monotonic()
-        result = self._gate.verify(env, source=source, now_s=now_s, now_mono=now_mono)
+        try:
+            result = self._gate.verify(env, source=source, now_s=now_s, now_mono=now_mono)
+        except Exception:
+            log.exception("command verify failed")
+            self._ack(env, False, "invalid_payload")
+            return
         if not result.ok:
             log.info("rejected %s command type=%s: %s", source, result.cmd_type, result.reason)
+            self._ack_rejection(env, result)
+            return
+        cmd = result.cmd or {}
+        if cmd.get("type") == "estop":
+            # The e-stop loop acks ok only after the stop path has started.
+            self._offer_estop(env, source)
             return
         log.info("accepted %s command type=%s", source, result.cmd_type)
-        cmd = result.cmd or {}
+        self._ack(env, True, None)
         try:
             if cmd.get("type") == "set_rate":
                 self._apply_rate(cmd)
@@ -886,17 +930,31 @@ class Bridge:
             return None
         if self._motion_held(env):
             log.info("motion ignored after e-stop")
+            if source in _PRIVATE_SOURCES:
+                self._ack(env, False, "estop_hold")
             return None
-        result = self._gate.verify(
-            env, source=source, now_s=time.time(), now_mono=time.monotonic(),
-        )
+        try:
+            result = self._gate.verify(
+                env, source=source, now_s=time.time(), now_mono=time.monotonic(),
+            )
+        except Exception:
+            log.exception("motion verify failed")
+            if source in _PRIVATE_SOURCES:
+                self._ack(env, False, "invalid_payload")
+            return None
         if not result.ok:
             log.info("rejected %s command type=%s: %s", source, result.cmd_type, result.reason)
+            if source in _PRIVATE_SOURCES:
+                self._ack_rejection(env, result)
             return None
         cmd = result.cmd or {}
         if cmd.get("type") not in _MOTION_SLOT_TYPES:
+            if source in _PRIVATE_SOURCES:
+                self._ack(env, False, "unknown_type")
             return None
         log.info("accepted %s command type=%s", source, cmd.get("type"))
+        if source in _PRIVATE_SOURCES:
+            self._ack(env, True, None)
         if motion_command(cmd) and not self._gate.fault_active(time.time(), time.monotonic()):
             self._guard.set_hard(False)
             self._guard.release_for_motion()
@@ -918,11 +976,22 @@ class Bridge:
             return True
         if not isinstance(env, dict):
             return False
-        result = self._gate.verify(
-            env, source=source, now_s=time.time(), now_mono=time.monotonic(),
-        )
+        try:
+            result = self._gate.verify(
+                env, source=source, now_s=time.time(), now_mono=time.monotonic(),
+            )
+        except Exception:
+            log.exception("e-stop verify failed")
+            if source in _PRIVATE_SOURCES:
+                self._ack(env, False, "invalid_payload")
+            return False
         if not result.ok or result.cmd_type != "estop":
             log.info("rejected %s e-stop: %s", source, result.reason)
+            if source in _PRIVATE_SOURCES:
+                if result.ok:
+                    self._ack(env, False, "unknown_type")
+                else:
+                    self._ack_rejection(env, result)
             return False
         log.warning("e-stop accepted on %s", source)
         self._arm_estop_hold(env)
@@ -948,6 +1017,8 @@ class Bridge:
                     return
                 return
         if self._stop.is_set() or not self._motion_current(gen) or not self._estop_current(estop_gen):
+            if item is not None and not self._stop.is_set():
+                self._ack_skipped_motion(item, estop_gen)
             return
         accepted_mono = time.monotonic()
         cmd = self._accept_motion(item[0], item[1])
@@ -997,18 +1068,25 @@ class Bridge:
                     return
                 return
         accepted = False
+        accepted_private: list[dict] = []
         for env, source in batch:
             try:
-                if self._accept_estop(env, source):
-                    accepted = True
+                took = self._accept_estop(env, source)
             except Exception:
                 log.exception("e-stop accept failed")
+                if source in _PRIVATE_SOURCES:
+                    self._ack(env, False, "invalid_payload")
+                continue
+            if took:
+                accepted = True
+                if source in _PRIVATE_SOURCES:
+                    accepted_private.append(env)
         if accepted:
             self._estop_needed = True
             self._clear_motion()
         if not self._estop_needed:
             return
-        if await self._estop_once():
+        if await self._estop_once(accepted_private):
             self._estop_needed = False
         else:
             self._estop_wake.clear()
@@ -1017,8 +1095,13 @@ class Bridge:
             except asyncio.TimeoutError:
                 pass
 
-    async def _estop_once(self) -> bool:
-        """Dashboard e-stop, zero nudge, and zero joy, all at once."""
+    async def _estop_once(self, accepted: list[dict] | None = None) -> bool:
+        """Dashboard e-stop, zero nudge, and zero joy, all at once.
+
+        Accepted private e-stops are acked after those posts are scheduled
+        and before this coroutine waits on them. A slow joy POST cannot delay
+        the ack, and the ack send itself runs on ``_ack_loop``.
+        """
         timeout = COMMAND_HTTP_TIMEOUT_S
 
         async def _stop_dashboard() -> None:
@@ -1040,9 +1123,23 @@ class Bridge:
             )
             response.raise_for_status()
 
-        results = await asyncio.gather(
-            _stop_dashboard(), _zero_nudge(), _zero_joy(), return_exceptions=True,
+        posts = (
+            asyncio.create_task(_stop_dashboard()),
+            asyncio.create_task(_zero_nudge()),
+            asyncio.create_task(_zero_joy()),
         )
+        try:
+            # Posts are scheduled. Ack before waiting so a joy POST that never
+            # returns cannot hold the acknowledgement.
+            for env in accepted or ():
+                self._ack(env, True, None)
+            results = await asyncio.gather(*posts, return_exceptions=True)
+        finally:
+            pending = [task for task in posts if not task.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
         ok = True
         for item in results:
             if isinstance(item, Exception):
@@ -1185,8 +1282,72 @@ class Bridge:
         self._last_zero_mono = time.monotonic()
         await self._try_zero(gen, ",".join(reasons))
 
+    def _ack(self, env: Any, ok: bool, reason: str | None) -> None:
+        """Queue one cmd_ack. Does not send, and does not copy the token."""
+        seq = command_seq(env)
+        if seq is None:
+            seq = 0
+        payload: dict[str, Any] = {"seq": int(seq), "ok": bool(ok)}
+        if not ok:
+            if reason not in ACK_REJECTION_REASONS:
+                reason = "invalid_payload"
+            payload["reason"] = reason
+        if payload["ok"]:
+            log.info("cmd_ack seq=%s ok=true", payload["seq"])
+        else:
+            log.info("cmd_ack seq=%s ok=false reason=%s", payload["seq"], payload["reason"])
+        self._enqueue_ack(payload)
+
+    def _ack_rejection(self, env: Any, result) -> None:
+        self._ack(env, False, self._gate.ack_rejection_reason(env, result))
+
+    def _ack_skipped_motion(self, item: tuple[dict, str], estop_gen: int) -> None:
+        env, source = item
+        if source not in _PRIVATE_SOURCES:
+            return
+        if not self._estop_current(estop_gen):
+            self._ack(env, False, "estop_hold")
+        else:
+            self._ack(env, False, "rate_limited")
+
+    def _enqueue_ack(self, payload: dict) -> None:
+        with self._ack_lock:
+            self._ack_q.append(payload)
+        self._signal(self._ack_wake)
+
+    def _pop_ack(self) -> dict | None:
+        with self._ack_lock:
+            if not self._ack_q:
+                return None
+            return self._ack_q.popleft()
+
+    async def _ack_loop(self) -> None:
+        """Send cmd_ack off the e-stop and motion tasks."""
+        while not self._stop.is_set():
+            try:
+                await self._ack_turn()
+            except Exception:
+                log.exception("cmd_ack failed")
+
+    async def _ack_turn(self) -> None:
+        payload = self._pop_ack()
+        if payload is None:
+            self._ack_wake.clear()
+            payload = self._pop_ack()
+            if payload is None:
+                try:
+                    await asyncio.wait_for(self._ack_wake.wait(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    return
+                return
+        await self._broadcast(CMD_ACK_EVENT, payload)
+
     async def _broadcast(self, event: str, payload: dict) -> None:
         if not self._hub:
+            return
+        # cmd_ack is private status only, even if a caller forgets.
+        if event == CMD_ACK_EVENT:
+            await asyncio.to_thread(self._hub.send_status, event, payload)
             return
         await asyncio.to_thread(self._hub.send, event, payload)
 
