@@ -106,6 +106,24 @@ _PRIVATE_CHANNEL_PARAMS = {
         "private": True,
     },
 }
+# Public telemetry join. Explicit so it does not depend on library defaults.
+_PUBLIC_CHANNEL_PARAMS = {
+    "config": {
+        "broadcast": {"ack": False, "self": False},
+        "private": False,
+    },
+}
+# First send failure of each exception type, then quiet for this long.
+SEND_FAIL_LOG_S = 30.0
+# Optional REST broadcast ceiling (AMR_PUBLIC_REST=1).
+REST_BROADCAST_MIN_S = 0.2
+REST_BROADCAST_TIMEOUT_S = 2.0
+# Oversize warning, once per kind per minute.
+OVERSIZE_LOG_S = 60.0
+STATS_LOG_S = 10.0
+SCAN_MAX_POINTS_DEFAULT = 90
+SCAN_HZ_DEFAULT = 5
+TELEMETRY_MAX_BYTES_DEFAULT = 200_000
 _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
 _SECRET_FIELD_RE = re.compile(
     r"(?i)("
@@ -147,6 +165,60 @@ def _public_rank(env: Any) -> int:
 def _env(name: str, default: str | None = None) -> str | None:
     v = os.environ.get(name, default)
     return v.strip() if isinstance(v, str) and v.strip() else default
+
+
+def _clamp_int(raw: str | None, default: int, lo: int, hi: int) -> int:
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        value = default
+    return max(lo, min(hi, value))
+
+
+def _scan_max_points() -> int:
+    return _clamp_int(_env("AMR_SCAN_MAX_POINTS", str(SCAN_MAX_POINTS_DEFAULT)), SCAN_MAX_POINTS_DEFAULT, 20, 360)
+
+
+def _scan_hz() -> int:
+    return _clamp_int(_env("AMR_SCAN_HZ", str(SCAN_HZ_DEFAULT)), SCAN_HZ_DEFAULT, 1, 10)
+
+
+def _telemetry_max_bytes() -> int:
+    return _clamp_int(
+        _env("AMR_TELEMETRY_MAX_BYTES", str(TELEMETRY_MAX_BYTES_DEFAULT)),
+        TELEMETRY_MAX_BYTES_DEFAULT,
+        20_000,
+        250_000,
+    )
+
+
+def _json_size(payload: dict) -> int:
+    return len(json.dumps(payload, separators=(",", ":"), default=str))
+
+
+def _downsample_scan(scan: Any, max_points: int) -> list:
+    """Every k-th [angle, range], order kept. Angle 3 dp, range 2 dp."""
+    if not isinstance(scan, list) or not scan:
+        return []
+    step = 1 if len(scan) <= max_points else math.ceil(len(scan) / max_points)
+    out: list = []
+    for point in scan[::step]:
+        if not isinstance(point, (list, tuple)) or len(point) < 2:
+            continue
+        try:
+            angle = round(float(point[0]), 3)
+            dist = round(float(point[1]), 2)
+        except (TypeError, ValueError):
+            continue
+        out.append([angle, dist])
+    return out
+
+
+def _fmt_pose(pose: Any) -> str:
+    try:
+        return f"{float(pose[0]):.3f},{float(pose[1]):.3f},{float(pose[2]):.3f}"
+    except (TypeError, ValueError, IndexError):
+        return "0,0,0"
 
 
 class DashboardClient:
@@ -399,6 +471,7 @@ class RealtimeHub:
         realtime_factory=None,
         reconnect_min_s: float = RECONNECT_MIN_S,
         reconnect_max_s: float = RECONNECT_MAX_S,
+        public_rest: bool = False,
     ):
         self._supabase_url = url
         self._api_key = key
@@ -442,6 +515,15 @@ class RealtimeHub:
         self._down: asyncio.Event | None = None
         self._setup_lock: asyncio.Lock | None = None
         self._private_task: asyncio.Task | None = None
+        self._public_rest = public_rest
+        self._stats_lock = threading.Lock()
+        self._sent_ok: dict[str, int] = {}
+        self._sent_fail: dict[str, int] = {}
+        self._dropped_not_ready: dict[str, int] = {}
+        self._send_fail_log_at: dict[str, float] = {}
+        self._public_denied_logged = False
+        self._public_key_logged = False
+        self._rest_last = 0.0
 
     def connect(self) -> None:
         """Start the Realtime thread. Never raises.
@@ -469,12 +551,36 @@ class RealtimeHub:
     def send(self, event: str, payload: dict) -> None:
         # Status events go out on the public topic whenever it is SUBSCRIBED,
         # even if the private :status join is down. Only STATUS_EVENTS.
-        if event not in STATUS_EVENTS:
-            return
-        if self._public_ready and self._public_channel is not None:
-            self._send_one(self._public_channel, event, payload)
-        if self._private_ready and self._status_channel is not None:
-            self._send_one(self._status_channel, event, payload)
+        try:
+            if event not in STATUS_EVENTS:
+                return
+            public = self._public_ready and self._public_channel is not None
+            private = self._private_ready and self._status_channel is not None
+            if not public and not private:
+                self._bump_stat(self._dropped_not_ready, event)
+                return
+            if public:
+                self._send_one(self._public_channel, event, payload)
+            if private:
+                self._send_one(self._status_channel, event, payload)
+            if public and self._public_rest:
+                self._rest_broadcast_maybe(event, payload)
+        except Exception as exc:
+            log.warning("realtime send failed: %s", self._redact(exc))
+
+    def stats(self) -> dict:
+        with self._stats_lock:
+            return {
+                "public_ready": self._public_ready,
+                "private_ready": self._private_ready,
+                "sent_ok": dict(self._sent_ok),
+                "sent_fail": dict(self._sent_fail),
+                "dropped": dict(self._dropped_not_ready),
+            }
+
+    def _bump_stat(self, bucket: dict[str, int], event: str) -> None:
+        with self._stats_lock:
+            bucket[event] = bucket.get(event, 0) + 1
 
     def touch_bot_row(self, camera_url: str | None) -> bool | None:
         """Heartbeat public.touch_amr_bot. Logs a false result. Never logs the token."""
@@ -683,6 +789,8 @@ class RealtimeHub:
                 raise
             except Exception as exc:
                 log.error("private channel setup failed: %s", self._redact(exc))
+                if not self._access_token:
+                    self._log_public_publishable_key()
             if await self._sleep_or_stop(delay):
                 return
             delay = min(self._reconnect_max_s, delay * 2)
@@ -738,9 +846,18 @@ class RealtimeHub:
     async def _subscribe_public(self) -> None:
         topic = channel_name(self._bot_id)
         log.info("realtime joining (%s)", topic)
+        if not self._private_enabled:
+            self._log_public_publishable_key()
         event = CMD_EVENT if self._public_enabled else None
         callback = self._public_cb if self._public_enabled else None
         await self._subscribe_kind("public", topic, event, callback, private=False)
+
+    def _log_public_publishable_key(self) -> None:
+        """Public join has no bridge JWT. The socket keeps the publishable key."""
+        if self._public_key_logged:
+            return
+        self._public_key_logged = True
+        log.info("public channel using publishable key")
 
     async def _subscribe_private(self) -> None:
         if self._closed or "status" in self._slots:
@@ -786,7 +903,7 @@ class RealtimeHub:
         if private:
             channel = self._open_private_channel(topic)
         else:
-            channel = client.channel(topic)
+            channel = self._open_public_channel(topic)
         if event and callback:
             self._bind_broadcast(channel, event, callback)
         slot = _RtSlot(kind, gen, channel, topic)
@@ -801,8 +918,7 @@ class RealtimeHub:
         slot.armed = True
         self._socket_up = True
 
-    def _open_private_channel(self, topic: str):
-        params = _PRIVATE_CHANNEL_PARAMS
+    def _open_channel(self, topic: str, params: dict):
         client = self._rt
         if client is None:
             raise RuntimeError("realtime client is not running")
@@ -810,6 +926,12 @@ class RealtimeHub:
             return client.channel(topic, params)
         except TypeError:
             return client.channel(topic, params=params)
+
+    def _open_public_channel(self, topic: str):
+        return self._open_channel(topic, _PUBLIC_CHANNEL_PARAMS)
+
+    def _open_private_channel(self, topic: str):
+        return self._open_channel(topic, _PRIVATE_CHANNEL_PARAMS)
 
     def _status_cb_for(self, kind: str, gen: int):
         def _cb(*args) -> None:
@@ -866,6 +988,11 @@ class RealtimeHub:
             log.warning("realtime %s channel %s: %s", kind, label, detail)
         else:
             log.warning("realtime %s channel %s", kind, label)
+        if kind == "public" and label == "CHANNEL_ERROR" and not self._public_denied_logged:
+            self._public_denied_logged = True
+            log.error(
+                "public join denied: check Supabase Realtime Settings > Allow public access"
+            )
         self._ensure_channel_retry(kind)
 
     def _clear_ready(self, kind: str) -> None:
@@ -1107,7 +1234,47 @@ class RealtimeHub:
                 timeout=REALTIME_SEND_TIMEOUT_S,
             )
         except Exception as exc:
-            log.debug("broadcast %s failed: %s", event, type(exc).__name__)
+            self._bump_stat(self._sent_fail, event)
+            self._log_send_failure(event, exc)
+            return
+        self._bump_stat(self._sent_ok, event)
+
+    def _log_send_failure(self, event: str, exc: BaseException) -> None:
+        kind = type(exc).__name__
+        now = time.monotonic()
+        with self._stats_lock:
+            last = self._send_fail_log_at.get(kind, 0.0)
+            if now - last < SEND_FAIL_LOG_S:
+                return
+            self._send_fail_log_at[kind] = now
+        log.warning("broadcast %s failed: %s", event, self._redact(exc))
+
+    def _rest_broadcast_maybe(self, event: str, payload: dict) -> None:
+        """Optional public REST broadcast. Off unless AMR_PUBLIC_REST=1. At most 5 Hz."""
+        now = time.monotonic()
+        if now - self._rest_last < REST_BROADCAST_MIN_S:
+            return
+        self._rest_last = now
+        try:
+            url = self._supabase_url.rstrip("/") + "/realtime/v1/api/broadcast"
+            body = {
+                "messages": [{
+                    "topic": channel_name(self._bot_id),
+                    "event": event,
+                    "payload": payload,
+                    "private": False,
+                }],
+            }
+            self._post_rest(
+                url,
+                {"apikey": self._api_key, "Content-Type": "application/json"},
+                body,
+            )
+        except Exception as exc:
+            self._log_send_failure(event, exc)
+
+    def _post_rest(self, url: str, headers: dict, body: dict) -> None:
+        httpx.post(url, headers=headers, json=body, timeout=REST_BROADCAST_TIMEOUT_S)
 
     async def _send_async(self, channel, event: str, payload: dict) -> None:
         await channel.send_broadcast(event, payload)
@@ -1294,8 +1461,17 @@ class Bridge:
         self.dash = DashboardClient(dashboard_url)
         self.camera_url = camera_url
         self.camera_jpeg_max_kb = camera_jpeg_max_kb
+        self.scan_max_points = _scan_max_points()
+        self.scan_hz = _scan_hz()
+        self.telemetry_max_bytes = _telemetry_max_bytes()
+        self.public_rest = flag_enabled(_env("AMR_PUBLIC_REST", "0"), False)
         self.mode = "full"
         self._seq = 0
+        self._telemetry_frames = 0
+        self._sse_state_frames = 0
+        self._last_scan_pts = 0
+        self._last_pose: list = [0, 0, 0]
+        self._oversize_log_at: dict[str, float] = {}
         self._hub: RealtimeHub | None = None
         self._stop = asyncio.Event()
         self._cam_every = 0
@@ -1480,6 +1656,7 @@ class Bridge:
             on_private_command=self._queue_private,
             on_control=self._queue_control,
             on_link=self._queue_link,
+            public_rest=self.public_rest,
         )
         await asyncio.to_thread(self._hub.connect)
         tasks = [
@@ -1489,6 +1666,7 @@ class Bridge:
             self._watchdog_loop(),
             self._motion_slot_loop(),
             self._estop_loop(),
+            self._stats_loop(),
         ]
         if self.private_channel:
             tasks.append(self._control_poll_loop())
@@ -1932,8 +2110,14 @@ class Bridge:
                 backoff = min(30.0, backoff * 1.7)
 
     async def _handle_sse_event(self, event: dict) -> None:
+        try:
+            await self._handle_sse_event_inner(event)
+        except Exception:
+            log.exception("sse event failed")
+
+    async def _handle_sse_event_inner(self, event: dict) -> None:
         if event.get("t") == "map":
-            await self._broadcast("map", {
+            payload = {
                 "t": "map",
                 "botId": self.bot_id,
                 "ts": int(time.time() * 1000),
@@ -1943,7 +2127,9 @@ class Bridge:
                 "origin": event.get("origin"),
                 "tf": event.get("tf"),
                 "data": event.get("data"),
-            })
+            }
+            if self._map_fits(payload):
+                await self._broadcast("map", payload)
             return
         if event.get("t") == "log":
             await self._broadcast("log", {
@@ -1957,6 +2143,12 @@ class Bridge:
         if "pose" not in event:
             return
 
+        self._sse_state_frames += 1
+        pose = event.get("pose") or [0, 0, 0]
+        self._last_pose = list(pose) if isinstance(pose, list) else [0, 0, 0]
+        if isinstance(event.get("scan"), list):
+            self._last_scan_pts = len(_downsample_scan(event.get("scan"), self.scan_max_points))
+
         hz = BOARD_RATE_HZ if self.mode == "board" else FULL_RATE_HZ
         now = time.monotonic()
         if now - self._last_pub < (1.0 / hz) * 0.85:
@@ -1964,14 +2156,17 @@ class Bridge:
         self._last_pub = now
 
         self._seq += 1
+        self._telemetry_frames += 1
         mode = self.mode
+        every = max(1, math.ceil(FULL_RATE_HZ / self.scan_hz))
+        include_scan = mode == "full" and (self._telemetry_frames % every == 1)
         payload: dict[str, Any] = {
             "ts": int(time.time() * 1000),
             "botId": self.bot_id,
             "seq": self._seq,
             "mode": mode,
             "online": True,
-            "pose": event.get("pose") or [0, 0, 0],
+            "pose": pose,
             "mapPose": event.get("map_pose"),
             "vel": event.get("vel") or [0, 0],
             "cmd": event.get("cmd") or [0, 0],
@@ -1990,7 +2185,9 @@ class Bridge:
             "vision": bool(event.get("vision") or event.get("yolo_det") or event.get("sem")),
             "saving": event.get("saving"),
             "cameraUrl": self.camera_url,
-            "scan": event.get("scan") if mode == "full" else [],
+            "scan": _downsample_scan(event.get("scan"), self.scan_max_points) if include_scan else (
+                [] if mode != "full" else None
+            ),
         }
 
         if mode == "full" and not self.camera_url:
@@ -2000,20 +2197,112 @@ class Bridge:
                 if jpeg:
                     payload["cameraJpegB64"] = jpeg
 
+        payload = self._shrink_telemetry(payload)
         await self._broadcast("telemetry", payload)
+
+    def _shrink_telemetry(self, payload: dict) -> dict:
+        """Drop optional fields until the frame fits. Pose and vitals stay. Never raises."""
+        limit = self.telemetry_max_bytes
+        try:
+            if _json_size(payload) <= limit:
+                return payload
+        except Exception:
+            self._warn_oversize("telemetry", "telemetry oversize, dropped fields: unserializable")
+            return payload
+        dropped: list[str] = []
+        if "cameraJpegB64" in payload:
+            payload.pop("cameraJpegB64", None)
+            dropped.append("cameraJpegB64")
+        if self._payload_over(payload, limit):
+            payload["scan"] = []
+            dropped.append("scan")
+        for field in ("frontier", "yoloDet", "sem", "path"):
+            if not self._payload_over(payload, limit):
+                break
+            if field in payload:
+                payload.pop(field, None)
+                dropped.append(field)
+        if dropped:
+            self._warn_oversize(
+                "telemetry",
+                "telemetry oversize, dropped fields: " + ", ".join(dropped),
+            )
+        return payload
+
+    def _map_fits(self, payload: dict) -> bool:
+        try:
+            if _json_size(payload) <= self.telemetry_max_bytes:
+                return True
+        except Exception:
+            self._warn_oversize("map", "map oversize, dropped frame")
+            return False
+        self._warn_oversize("map", "map oversize, dropped frame")
+        return False
+
+    def _payload_over(self, payload: dict, limit: int) -> bool:
+        try:
+            return _json_size(payload) > limit
+        except Exception:
+            return True
+
+    def _warn_oversize(self, kind: str, message: str) -> None:
+        now = time.monotonic()
+        if now - self._oversize_log_at.get(kind, 0.0) < OVERSIZE_LOG_S:
+            return
+        self._oversize_log_at[kind] = now
+        log.warning("%s", message)
 
     async def _heartbeat_loop(self) -> None:
         while not self._stop.is_set():
-            await self._broadcast("hb", {
-                "t": "hb",
-                "botId": self.bot_id,
-                "ts": int(time.time() * 1000),
-                "bridgeVersion": BRIDGE_VERSION,
-            })
+            try:
+                hub = self._hub
+                self._seq += 1
+                await self._broadcast("hb", {
+                    "t": "hb",
+                    "botId": self.bot_id,
+                    "ts": int(time.time() * 1000),
+                    "bridgeVersion": BRIDGE_VERSION,
+                    "public": bool(hub and hub._public_ready),
+                    "private": bool(hub and hub._private_ready),
+                    "seq": self._seq,
+                })
+            except Exception:
+                log.exception("heartbeat failed")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=1.0)
             except asyncio.TimeoutError:
                 pass
+
+    async def _stats_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self._log_stats()
+            except Exception:
+                log.exception("bridge stats failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=STATS_LOG_S)
+            except asyncio.TimeoutError:
+                pass
+
+    def _log_stats(self) -> None:
+        hub = self._hub
+        snap = hub.stats() if hub is not None else {}
+        sent = snap.get("sent_ok") or {}
+        fail = snap.get("sent_fail") or {}
+        dropped = snap.get("dropped") or {}
+        log.info(
+            "bridge stats: public_ready=%s private_ready=%s telemetry_ok=%s hb_ok=%s "
+            "fail=%s dropped_not_ready=%s sse_state_frames=%s last_scan_pts=%s last_pose=%s",
+            bool(snap.get("public_ready")),
+            bool(snap.get("private_ready")),
+            int(sent.get("telemetry", 0)),
+            int(sent.get("hb", 0)),
+            int(sum(fail.values()) if isinstance(fail, dict) else 0),
+            int(sum(dropped.values()) if isinstance(dropped, dict) else 0),
+            self._sse_state_frames,
+            self._last_scan_pts,
+            _fmt_pose(self._last_pose),
+        )
 
     async def _presence_touch_loop(self) -> None:
         while not self._stop.is_set():
