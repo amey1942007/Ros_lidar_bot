@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
-joy_teleop_node.py — Gamepad teleop (Bluetooth or USB controller).
+joy_teleop_node.py — Gamepad teleop (web gamepad via web_gamepad_node).
 
-Pairs with the standard `joy` package's joy_node (SDL), which reads the
-controller and publishes sensor_msgs/Joy on /joy. This node converts /joy
-into /cmd_vel (geometry_msgs/Twist).
+This node converts sensor_msgs/Joy messages on /joy into /cmd_vel
+(geometry_msgs/Twist) and /camera_cmd.  Gamepad input is published to /joy
+by the companion web_gamepad_node, which hosts a virtual Xbox controller
+webpage on the RPi5 accessible via Tailscale.
 
-Controls (Xbox-style layout, xpad driver mapping):
+Controls (Xbox-style layout):
   Left stick up/down    — forward / reverse at current linear speed
   Left stick left/right — turn left / right at current angular speed
+  Right stick           — pan / tilt the camera head (→ /camera_cmd)
+  D-pad left / right    — snap camera pan to extreme left / right limit
+  D-pad up / down       — snap camera tilt to extreme up / down limit
   RT (right trigger)    — increase linear speed by lin_step per press
   LT (left trigger)     — decrease linear speed by lin_step per press
   RB (right bumper)     — increase angular speed by ang_step per press
@@ -27,16 +31,13 @@ Behaviour:
   - Stick centered → one zero Twist is published, then this node goes silent
     so Nav2 goals on /cmd_vel can drive the robot (same yield scheme the old
     keyboard teleop used).
-  - If /joy stops arriving mid-motion (Bluetooth dropout / dongle yanked)
-    → immediate stop.
+  - If /joy stops arriving mid-motion → immediate stop.
 
-Axis/button indices are parameters. Defaults match this robot's pad over
-BLUETOOTH (re-measured live on /joy, 2026-07-20):
-  axes:    0=LX  1=LY  2=RX  3=RY  4=LT  5=RT   (triggers rest +1, pressed -1)
-  buttons: 6=LB  7=RB  13=L3  14=R3   (sparse Xbox-BT hid layout)
-NOTE: the same pad over a USB dongle (xpad) usually has LT on axis 2 and
-RT on axis 5 instead. If controls act wrong after changing transport,
-verify with:  ros2 topic echo /joy  and override the parameters.
+Axis/button indices are parameters. Defaults match the web gamepad layout
+(web_gamepad_node.py):
+  axes:    0=LX  1=LY  2=RX  3=RY  4=LT  5=RT  6=DX  7=DY
+           (triggers: 0=rest, -1=fully pressed)
+  buttons: 0=A  1=B  2=X  3=Y  4=LB  5=RB  6=Back  7=Start  8=Xbox  9=L3  10=R3
 
 Feedback: every accepted speed change fires a short rumble pulse on
 /joy/set_feedback (strong double-length pulse when hitting a limit), since
@@ -63,10 +64,12 @@ class JoyTeleop(Node):
         self.declare_parameter('axis_angular', 0)    # left stick horizontal
         self.declare_parameter('axis_rt', 5)         # right trigger
         self.declare_parameter('axis_lt', 4)         # left trigger (BT; USB xpad = 2)
-        self.declare_parameter('button_rb', 7)       # right bumper
-        self.declare_parameter('button_lb', 6)       # left bumper
-        self.declare_parameter('button_save_map', 1) # B (stick clicks were unreliable)
-        self.declare_parameter('button_vision', 3)   # X
+        self.declare_parameter('button_rb', 5)       # right bumper (index 5)
+        self.declare_parameter('button_lb', 4)       # left bumper (index 4)
+        self.declare_parameter('button_save_map', 1) # B (save map)
+        self.declare_parameter('button_vision', 2)   # X (toggle vision)
+        self.declare_parameter('button_seq_toggle', 0) # A (waypoint sequence start/stop)
+        self.declare_parameter('button_imu_cal', 3)  # Y (IMU calibration on touch screen)
         self.declare_parameter('dashboard_url', 'http://127.0.0.1:8080')
 
         # ── Speed setpoints ───────────────────────────────────────────────────
@@ -81,9 +84,29 @@ class JoyTeleop(Node):
         self.declare_parameter('ang_min', 0.2)
         self.declare_parameter('ang_max', 2.0)
 
-        self.declare_parameter('deadzone', 0.15)     # stick idle threshold
+        self.declare_parameter('deadzone', 0.10)     # stick idle threshold
         self.declare_parameter('publish_hz', 20.0)
-        self.declare_parameter('joy_timeout', 0.5)   # s without /joy → stop
+        self.declare_parameter('joy_timeout', 1.5)   # s without /joy → stop (tolerant to Wi-Fi jitter)
+
+        # ── Right stick → camera pan/tilt (camera_servo_node) ─────────────────
+        # Publishes normalised rate cmds on /camera_cmd; drive path is untouched.
+        self.declare_parameter('axis_cam_pan', 2)    # RX (BT layout)
+        self.declare_parameter('axis_cam_tilt', 3)   # RY
+        self.declare_parameter('cam_deadzone', 0.10)
+        self.declare_parameter('invert_cam_pan', False)
+        self.declare_parameter('invert_cam_tilt', False)
+
+        # ── D-pad → camera snap-to-limit ────────────────────────────────────
+        # axis_dpad_h: left=+1.0, right=-1.0 (standard SDL BT mapping)
+        # axis_dpad_v: up=+1.0,   down=-1.0
+        # Pressing a D-pad cardinal snaps the camera to the corresponding
+        # mechanical extreme (pan_min/max or tilt_min/max as reported by
+        # camera_servo_node). The snap is encoded in /camera_cmd by setting
+        # linear.z=1.0 (flag), linear.x=pan_target, linear.y=tilt_target.
+        self.declare_parameter('axis_dpad_h', 6)     # BT: axis 6
+        self.declare_parameter('axis_dpad_v', 7)     # BT: axis 7
+        # Threshold above which the D-pad axis is considered pressed.
+        self.declare_parameter('dpad_threshold', 0.5)
 
         gp = lambda n: self.get_parameter(n).value
         self._ax_lin = gp('axis_linear')
@@ -94,6 +117,8 @@ class JoyTeleop(Node):
         self._btn_lb = gp('button_lb')
         self._btn_save = gp('button_save_map')
         self._btn_vision = gp('button_vision')
+        self._btn_seq = gp('button_seq_toggle')
+        self._btn_imu = gp('button_imu_cal')
         self._dash_url = str(gp('dashboard_url')).rstrip('/')
         self._lin_speed = gp('lin_speed')
         self._ang_speed = gp('ang_speed')
@@ -103,6 +128,24 @@ class JoyTeleop(Node):
         self._ang_min, self._ang_max = gp('ang_min'), gp('ang_max')
         self._deadzone = gp('deadzone')
         self._joy_timeout = gp('joy_timeout')
+        self._ax_cam_pan = gp('axis_cam_pan')
+        self._ax_cam_tilt = gp('axis_cam_tilt')
+        self._cam_deadzone = gp('cam_deadzone')
+        self._cam_pan_sign = -1.0 if gp('invert_cam_pan') else 1.0
+        self._cam_tilt_sign = -1.0 if gp('invert_cam_tilt') else 1.0
+        self._cam_pan = 0.0
+        self._cam_tilt = 0.0
+
+        # D-pad snap state
+        self._ax_dpad_h = gp('axis_dpad_h')
+        self._ax_dpad_v = gp('axis_dpad_v')
+        self._dpad_threshold = gp('dpad_threshold')
+        # None = no snap pending; otherwise a (pan_frac, tilt_frac) tuple where
+        # each fraction is -1.0 (min), 0.0 (unchanged), or +1.0 (max).
+        self._cam_snap: tuple | None = None
+        # Edge-detect: track previous D-pad axis states.
+        self._dpad_h_prev = 0.0
+        self._dpad_v_prev = 0.0
 
         self._cmd_lin = 0.0
         self._cmd_ang = 0.0
@@ -122,9 +165,11 @@ class JoyTeleop(Node):
         self._combo_was_pressed = False
         self._save_was_pressed = False
         self._vision_was_pressed = False
+        self._seq_was_pressed = False
         self._action_last = {}   # action name → monotonic time of last fire
 
         self._pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self._cam_pub = self.create_publisher(Twist, '/camera_cmd', 10)
         self._rumble_pub = self.create_publisher(
             JoyFeedbackArray, '/joy/set_feedback', 10)
         self._rumble_off_timer = None
@@ -164,9 +209,9 @@ class JoyTeleop(Node):
         self._rb_was_pressed, self._lb_was_pressed = rb, lb
 
         # Dashboard actions — edge triggered, 2 s cooldown each.
-        # (The four-button combo also fires the ± speed steps above, but the
-        # +/− pairs cancel out, so the setpoints are unchanged.)
-        combo = rt and lt and rb and lb
+        # Either the four-button combo OR single button Y (on virtual gamepad)
+        y_btn = button(self._btn_imu)
+        combo = (rt and lt and rb and lb) or y_btn
         if combo and not self._combo_was_pressed:
             self._fire_action('imu_cal')
         self._combo_was_pressed = combo
@@ -181,6 +226,11 @@ class JoyTeleop(Node):
             self._fire_action('vision')
         self._vision_was_pressed = vi
 
+        seq = button(self._btn_seq)
+        if seq and not self._seq_was_pressed:
+            self._fire_action('seq_toggle')
+        self._seq_was_pressed = seq
+
         # Movement — proportional to stick deflection
         lin_in = axis(self._ax_lin)
         ang_in = axis(self._ax_ang)
@@ -191,6 +241,44 @@ class JoyTeleop(Node):
 
         self._cmd_lin = lin_in * self._lin_speed
         self._cmd_ang = ang_in * self._ang_speed
+
+        # Right stick → camera pan/tilt rate (normalised -1..1).
+        pan_in = axis(self._ax_cam_pan)
+        tilt_in = axis(self._ax_cam_tilt)
+        if abs(pan_in) < self._cam_deadzone:
+            pan_in = 0.0
+        if abs(tilt_in) < self._cam_deadzone:
+            tilt_in = 0.0
+        self._cam_pan = pan_in * self._cam_pan_sign
+        self._cam_tilt = tilt_in * self._cam_tilt_sign
+
+        # D-pad → snap camera to mechanical extremes (edge-triggered).
+        dpad_h = axis(self._ax_dpad_h)   # left=+1, right=-1
+        dpad_v = axis(self._ax_dpad_v)   # up=+1,   down=-1
+        thr = self._dpad_threshold
+
+        snap_pan  = 0.0   # 0 = no change, +1 = max, -1 = min
+        snap_tilt = 0.0
+
+        # Horizontal D-pad edge: left (+1) → pan to max_left (+pan_max),
+        #                        right (−1) → pan to max_right (pan_min).
+        if dpad_h > thr and not (self._dpad_h_prev > thr):
+            snap_pan = 1.0    # snap to pan maximum (leftward)
+        elif dpad_h < -thr and not (self._dpad_h_prev < -thr):
+            snap_pan = -1.0   # snap to pan minimum (rightward)
+
+        # Vertical D-pad edge: up (+1) → tilt to max_up (tilt_max),
+        #                      down (−1) → tilt to max_down (tilt_min).
+        if dpad_v > thr and not (self._dpad_v_prev > thr):
+            snap_tilt = 1.0   # snap to tilt maximum (upward)
+        elif dpad_v < -thr and not (self._dpad_v_prev < -thr):
+            snap_tilt = -1.0  # snap to tilt minimum (downward)
+
+        if snap_pan != 0.0 or snap_tilt != 0.0:
+            self._cam_snap = (snap_pan, snap_tilt)
+
+        self._dpad_h_prev = dpad_h
+        self._dpad_v_prev = dpad_v
 
     # ── Gamepad → dashboard actions ────────────────────────────────────────────
     # Fired through the dashboard HTTP API so tool management stays in one
@@ -203,11 +291,16 @@ class JoyTeleop(Node):
                      'save map (B)'),
         'vision':   ('/api/vision', {'toggle': True},
                      'vision on/off (X)'),
+        'seq_toggle': ('/api/seq_toggle', {},
+                       'waypoint sequence start/stop (A)'),
     }
 
     def _fire_action(self, name):
         now = time.monotonic()
-        if now - self._action_last.get(name, 0.0) < 2.0:
+        # Vision launch needs several seconds (reclaim + ros2 launch + camera);
+        # a second X within the generic 2s window still aborts mid-start.
+        cooldown = 5.0 if name == 'vision' else 2.0
+        if now - self._action_last.get(name, 0.0) < cooldown:
             return
         self._action_last[name] = now
         endpoint, payload, desc = self._ACTIONS[name]
@@ -294,6 +387,27 @@ class JoyTeleop(Node):
         if (time.monotonic() - self._last_joy_time) > self._joy_timeout:
             self._cmd_lin = 0.0
             self._cmd_ang = 0.0
+            self._cam_pan = 0.0
+            self._cam_tilt = 0.0
+
+        # Camera pan/tilt rate — published every tick regardless of drive/yield
+        # state (separate topic, never interferes with /cmd_vel). A centred
+        # stick sends zero rate, so camera_servo_node holds its heading.
+        #
+        # D-pad snap takes priority: encode as linear.z=1.0 (flag), with
+        # linear.x/y carrying the target fraction (+1=max, -1=min, 0=no-change).
+        # camera_servo_node detects this flag and jumps directly to the limit.
+        cam = Twist()
+        snap = self._cam_snap
+        if snap is not None:
+            self._cam_snap = None          # consume the snap command
+            cam.linear.z = 1.0             # snap-mode flag
+            cam.linear.x = float(snap[0]) # pan  target fraction
+            cam.linear.y = float(snap[1]) # tilt target fraction
+        else:
+            cam.angular.z = float(self._cam_pan)
+            cam.angular.y = float(self._cam_tilt)
+        self._cam_pub.publish(cam)
 
         moving = abs(self._cmd_lin) > 1e-6 or abs(self._cmd_ang) > 1e-6
         if not moving:
@@ -307,6 +421,7 @@ class JoyTeleop(Node):
         msg.linear.x = self._cmd_lin
         msg.angular.z = self._cmd_ang
         self._pub.publish(msg)
+
 
 
 def main(args=None):

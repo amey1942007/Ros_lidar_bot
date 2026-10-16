@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import glob
 import os
 
 from ament_index_python.packages import get_package_share_directory
@@ -30,9 +31,17 @@ def _launch_setup(context, *args, **kwargs):
         "true",
         "yes",
     )
+    enable_amr_bridge = LaunchConfiguration("enable_amr_bridge").perform(context).lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    amr_bot_id = LaunchConfiguration("amr_bot_id").perform(context)
+    amr_bridge_python = LaunchConfiguration("amr_bridge_python").perform(context)
+    amr_bridge_env = LaunchConfiguration("amr_bridge_env").perform(context)
 
     out = "screen" if verbose else "log"
-    # FATAL = only crashes; keeps bringup_status board alone on the TTY.
+    # FATAL = only crashes; keeps the dashboard TTY quiet.
     log_args = [] if verbose else ["--ros-args", "--log-level", "fatal"]
     nav2_log_level = "info" if verbose else "fatal"
 
@@ -43,13 +52,11 @@ def _launch_setup(context, *args, **kwargs):
         # Soften CycloneDDS discovery chatter when RViz joins from another host.
         actions.append(SetEnvironmentVariable("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] [{name}]: {message}"))
 
-    # ── Web dashboard (replaces the terminal bringup_status board) ───────────
+    # ── Web dashboard ───────────────────────────────────────────────────────
     # Serves the interactive GUI at http://<pi-ip>:8080 — open it in a
     # browser on the laptop (the Pi is headless over SSH, so no X11 needed).
     # Status board + live robot/lidar view + on-demand tools (IMU test,
     # IMU calibration, drive-distance) + click-to-send nav goals + E-STOP.
-    # The old terminal board is still available:
-    #   ros2 run Ros_lidar_bot bringup_status
     dashboard = Node(
         package=package_name,
         executable="robot_dashboard",
@@ -217,39 +224,51 @@ def _launch_setup(context, *args, **kwargs):
             "min_safe_distance": 0.35,
             # /scan is already clipped at 0.30 m; keep ignore in sync.
             "ignore_below": 0.30,
-            "front_opening_deg": 90.0,
+            # 50° (was 90°): only a head-on obstacle blocks forward drive, so a
+            # crowd standing beside the robot no longer freezes it.
+            "front_opening_deg": 50.0,
             "rear_opening_deg": 50.0,
+            # Hysteresis: release only once clear past 0.35 + 0.10 m — kills the
+            # stop-go chatter at the threshold in a crowd.
+            "clear_margin": 0.10,
             # Hard-stop if wheel odometry dies (prevents Nav2 circle-on-stale-pose).
             "odom_raw_timeout_sec": 0.5,
         }],
     )
 
-    # ── 6b. Gamepad teleop (Bluetooth or USB controller) ─────────────────────
-    # joy_node (SDL) reads the controller and publishes /joy; joy_teleop maps
-    # it to /cmd_vel. Left stick = movement, RT/LT = linear speed ±,
-    # RB/LB = angular speed ±. joy_teleop yields /cmd_vel to Nav2 whenever
-    # the stick is centered, so both can coexist on the same topic.
+    # ── 6b. Gamepad teleop ────────────────────────────────────────────────────
+    # web_gamepad_node hosts a virtual Xbox controller webpage on the RPi5
+    # (port 8765). Open http://<tailscale-ip>:8765 on any phone that is on the
+    # same Tailscale network. It publishes /joy; joy_teleop converts that to
+    # /cmd_vel exactly as a physical controller would.
     #
-    # Bluetooth: pair once on the Pi with bluetoothctl (scan on / pair / trust
-    # / connect) — "trust" makes it auto-reconnect on power-up. NOTE: over
-    # Bluetooth many pads expose a DIFFERENT axis/button order than over a
-    # USB dongle (e.g. Xbox BT without xpadneo puts triggers elsewhere).
-    # If controls act wrong, check `ros2 topic echo /joy` and override the
-    # axis_*/button_* parameters on joy_teleop below.
+    # If a physical USB/BT controller IS attached, set use_joystick:=true to
+    # launch joy_node (SDL) + joy_teleop instead.
+    web_gamepad = Node(
+        package=package_name,
+        executable="web_gamepad",
+        name="web_gamepad",
+        output=out,
+        arguments=log_args,
+        parameters=[{
+            "host": "0.0.0.0",
+            "port": 8765,
+            "publish_hz": 30.0,
+        }],
+    )
+
+    # Physical controller fallback (set use_joystick:=true on the CLI)
     joy_node = Node(
         package="joy",
         executable="joy_node",
         name="joy_node",
         output=out,
         arguments=log_args,
-        # Survive controller disconnect/reconnect (BT dropout or USB unplug).
         respawn=True,
         respawn_delay=2.0,
         parameters=[{
             "device_id": 0,
             "deadzone": 0.05,
-            # Keep /joy streaming while a stick is held so joy_teleop's
-            # 0.5 s watchdog never fires mid-motion.
             "autorepeat_rate": 20.0,
         }],
     )
@@ -260,6 +279,32 @@ def _launch_setup(context, *args, **kwargs):
         name="joy_teleop",
         output=out,
         arguments=log_args,
+    )
+
+    # ── 6c. Camera pan/tilt head (OT5320M pan + SG90 tilt, via Arduino Uno) ──
+    camera_servo = Node(
+        package=package_name,
+        executable="camera_servo",
+        name="camera_servo",
+        output=out,
+        arguments=log_args,
+        respawn=True,
+        respawn_delay=3.0,
+        parameters=[{
+            "pan_driver": "arduino",
+            "pan_continuous": True,
+            "arduino_port": "/dev/ttyUSB0",
+            "arduino_baud": 115200,
+            "upside_down": True,
+        }],
+    )
+
+    teleop_interface = Node(
+        package=package_name,
+        executable="teleop_interface",
+        name="teleop_interface",
+        output="screen",
+        emulate_tty=True,
     )
 
     # ── 7. EKF Node (Fuses Odom & IMU) ───────────────────────────────────────
@@ -320,14 +365,57 @@ def _launch_setup(context, *args, **kwargs):
         odom_node,
         lidar_node,
         scan_filter,
-        joy_node,
-        joy_teleop,
+        camera_servo,
         ekf_node,
+    ])
+    
+    # Dynamic auto-detection for /dev/input/js* port.
+    # web_gamepad publishes zeros on /joy when stale, so it is started only in
+    # the web-gamepad branch. A physical joy_node must not share /joy with it.
+    use_joystick_mode = LaunchConfiguration("use_joystick").perform(context).lower()
+    js_devices = glob.glob("/dev/input/js*")
+    js_detected = len(js_devices) > 0
+    web_gamepad_started = False
+
+    if use_joystick_mode in ("1", "true", "yes"):
+        # Explicit physical controller requested
+        actions.extend([joy_node, joy_teleop])
+    elif use_joystick_mode in ("curses", "keyboard", "terminal"):
+        # Explicit terminal keyboard teleop requested
+        actions.append(teleop_interface)
+    else:  # Default / auto / false: focus on Web Gamepad
+        if js_detected and use_joystick_mode not in ("0", "false", "no"):
+            # Physical controller detected on /dev/input/js*
+            actions.extend([joy_node, joy_teleop])
+        else:
+            # Primary mode: Web Gamepad + joy_teleop (virtual Xbox controller on port 8765)
+            actions.extend([web_gamepad, joy_teleop])
+            web_gamepad_started = True
+
+    actions.extend([
         # ── Stage 2 (T=5s): SLAM ──────────────────────────────────────────────
         TimerAction(period=5.0, actions=[slam_toolbox]),
         # Nav2 starts after SLAM's map and map→odom transform are available.
         TimerAction(period=8.0, actions=[nav2]),
     ])
+
+    # ── Cloud bridge → https://amrslam.tech/control (after dashboard :8080) ─
+    # Skips cleanly if /etc/amr-bridge.env is missing secrets.
+    if enable_amr_bridge:
+        bridge = IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(pkg_share, "launch", "amr_bridge.launch.py")
+            ),
+            launch_arguments={
+                "bot_id": amr_bot_id,
+                "env_file": amr_bridge_env,
+                "dashboard": "http://127.0.0.1:8080",
+                "gamepad": "http://127.0.0.1:8765" if web_gamepad_started else "none",
+                "python": amr_bridge_python,
+            }.items(),
+        )
+        actions.append(TimerAction(period=5.0, actions=[bridge]))
+
     return actions
 
 
@@ -341,7 +429,40 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "expect_frontier",
             default_value="false",
-            description="If true, bringup_status waits for frontier_explorer (autonomous).",
+            description="If true, robot_dashboard expects frontier_explorer (autonomous).",
+        ),
+        DeclareLaunchArgument(
+            "use_joystick",
+            default_value="auto",
+            description=(
+                "Joystick teleop: 1/true/yes = physical controller; "
+                "curses/keyboard/terminal = keyboard teleop_interface; "
+                "0/false/no = force web gamepad even if a js device exists; "
+                "anything else (including auto) = web gamepad unless /dev/input/js* is found."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "enable_amr_bridge",
+            default_value="true",
+            description="If true, start amr_telemetry_bridge (cloud → amrslam.tech/control).",
+        ),
+        DeclareLaunchArgument(
+            "amr_bot_id",
+            default_value="hardware-bot",
+            description="Supabase /control bot id: hardware-bot | amr4",
+        ),
+        DeclareLaunchArgument(
+            "amr_bridge_env",
+            default_value="/etc/amr-bridge.env",
+            description="Pi secrets file for the cloud bridge (chmod 600).",
+        ),
+        DeclareLaunchArgument(
+            "amr_bridge_python",
+            default_value="auto",
+            description=(
+                "auto = <repo>/amr-bridge/.venv/bin/python if present, else python3; "
+                "or give an explicit interpreter path"
+            ),
         ),
         OpaqueFunction(function=_launch_setup),
     ])

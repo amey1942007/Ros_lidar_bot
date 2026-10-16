@@ -1,273 +1,347 @@
 # Ros_lidar_bot
 
-A ROS 2 (Jazzy) differential-drive robot for fully autonomous indoor mapping.
-Real hardware: Raspberry Pi 5, DDSM115 hub motors over RS485, RPLidar S2E over
-Ethernet, BNO055 IMU via Arduino Mega. Real-time SLAM, EKF sensor fusion, Nav2
-navigation, frontier exploration, a scan-based safety stop, YOLO-World semantic
-mapping, and a browser control dashboard served from the robot.
+Hardware bot: a differential-drive robot on a Raspberry Pi 5 (Ubuntu 24.04,
+ROS 2 Jazzy). This is the `hardware` branch. It is not the AMR4 robot.
 
-> **Branches**
-> - **`main` (this branch — hardware):** runs the physical robot.
-> - **[`Simulation`](../../tree/Simulation):** the Ignition Gazebo simulation
->   version of the same stack (furnished worlds, gz bridge, camera plugin).
->   Use it to develop and test without the robot.
+Bringup drives two DDSM115 hub motors, reads a BNO055 IMU and an RPLidar S2E,
+fuses wheel odometry and IMU in an EKF, runs SLAM Toolbox and Nav2, and serves
+a browser dashboard from the Pi. A scan-based safety stop sits in front of the
+motors. Optional pieces, started only when you ask for them, are frontier
+exploration, a pan/tilt camera head, YOLO-World semantic mapping, a web or
+Bluetooth gamepad, and a cloud telemetry bridge.
 
 ---
 
-## Table of Contents
-
-- [System Architecture](#system-architecture)
-- [Robot Hardware](#robot-hardware)
-- [Web Dashboard](#web-dashboard)
-- [Semantic Vision Pipeline](#semantic-vision-pipeline)
-- [Project Structure](#project-structure)
-- [Installation](#installation)
-- [Usage](#usage)
-- [ROS 2 Topics](#ros-2-topics)
-- [Configuration](#configuration)
-- [Common Issues](#common-issues)
-
----
-
-## System Architecture
+## What runs
 
 ```
-DDSM115 motors ←RS485/USB→ [driver_node] ──→ /encoder (JointState, 20 Hz)
-                                │  ← subscribes /cmd_vel_safe
-BNO055 ←UART→ Arduino Mega ←USB→ [imu_node] ──→ /imu (50 Hz)
-RPLidar S2E ←Ethernet/UDP→ [sllidar_node] ──→ /scan (10 Hz, DenseBoost)
+DDSM115 ←RS485→ driver_node  → /encoder
+                         ← /cmd_vel_safe
+BNO055 ←Arduino Mega→ imu_node → /imu
+RPLidar S2E ←UDP→ sllidar_node → /scan_raw → scan_min_range_filter → /scan
 
-[odom_node]  ←─ /encoder ──→ /odom_raw (wheel odometry, no TF)
-
-[ekf_filter_node]  ←─ /odom_raw + /imu
-    └─ TF: odom → base_footprint          └─ publishes /odom (filtered)
-
-[slam_toolbox]  ←─ /scan + TF
-    └─ TF: map → odom                     └─ publishes /map
-
-[nav2 stack]  ←─ /map + /scan + /odom ──→ /cmd_vel
-
-[frontier_explorer]  ←─ /map + /safety_blocked + /manual_blacklist
-    └─ sends NavigateToPose actions to Nav2 (autonomous exploration)
-
-[joy_node + joy_teleop]  gamepad ──→ /cmd_vel  (overrides Nav2 while stick moves)
-
-[safety_stop]  ←─ /cmd_vel + /scan
-    └─ zeroes unsafe motion ──→ /cmd_vel_safe ──→ driver_node ──→ motors
-    └─ publishes /safety_blocked
+odom_node ← /encoder → /odom_raw          (no TF)
+ekf_node  ← /odom_raw + /imu → /odom and TF odom → base_footprint
+slam_toolbox ← /scan → /map and TF map → odom
+nav2 ← /map + /scan + /odom → /cmd_vel
+safety_stop ← /cmd_vel + /scan → /cmd_vel_safe → driver_node
+             also publishes /safety_blocked
 ```
 
-Every velocity command — Nav2, gamepad, dashboard, test tools — flows through
-the safety stop before reaching the motors. Forward/reverse motion is blocked
-when an obstacle is inside `min_safe_distance`; rotation is always preserved so
-Nav2 recovery spins still work.
+Nav2, the gamepad, the keyboard teleop, and the dashboard all publish
+`/cmd_vel`. Only `safety_stop` publishes `/cmd_vel_safe`, and the driver
+subscribes to that. Forward and reverse are blocked when a return inside the
+front or rear opening is closer than `min_safe_distance` (0.35 m in
+`launch_robot.launch.py`). Ranges closer than `ignore_below` (0.30 m) are
+treated as the robot body. Rotation is not blocked.
+
+`/scan` is not the raw lidar topic. The driver publishes `/scan_raw`;
+`scan_min_range_filter` drops returns inside 0.30 m and republishes `/scan`.
 
 ---
 
-## Robot Hardware
+## Hardware the launch file expects
 
-| Component | Detail |
+| Piece | Where the launch file points |
 |---|---|
-| Compute | Raspberry Pi 5, Ubuntu 24.04, ROS 2 Jazzy |
-| Drive | 2× DDSM115 direct-drive hub motors (RS485, 10-byte CRC8/MAXIM packets) via USB-RS485 dongle on `/dev/ttyACM0` |
-| Wheels | ⌀100.7 mm, wheel base 0.33 m, min reliable command ≈6 RPM |
-| LiDAR | RPLidar S2E — **Ethernet/UDP** (`192.168.11.2:8089`), DenseBoost (~3200 pts/rev) |
-| IMU | BNO055 on Arduino Mega, streamed over USB serial `/dev/ttyACM1` at 500000 baud |
-| Camera (planned) | RPi Camera Module 3 for the semantic vision pipeline |
-| Teleop | Any SDL gamepad (USB or Bluetooth) |
+| Compute | Raspberry Pi 5, ROS 2 Jazzy |
+| Motors | DDSM115 on `/dev/ttyACM0`, 115200 baud, `invert_drive:=false` |
+| IMU | BNO055 via Arduino Mega on `/dev/ttyACM1`, 500000 baud |
+| Lidar | RPLidar S2E, UDP `192.168.11.2:8089`, frame `laser_frame`, scan mode `DenseBoost` |
+| Camera head | Arduino Uno on `/dev/ttyUSB0`, 115200 baud. Sketch: `arduino/camera_head/camera_head.ino`. Pan is continuous-rotation; tilt is positional. Mounted upside-down (`upside_down:=true`). |
+| Wheels | 100.7 mm diameter, 0.33 m wheel base (see `description/` and `config/ekf.yaml`) |
 
-**LiDAR network setup (one-time):** give `eth0` a static IP on the lidar's
-subnet:
+Give `eth0` an address on the lidar subnet once:
 
 ```bash
 sudo nmcli con add type ethernet ifname eth0 con-name lidar \
      ipv4.method manual ipv4.addresses 192.168.11.1/24
-ping 192.168.11.2   # verify
+ping 192.168.11.2
 ```
 
-The lidar driver is [Slamtec sllidar_ros2](https://github.com/Slamtec/sllidar_ros2)
-cloned into `src/` — the apt `rplidar-ros` package is serial-only and will not
-work with the S2E.
+The S2E driver is [Slamtec sllidar_ros2](https://github.com/Slamtec/sllidar_ros2)
+in the workspace `src/`. The apt `rplidar-ros` package is serial-only and
+ignores `channel_type:=udp`.
+
+If USB enumeration swaps the ACM ports, check `ls -l /dev/serial/by-id/` and
+change the ports in `launch/launch_robot.launch.py`.
 
 ---
 
-## Web Dashboard
+## Build and run
 
-`launch_robot.launch.py` serves a self-contained browser GUI from the robot at
-**`http://<robot-ip>:8080`** — no RViz or X11 needed on a headless Pi.
-
-- **Live view** — robot model, lidar scan, motion trail, **live SLAM map**,
-  planned path + current goal flag, frontier queue and blacklist zones,
-  semantic object labels. Wheel-zoom canvas.
-- **Click-to-navigate** — arm "Nav-goal mode", click the map to send a Nav2 goal.
-- **No-go zones** — arm "🚫 No-go mode", press-and-drag to draw a circle the
-  frontier explorer must avoid; pick duration (1/5/15 min or permanent).
-- **System panel** — CPU, SoC temperature, RAM, disk, load, uptime, Pi
-  throttling alarm.
-- **💾 Save map** — writes `.pgm`/`.yaml` + a serialized pose-graph to `~/maps/`.
-- **Tools** — IMU test, IMU calibration, drive-distance test; started on
-  demand, output streamed to the console panel.
-- **Semantic vision toggle** — starts/stops the camera + YOLO-World + semantic
-  SLAM pipeline (see below).
-- **E-STOP** — kills the running tool, cancels the nav goal, streams zero
-  velocity.
-
----
-
-## Semantic Vision Pipeline
-
-Started on demand from the dashboard toggle (or manually:
-`ros2 launch Ros_lidar_bot vision.launch.py`):
-
-```
-camera (OpenCV, 640×480) → yolo (YOLO-World, open vocabulary)
-    → /yolo (String, JSON detections)
-/yolo + /scan + TF map→base_link → semantic_slam
-    → object (x, y) in map frame → /semantic_markers + /tmp/semantic_map.json
-```
-
-Object bearing comes from the bbox centre through the camera model
-(66° HFOV), depth from the lidar ray at that bearing. Detections are merged
-across sightings and only published after 3 confirmations. Labels appear in
-RViz and on the dashboard map.
-
-Requires `pip3 install ultralytics` and the `yolov8s-world.pt` weights
-(auto-downloaded on first run).
-
----
-
-## Project Structure
-
-```
-Ros_lidar_bot/
-├── launch/
-│   ├── launch_robot.launch.py       # hardware bringup (manual driving)
-│   ├── autonomous_robot.launch.py   # bringup + frontier exploration
-│   ├── vision.launch.py             # on-demand semantic vision (dashboard toggle)
-│   ├── rsp.launch.py                # robot_state_publisher (URDF)
-│   └── lidar_test.launch.py         # lidar-only smoke test
-├── Ros_lidar_bot/
-│   ├── driver_node.py               # DDSM115 RS485 driver — /cmd_vel_safe → motors, /encoder out
-│   ├── odom_node.py                 # wheel odometry → /odom_raw
-│   ├── imu_node.py                  # BNO055 serial reader → /imu
-│   ├── safety_stop_node.py          # /cmd_vel → /cmd_vel_safe scan-based filter
-│   ├── frontier_explorer_node.py    # autonomous exploration (Nav2 action client)
-│   ├── robot_dashboard_node.py      # web GUI server (port 8080)
-│   ├── joy_teleop_node.py           # gamepad → /cmd_vel
-│   ├── yolo.py                      # YOLO-World camera detector → /yolo
-│   ├── semantic_slam_node.py        # /yolo + lidar → object map
-│   ├── imu_test_node.py / imu_calibration_node.py / drive_distance_node.py
-│   └── bringup_status_node.py       # legacy terminal status board
-├── config/
-│   ├── ekf.yaml                     # robot_localization fusion (audited timestamps)
-│   ├── nav2_params.yaml             # Nav2 stack tuning
-│   ├── mapper_params_online_async.yaml  # SLAM Toolbox
-│   └── frontier_explorer.yaml       # exploration tuning
-├── description/                     # URDF/Xacro
-└── install_rpi5_jazzy.sh            # one-shot Pi setup script
-```
-
----
-
-## Installation
+The bridge setup script expects this checkout at
+`~/Desktop/ros2_ws/src/Ros_lidar_bot`. A normal colcon workspace works for
+everything else if you source that workspace's `install/setup.bash`.
 
 ```bash
-# 1. Workspace
 mkdir -p ~/ros2_ws/src && cd ~/ros2_ws/src
-
-# 2. Clone (this repo + the S2E lidar driver)
 git clone https://github.com/amey1942007/Ros_lidar_bot.git
 git clone https://github.com/Slamtec/sllidar_ros2.git
 
-# 3. ROS dependencies
 sudo apt install ros-jazzy-slam-toolbox ros-jazzy-navigation2 \
      ros-jazzy-nav2-bringup ros-jazzy-robot-localization ros-jazzy-joy
-
-# 4. Python dependencies
 pip3 install pyserial ultralytics opencv-python
 
-# 5. Build & source
-cd ~/ros2_ws && colcon build
-source install/setup.bash   # add to ~/.bashrc
+cd ~/ros2_ws && colcon build --symlink-install
+source install/setup.bash
 ```
 
-Or run `install_rpi5_jazzy.sh` on a fresh Pi.
+`install_rpi5_jazzy.sh` is the one-shot Pi installer for ROS 2 Jazzy.
 
----
-
-## Usage
-
-**Manual driving / mapping by hand:**
+Manual drive and mapping:
 
 ```bash
 ros2 launch Ros_lidar_bot launch_robot.launch.py
 ```
 
-**Fully autonomous exploration:**
+Autonomous exploration (same bringup, then `frontier_explorer` at T=22 s,
+after Nav2 which starts at T=8 s):
 
 ```bash
 ros2 launch Ros_lidar_bot autonomous_robot.launch.py
 ```
 
-Then open `http://<robot-ip>:8080` in a browser. Node logs are suppressed to
-keep the terminal clean — add `verbose:=true` to either launch to see them.
+Open `http://<pi>:8080`. Logs stay off the terminal unless you pass
+`verbose:=true`.
 
-The gamepad always works: Nav2 owns `/cmd_vel` while the stick is centred,
-the stick overrides while moved. Save the finished map from the dashboard.
-
----
-
-## ROS 2 Topics
-
-| Topic | Type | Producer → Consumer |
-|---|---|---|
-| `/cmd_vel` | Twist | Nav2 / teleop / dashboard → safety_stop |
-| `/cmd_vel_safe` | Twist | safety_stop → driver_node |
-| `/safety_blocked` | Bool | safety_stop → frontier_explorer / UI |
-| `/encoder` | JointState | driver_node → odom_node |
-| `/odom_raw` | Odometry | odom_node → EKF |
-| `/odom` | Odometry | EKF (filtered) → Nav2 / UI |
-| `/imu` | Imu | imu_node → EKF |
-| `/scan` | LaserScan | sllidar → SLAM / Nav2 / safety_stop |
-| `/map` | OccupancyGrid | slam_toolbox → Nav2 / frontier / dashboard |
-| `/yolo` | String (JSON) | yolo → semantic_slam |
-| `/semantic_markers` | MarkerArray | semantic_slam → RViz / dashboard |
-| `/frontier_debug` | MarkerArray | frontier_explorer → RViz / dashboard |
-| `/manual_blacklist` | String (JSON) | dashboard → frontier_explorer |
-
-TF chain: `map → odom` (SLAM) `→ base_footprint` (EKF) `→ base_link → laser_frame / imu_link / wheels` (URDF).
+Cloud bridge setup (venv, `/etc/amr-bridge.env`, launcher) is
+[scripts/README.md](scripts/README.md). Do not put secrets in git.
 
 ---
 
-## Configuration
+## Joy teleop
 
-The important, hardware-derived settings (change with care):
+`joy_teleop` turns `/joy` into `/cmd_vel` and `/camera_cmd`. While the stick
+is centered it publishes one zero Twist and then stays quiet, so Nav2 can use
+`/cmd_vel`. If `/joy` stops mid-motion it stops the robot.
 
-- **`ekf.yaml`** — wheel odometry is the primary sensor (vX, vYaw); gyro
-  complements yaw. The full timestamp pipeline is documented in the file
-  header.
-- **`nav2_params.yaml`** — `transform_tolerance: 1.0` everywhere, needed
-  because DenseBoost scan-matching runs ~0.6 s behind on the Pi.
-- **DenseBoost** is intentional (full angular resolution). Do not downgrade
-  the scan mode to buy CPU headroom without checking first.
-- **`frontier_explorer.yaml`** — exploration scoring, blacklist radii and
-  auto-calibration. Progress timeout must stay above Nav2's
-  `movement_time_allowance`.
-- **Serial ports** — motors `/dev/ttyACM0`, IMU `/dev/ttyACM1` (set in
-  `launch_robot.launch.py`). If USB re-enumeration swaps them, check
-  `ls -l /dev/serial/by-id/`.
+`launch_robot.launch.py` starts only one source of `/joy`. `web_gamepad`
+publishes zeros when its page goes stale, so it is not started next to a
+physical `joy_node`.
 
----
+`use_joystick` (default `auto`):
 
-## Common Issues
-
-| Symptom | Cause / fix |
+| Value | What starts |
 |---|---|
-| Dashboard shows TF `map→odom` / `odom→base_footprint` MISSING | A stale previous launch is holding the serial ports (or port 8080). `pkill -9 -f "ros2 launch"; pkill -9 -f _node`, verify with `fuser -v /dev/ttyACM* 8080/tcp`, relaunch. |
-| Driver up but robot won't move | Check `/cmd_vel_safe` is flowing (`ros2 topic hz /cmd_vel_safe`) — the driver only listens to the safety-filtered topic. For bench tests without safety_stop: `--ros-args -p cmd_vel_topic:=/cmd_vel`. |
-| "SAFETY STOP: obstacle X m ahead" | Working as intended — something is inside `min_safe_distance` (0.40 m). The robot can still rotate away. |
-| No `/scan` | Lidar Ethernet link: `ping 192.168.11.2`; check the static IP on `eth0`. |
-| Serial nodes silent / no `/encoder` or `/imu` | ACM numbers swapped after replug — see `/dev/serial/by-id/`, update ports in the launch, or replug/reboot. |
-| Robot plans but never drives | Chassis self-hits tripping the safety stop — `ignore_below` must stay ≥ the chassis radius (0.28 m). |
-| Map smears during fast spins | Known S2E timestamp skew; keep rotation speeds moderate (see `ekf.yaml` header). |
-| `worldToMap failed` errors during exploration | Frontier goal at the map boundary — raise `wall_safe_distance` in `frontier_explorer.yaml`. |
+| `1`, `true`, `yes` | `joy_node` + `joy_teleop` |
+| `curses`, `keyboard`, `terminal` | terminal `teleop_interface` (no `/joy`) |
+| `0`, `false`, `no` | `web_gamepad` + `joy_teleop`, even if a joystick exists |
+| `auto` or anything else | `joy_node` if `/dev/input/js*` exists, otherwise `web_gamepad` |
+
+### Web gamepad
+
+With no joystick plugged in, bringup serves a virtual Xbox page on port 8765
+(`host` `0.0.0.0`). Open `http://<pi>:8765` from a phone on the same network
+or Tailscale. It publishes `/joy` at 30 Hz.
+
+Left stick drives. Right stick pans and tilts the camera head. D-pad snaps the
+head to a limit. RT/LT change linear speed, RB/LB change angular speed. B saves
+a map, X toggles vision, Y starts IMU calibration, A starts or stops a waypoint
+sequence. Those four actions are HTTP calls to the dashboard on port 8080.
+
+### Bluetooth or USB pad (`joy_node`)
+
+`joy_node` is the ROS `joy` package (SDL), `device_id` 0, so the pad must show
+up as `/dev/input/js0`. USB pads usually do that as soon as they are plugged in.
+For Bluetooth, pair once on the Pi:
+
+```bash
+bluetoothctl
+power on
+agent on
+default-agent
+scan on
+# wait until the pad appears, then:
+pair <MAC>
+trust <MAC>
+connect <MAC>
+```
+
+Quit `bluetoothctl`, check `ls /dev/input/js*`, then launch. `auto` picks
+`joy_node` when a `js*` device exists. Force it with `use_joystick:=true`.
+
+`joy_teleop` axis defaults match the web gamepad (`axis_linear` 1,
+`axis_angular` 0, triggers on axes 4 and 5). A USB Xbox pad often puts the left
+trigger on axis 2; override `axis_lt` if `ros2 topic echo /joy` disagrees.
+
+### Keyboard
+
+```bash
+ros2 launch Ros_lidar_bot launch_robot.launch.py use_joystick:=keyboard
+```
+
+`teleop_interface` uses the terminal (i/,/j/l and the usual ROS keys, WASD for
+the camera head). It needs a TTY.
+
+---
+
+## Launch files
+
+Arguments below are the defaults in `launch/*.py`.
+
+### `launch_robot.launch.py`
+
+Hardware, EKF, SLAM (T=5 s), Nav2 (T=8 s), dashboard at T=0, and the cloud
+bridge at T=5 s when `enable_amr_bridge` is true.
+
+| Argument | Default | |
+|---|---|---|
+| `verbose` | `false` | Node logs on the terminal when true |
+| `expect_frontier` | `false` | Dashboard expects `frontier_explorer` |
+| `use_joystick` | `auto` | See the table above |
+| `enable_amr_bridge` | `true` | Start `amr_telemetry_bridge` |
+| `amr_bot_id` | `hardware-bot` | Passed through as the bridge `bot_id` |
+| `amr_bridge_env` | `/etc/amr-bridge.env` | Secrets file for the bridge |
+| `amr_bridge_python` | `auto` | `auto` uses `amr-bridge/.venv/bin/python` when that file is executable, otherwise `python3`. An explicit path is used as given |
+
+```bash
+ros2 launch Ros_lidar_bot launch_robot.launch.py \
+  enable_amr_bridge:=false \
+  amr_bot_id:=hardware-bot \
+  amr_bridge_python:=auto
+```
+
+### `autonomous_robot.launch.py`
+
+Includes `launch_robot.launch.py` with `expect_frontier:=true`, then starts
+`frontier_explorer_node` at T=22 s. Argument: `verbose` (default `false`).
+Other `launch_robot` arguments keep their defaults, including
+`enable_amr_bridge:=true`.
+
+### `amr_bridge.launch.py`
+
+Included by `launch_robot` (also runnable on its own). Same file is copied at
+`amr-bridge/launch/amr_bridge.launch.py`.
+
+| Argument | Default | |
+|---|---|---|
+| `bot_id` | `hardware-bot` | Overrides `AMR_BOT_ID` from the env file |
+| `env_file` | `/etc/amr-bridge.env` | |
+| `dashboard` | `http://127.0.0.1:8080` | Overrides `AMR_DASHBOARD_URL` |
+| `gamepad` | `http://127.0.0.1:8765` | Overrides `AMR_GAMEPAD_URL`. `none`, `off`, or `-` unsets it so cloud joy uses the dashboard nudge instead |
+| `python` | `auto` | Same rule as `amr_bridge_python` |
+
+`launch_robot` passes `gamepad:=none` unless it actually started `web_gamepad`.
+
+### `vision.launch.py`
+
+Not part of bringup. The dashboard starts it, or:
+
+```bash
+ros2 launch Ros_lidar_bot vision.launch.py
+```
+
+| Argument | Default | |
+|---|---|---|
+| `camera` | `0` | Picamera2 camera number or OpenCV index |
+| `conf` | `0.25` | YOLO confidence |
+| `rate` | `5.0` | Max inference FPS |
+| `model` | `~/.cache/Ros_lidar_bot/yolov8s-world.pt` | Downloaded on first run |
+| `backend` | `auto` | `auto`, `picamera2`, or `cv2` |
+| `flip` | `true` | Rotate the image 180° (camera mounted upside-down) |
+
+If the YOLO process exits, this launch shuts down with it.
+
+### `rsp.launch.py`
+
+Included by bringup. `use_sim_time` default `false`, `output` default `log`.
+`joint_state_publisher` merges `/encoder` and `/camera_joint_states`.
+
+### `lidar_test.launch.py`
+
+Lidar plus a static TF, no motors. `channel_type` `udp`, `udp_ip`
+`192.168.11.2`, `udp_port` `8089`, `frame_id` `laser_frame`, `inverted`
+`false`, `angle_compensate` `true`, `scan_mode` `DenseBoost`.
+
+---
+
+## Other pieces
+
+**Dashboard** (`robot_dashboard`, port 8080). Map, scan, trail, semantic
+labels, frontier queue, click-to-send a Nav2 goal, no-go circles for the
+frontier explorer, CPU/RAM/temperature and Pi throttle flags, save map
+(`.pgm`/`.yaml` and a pose-graph under `~/maps/`), and on-demand IMU test,
+IMU calibration, and drive-distance. The vision toggle starts and stops
+`vision.launch.py`. E-STOP publishes zero `/cmd_vel`, cancels the nav goal,
+and kills the running tool. It leaves the vision pipeline up.
+
+**SLAM.** `slam_toolbox` `online_async_launch.py` with
+`config/mapper_params_online_async.yaml`, started 5 s after bringup.
+
+**Nav2.** `nav2_bringup` `navigation_launch.py` with `config/nav2_params.yaml`,
+started at 8 s. `transform_tolerance` is 1.0 s because DenseBoost scan matching
+on the Pi lags by about 0.6 s.
+
+**Frontier explorer.** Only `autonomous_robot.launch.py`. It subscribes to
+`/map`, `/safety_blocked`, and `/manual_blacklist`. Parameters:
+`config/frontier_explorer.yaml`.
+
+**Camera head.** `camera_servo` follows `/camera_cmd` from `joy_teleop` or
+the keyboard teleop.
+
+**YOLO / semantic map.** `yolo` publishes JSON on `/yolo`. `semantic_slam_node`
+projects detections with `/scan` and TF `map` → `base_link`, and publishes
+`/semantic_markers` plus `/tmp/semantic_map.json`. Needs `ultralytics`.
+
+**Safety stop.** Parameters in `launch_robot.launch.py`: `min_safe_distance`
+0.35 m, `ignore_below` 0.30 m, front and rear openings 50°, `clear_margin`
+0.10 m, `odom_raw_timeout_sec` 0.5 s.
+
+**Cloud bridge.** Off by passing `enable_amr_bridge:=false`. On by default.
+Setup, the env file, and rollback: [scripts/README.md](scripts/README.md).
+The longer bridge notes are `amr-bridge/PI_SETUP.md` and
+`amr-bridge/AGENT_SETUP_AND_INTEGRATION.md`. No secrets belong in this repo.
+
+---
+
+## Topics
+
+| Topic | Type | Path |
+|---|---|---|
+| `/cmd_vel` | Twist | Nav2, teleop, or dashboard → safety_stop |
+| `/cmd_vel_safe` | Twist | safety_stop → driver_node |
+| `/safety_blocked` | Bool | safety_stop → frontier explorer and dashboard |
+| `/encoder` | JointState | driver_node → odom_node and joint_state_publisher |
+| `/odom_raw` | Odometry | odom_node → EKF |
+| `/odom` | Odometry | EKF → Nav2 and dashboard |
+| `/imu` | Imu | imu_node → EKF |
+| `/scan_raw` | LaserScan | sllidar_node → scan filter |
+| `/scan` | LaserScan | scan filter → SLAM, Nav2, safety_stop |
+| `/map` | OccupancyGrid | slam_toolbox → Nav2, frontier, dashboard |
+| `/yolo` | String (JSON) | yolo → semantic_slam |
+| `/semantic_markers` | MarkerArray | semantic_slam → dashboard |
+| `/frontier_debug` | MarkerArray | frontier_explorer → dashboard |
+| `/manual_blacklist` | String (JSON) | dashboard → frontier_explorer |
+| `/joy` | Joy | joy_node or web_gamepad → joy_teleop |
+| `/camera_cmd` | Twist | joy_teleop or keyboard teleop → camera_servo (`angular.z` pan, `angular.y` tilt) |
+| `/camera_joint_states` | JointState | camera_servo → joint_state_publisher |
+
+TF: `map` → `odom` (SLAM) → `base_footprint` (EKF) → `base_link` and the
+lidar, IMU, and wheel frames (URDF).
+
+---
+
+## Config files
+
+- `config/ekf.yaml` — wheel odometry is the main source; the gyro complements yaw.
+- `config/nav2_params.yaml` — `transform_tolerance: 1.0` for the DenseBoost lag.
+- `config/mapper_params_online_async.yaml` — SLAM Toolbox.
+- `config/frontier_explorer.yaml` — exploration scoring and blacklist.
+
+DenseBoost is the scan mode set in `launch_robot.launch.py`. It is the full
+S2E resolution and costs CPU on the Pi.
+
+---
+
+## Common problems
+
+| What you see | What it usually is |
+|---|---|
+| Dashboard TF `map`→`odom` or `odom`→`base_footprint` missing | A previous launch still holds the serial ports or port 8080. Stop it and launch again. |
+| Driver is up, robot does not move | The driver only listens to `/cmd_vel_safe`. Check `ros2 topic hz /cmd_vel_safe`. |
+| Safety stop says an obstacle is ahead | A return is inside 0.35 m in the front opening. The robot can still rotate. |
+| No `/scan` | `ping 192.168.11.2` and check the `eth0` address. |
+| No `/encoder` or `/imu` | `/dev/ttyACM0` and `/dev/ttyACM1` swapped. See `/dev/serial/by-id/`. |
+| Web gamepad and a real pad fight | Do not run both. `auto` already picks one. `web_gamepad` is only the branch with no `js*` device, or `use_joystick:=false`. |
+| Bridge did not start | `enable_amr_bridge` defaults to true, but a missing env file or a Python without `supabase` skips the bridge and leaves the robot up. See [scripts/README.md](scripts/README.md). |

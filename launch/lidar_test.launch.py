@@ -84,7 +84,7 @@ def _launch_setup(context, *args, **kwargs):
     )
 
     # Official Slamtec S2E driver (UDP). Keep node name rplidar_node so
-    # bringup_status / other tooling still find it.
+    # robot_dashboard / other tooling still find it.
     lidar_node = Node(
         package='sllidar_ros2',
         executable='sllidar_node',

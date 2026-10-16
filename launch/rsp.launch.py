@@ -37,7 +37,9 @@ def generate_launch_description():
         output=output_mode,
         parameters=[{
             'use_sim_time': use_sim_time,
-            'source_list': ['/encoder']
+            # /encoder = wheel joints (driver_node); /camera_joint_states =
+            # pan/tilt head (camera_servo_node). Merged here so TF reflects both.
+            'source_list': ['/encoder', '/camera_joint_states']
         }],
     )
 
@@ -49,7 +51,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'output',
             default_value='log',
-            description='screen or log — use log so bringup_status owns the terminal'),
+            description='screen or log — use log to keep the terminal quiet for the dashboard'),
 
         node_robot_state_publisher,
         node_joint_state_publisher

@@ -2,7 +2,7 @@
 """
 robot_dashboard_node.py — Browser-based robot dashboard served from the RPi.
 
-Replaces the terminal bringup_status board with an interactive web GUI.
+Interactive web GUI for bringup health, live robot/lidar view, and tools.
 The Pi runs headless over SSH, so instead of opening a window there (X11
 forwarding is laggy and fragile), this node embeds a small HTTP server and
 the laptop/phone simply opens  http://<pi-ip>:8080  in a browser.
@@ -32,6 +32,7 @@ websocket dependency, no CDN, works offline.
 """
 
 import base64
+import glob
 import json
 import math
 import os
@@ -50,6 +51,8 @@ import rclpy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry, OccupancyGrid, Path
 from rclpy.action import ActionClient
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from sensor_msgs.msg import Imu, LaserScan
@@ -128,7 +131,7 @@ TOOLS = {
 EXPECTED_NODES = [
     "robot_state_publisher", "imu_node", "driver_node", "odom_node",
     "rplidar_node", "scan_min_range_filter", "ekf_filter_node", "slam_toolbox", "joy_node",
-    "joy_teleop", "bt_navigator", "controller_server", "planner_server",
+    "joy_teleop", "camera_servo", "bt_navigator", "controller_server", "planner_server",
     "behavior_server", "velocity_smoother", "collision_monitor",
 ]
 
@@ -180,12 +183,13 @@ class Dashboard(Node):
         self._lock = threading.Lock()
         self._state = {
             "pose": [0.0, 0.0, 0.0], "vel": [0.0, 0.0],
-            "imu": {"gz": 0.0, "ax": 0.0, "ay": 0.0}, "scan": [],
+            "imu": {"gz": 0.0, "ax": 0.0, "ay": 0.0},
             "rates": {}, "nodes": {}, "tf": {}, "tool": None,
             "cmd": [0.0, 0.0], "map_pose": None, "nav": None,
             "yolo_det": [], "sem": [],
-            "frontier": {"zones": [], "queue": []},
             "path": [], "goal": None, "sys": {},
+            "seq": {"goals": [], "idx": -1},
+            "scan": [], "frontier": {"zones": [], "queue": []},
         }
         self._last_msg_time = {}
         self._msg_counts = {}
@@ -193,6 +197,8 @@ class Dashboard(Node):
         self._tool_proc = None
         self._tool_name = None
         self._vision_proc = None
+        self._vision_lock = threading.Lock()
+        self._vision_starting = False
         self._map_saves_pending = 0   # >0 while save_map service calls in flight
         self._latest_map = None
         self._map_dirty = False
@@ -205,19 +211,45 @@ class Dashboard(Node):
         # cannot revive a superseded or cancelled NavigateToPose goal.
         self._nav_gen = 0
 
+        # Waypoint sequence state
+        self._seq_goals: list = []   # [(x_odom, y_odom), …] in odom frame
+        self._seq_idx:   int  = -1   # currently-running goal index; -1 = idle
+
+        # Camera preview: yolo.py (when vision is running) POSTs JPEG frames
+        # to /api/camera_frame over loopback -- never a ROS topic/publisher,
+        # so it costs nothing when nobody has the dashboard open. Browsers
+        # pull it back out via the /camera.mjpg multipart stream below.
+        self._cam_cond = threading.Condition()
+        self._cam_frame = None
+        self._cam_seq = 0
+
+        # Every callback runs in one reentrant group so the MultiThreadedExecutor
+        # (see main) can service them in parallel — a slow TF/costmap tick can no
+        # longer starve the 10 Hz browser push or an incoming nav goal. Shared
+        # state stays guarded by self._lock; nav bookkeeping by self._nav_lock.
+        cbg = ReentrantCallbackGroup()
+        self._cbg = cbg
+        self._nav_lock = threading.Lock()
+
+        # Map compression (zlib + base64 of the whole grid) is the single
+        # heaviest job on the RPi5 — run it on its own thread, event-driven,
+        # so it never blocks a ROS callback. _map_cb just flags + wakes it.
+        self._map_event = threading.Event()
+        self._map_worker = threading.Thread(target=self._map_compress_loop, daemon=True)
+
         self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
-        self.create_subscription(Odometry, "/odom", self._odom_cb, 10)
-        self.create_subscription(Odometry, "/odom_raw", self._mk_rate_cb("/odom_raw"), 10)
-        self.create_subscription(Imu, "/imu", self._imu_cb, 20)
-        self.create_subscription(LaserScan, "/scan", self._scan_cb, qos_profile_sensor_data)
-        self.create_subscription(Twist, "/cmd_vel", self._cmd_cb, 10)
-        self.create_subscription(Path, "/plan", self._plan_cb, 5)
+        self.create_subscription(Odometry, "/odom", self._odom_cb, 10, callback_group=cbg)
+        self.create_subscription(Odometry, "/odom_raw", self._mk_rate_cb("/odom_raw"), 10, callback_group=cbg)
+        self.create_subscription(Imu, "/imu", self._imu_cb, 20, callback_group=cbg)
+        self.create_subscription(LaserScan, "/scan", self._scan_cb, qos_profile_sensor_data, callback_group=cbg)
+        self.create_subscription(Twist, "/cmd_vel", self._cmd_cb, 10, callback_group=cbg)
+        self.create_subscription(Path, "/plan", self._plan_cb, 5, callback_group=cbg)
         map_qos = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
-        self.create_subscription(OccupancyGrid, "/map", self._map_cb, map_qos)
-        self.create_subscription(String, "/yolo", self._yolo_cb, 10)
+        self.create_subscription(OccupancyGrid, "/map", self._map_cb, map_qos, callback_group=cbg)
+        self.create_subscription(String, "/yolo", self._yolo_cb, 10, callback_group=cbg)
         if _MARKERS_OK:
-            self.create_subscription(MarkerArray, "/semantic_markers", self._sem_cb, 10)
-            self.create_subscription(MarkerArray, "/frontier_debug", self._frontier_cb, 10)
+            self.create_subscription(MarkerArray, "/semantic_markers", self._sem_cb, 10, callback_group=cbg)
+            self.create_subscription(MarkerArray, "/frontier_debug", self._frontier_cb, 10, callback_group=cbg)
 
         # manual no-go zones → frontier_explorer (map frame, JSON)
         self._bl_pub = self.create_publisher(String, "/manual_blacklist", 10)
@@ -230,7 +262,7 @@ class Dashboard(Node):
 
         self._prev_cpu = None
         self._vcgencmd_ok = True
-        self.create_timer(5.0, self._sys_tick)
+        self.create_timer(5.0, self._sys_tick, callback_group=cbg)
 
         self._tf_buffer = None
         if _TF2_OK:
@@ -239,12 +271,14 @@ class Dashboard(Node):
 
         self._nav_client = None
         if _NAV2_OK:
-            self._nav_client = ActionClient(self, NavigateToPose, "/navigate_to_pose")
+            self._nav_client = ActionClient(
+                self, NavigateToPose, "/navigate_to_pose", callback_group=cbg)
 
-        self.create_timer(0.1, self._tick)        # 10 Hz state → browser
-        self.create_timer(2.0, self._slow_tick)   # node list, TF, rates
-        self.create_timer(0.05, self._motion_tick)  # nudge / e-stop pulses
+        self.create_timer(0.1, self._tick, callback_group=cbg)        # 10 Hz state → browser
+        self.create_timer(2.0, self._slow_tick, callback_group=cbg)   # node list, TF, rates
+        self.create_timer(0.05, self._motion_tick, callback_group=cbg)  # nudge / e-stop pulses
 
+        self._map_worker.start()
         self.log(f"Dashboard up — open http://{_local_ip()}:{self.port}")
 
     # ── Logging to the browser console panel ─────────────────────────────────
@@ -293,6 +327,7 @@ class Dashboard(Node):
         with self._lock:
             self._latest_map = m
             self._map_dirty = True
+        self._map_event.set()   # wake the off-thread compressor
 
     def _yolo_cb(self, m):
         self._mark("/yolo")
@@ -396,10 +431,20 @@ class Dashboard(Node):
             self._state["tf"] = tf_state
             self._state["map_pose"] = map_pose
 
-        self._push_map()
-
     # ── Live map → browser ───────────────────────────────────────────────────
     MAP_MAX_CELLS = 220   # per-side cap after downsampling (browser payload)
+
+    def _map_compress_loop(self):
+        # Dedicated thread: blocks until _map_cb flags a new grid, then does the
+        # zlib/base64 compression here instead of on a ROS callback. Daemon —
+        # dies with the process on shutdown.
+        while True:
+            self._map_event.wait()
+            self._map_event.clear()
+            try:
+                self._push_map()
+            except Exception:
+                pass
 
     def _push_map(self):
         with self._lock:
@@ -565,21 +610,72 @@ class Dashboard(Node):
         return {"ok": True}
 
     # ── Semantic vision pipeline (independent of the one-shot tool slot) ─────
+    def _reclaim_csi_camera(self):
+        """Free the CSI camera from leftover YOLO / libcamera holders.
+
+        A previous vision toggle that didn't fully die (or a hung Picamera2)
+        keeps the PiSP pipeline open → next start fails with
+        'Device or resource busy' / 'Pipeline handler in use by another process'
+        and the dashboard camera feed stays blank while old markers linger.
+        """
+        patterns = (
+            r"/lib/Ros_lidar_bot/yolo(\s|$)",
+            r"yolo_world_publisher",
+            r"vision\.launch\.py",
+            r"semantic_slam_node",
+            r"rpicam-(hello|vid|still|jpeg)",
+            r"libcamerify",
+        )
+        for pat in patterns:
+            subprocess.run(
+                ["pkill", "-9", "-f", pat],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Pi CSI (imx708) shows up on /dev/media* — free those only.
+        # Don't blanket-kill /dev/video* (can include unrelated V4L devices).
+        for path in sorted(glob.glob("/dev/media*")):
+            subprocess.run(
+                ["fuser", "-k", "-9", path],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.6)
+
     def start_vision(self):
-        if self._vision_proc and self._vision_proc.poll() is None:
-            return {"ok": True, "note": "already running"}
-        cmd = ["ros2", "launch", "Ros_lidar_bot", "vision.launch.py"]
-        self.log("▶ starting semantic vision (YOLO-World + semantic SLAM)", "run")
+        with self._vision_lock:
+            if self._vision_proc and self._vision_proc.poll() is None:
+                return {"ok": True, "note": "already running"}
+            if self._vision_starting:
+                return {"ok": True, "note": "start already in progress"}
+            self._vision_starting = True
         try:
-            self._vision_proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1, start_new_session=True)
-        except OSError as exc:
-            self.log(f"failed to start vision: {exc}", "error")
-            return {"ok": False, "error": str(exc)}
-        threading.Thread(target=self._pump_vision, args=(self._vision_proc,),
-                         daemon=True).start()
-        return {"ok": True}
+            # Always clear orphans before open — camera is exclusive on the Pi.
+            self._reclaim_csi_camera()
+            cmd = ["ros2", "launch", "Ros_lidar_bot", "vision.launch.py"]
+            # libcamerify LD_PRELOADs a CameraManager so OpenCV/V4L2 can talk to
+            # CSI cameras when picamera2 is missing (e.g. plain Ubuntu). It is
+            # NOT harmless alongside picamera2: Picamera2 creates its own
+            # CameraManager, and libcamera aborts with
+            # "Multiple CameraManager objects are not allowed". Only wrap when
+            # picamera2 is unavailable.
+            try:
+                import picamera2  # noqa: F401
+                has_picamera2 = True
+            except ImportError:
+                has_picamera2 = False
+            if shutil.which("libcamerify") and not has_picamera2:
+                cmd = ["libcamerify"] + cmd
+            self.log("▶ starting semantic vision (YOLO-World + semantic SLAM)", "run")
+            try:
+                self._vision_proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1, start_new_session=True)
+            except OSError as exc:
+                self.log(f"failed to start vision: {exc}", "error")
+                return {"ok": False, "error": str(exc)}
+            threading.Thread(target=self._pump_vision, args=(self._vision_proc,),
+                             daemon=True).start()
+            return {"ok": True}
+        finally:
+            with self._vision_lock:
+                self._vision_starting = False
 
     def _pump_vision(self, proc):
         for line in proc.stdout:
@@ -591,22 +687,62 @@ class Dashboard(Node):
         rc = proc.wait()
         with self._lock:
             self._state["yolo_det"] = []
-        lvl = "info" if rc == 0 else "error"
+            self._state["sem"] = []
+        with self._cam_cond:
+            self._cam_frame = None
+            self._cam_seq += 1
+            self._cam_cond.notify_all()   # wakes streamers so the <img> clears
+        # -2 SIGINT / -15 SIGTERM = intentional stop (e.g. second X press)
+        lvl = "info" if rc in (0, -2, -15) else "error"
         self.log(f"■ semantic vision exited (code {rc})", lvl)
 
     def stop_vision(self):
-        proc = self._vision_proc
-        if not proc or proc.poll() is not None:
-            return {"ok": True, "note": "not running"}
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+        with self._vision_lock:
+            proc = self._vision_proc
+            starting = self._vision_starting
+        if starting and (not proc or proc.poll() is not None):
+            # Still inside reclaim/Popen — a rapid second X; wait briefly then kill.
+            self.log("vision start in progress — cancelling…", "info")
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                with self._vision_lock:
+                    if not self._vision_starting:
+                        proc = self._vision_proc
+                        break
+                time.sleep(0.1)
+            with self._vision_lock:
+                proc = self._vision_proc
+        if proc and proc.poll() is None:
             try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+                os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    try:
+                        proc.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        pass
+            except ProcessLookupError:
+                pass
+        # SIGINT doesn't always release the CSI pipeline — force-free it.
+        self._reclaim_csi_camera()
+        self._vision_proc = None
+        with self._lock:
+            self._state["yolo_det"] = []
+            self._state["sem"] = []
+        with self._cam_cond:
+            self._cam_frame = None
+            self._cam_seq += 1
+            self._cam_cond.notify_all()
         return {"ok": True}
+
+    # ── Camera preview frame (from yolo.py, loopback only) ──────────────────
+    def set_camera_frame(self, data: bytes):
+        with self._cam_cond:
+            self._cam_frame = data
+            self._cam_seq += 1
+            self._cam_cond.notify_all()
 
     # ── Nudge / E-stop pulse publisher ───────────────────────────────────────
     def _motion_tick(self):
@@ -740,19 +876,22 @@ class Dashboard(Node):
         yaw = math.atan2(y_odom - ry, x_odom - rx) + th  # face travel direction
 
         # Preempt any in-flight goal so a second click always sticks.
-        prev = self._nav_goal_handle
-        self._nav_goal_handle = None
-        self._nav_gen += 1
-        gen = self._nav_gen
+        # Locked: the action-client callbacks now run on parallel executor
+        # threads, so the gen bump + handle swap must be atomic vs them.
+        with self._nav_lock:
+            prev = self._nav_goal_handle
+            self._nav_goal_handle = None
+            self._nav_gen += 1
+            gen = self._nav_gen
         if prev is not None:
             try:
                 prev.cancel_goal_async()
             except Exception:
                 pass
 
-        # Flag appears immediately (odom frame, matches canvas).
+        # Flag appears immediately in map frame.
         with self._lock:
-            self._state["goal"] = [round(float(x_odom), 2), round(float(y_odom), 2)]
+            self._state["goal"] = [round(float(gx), 2), round(float(gy), 2)]
             self._state["path"] = []
 
         goal = NavigateToPose.Goal()
@@ -804,19 +943,33 @@ class Dashboard(Node):
             self.log(f"nav goal error: {exc}", "error")
             self._nav_goal_handle = None
             self._clear_nav_viz()
+            self._seq_stop_internal()   # abort sequence on error
             return
         names = {4: "SUCCEEDED", 5: "CANCELED", 6: "ABORTED"}
         lvl = "info" if status in (4, 5) else "error"
         self.log(f"nav goal finished: {names.get(status, status)}", lvl)
         self._nav_goal_handle = None
         self._clear_nav_viz()
+        # Sequence auto-advance: SUCCEEDED → send next goal; otherwise stop.
+        if status == 4 and self._seq_idx >= 0:
+            self._seq_next()
+        elif self._seq_idx >= 0:
+            self._seq_stop_internal()
 
     def cancel_nav(self):
-        """Cancel immediately — UI clears now; Nav2 cancel is async."""
-        self._nav_gen += 1
-        gh = self._nav_goal_handle
-        self._nav_goal_handle = None
+        """Cancel immediately — UI clears now; Nav2 cancel is async.
+
+        Also stops any active waypoint sequence so a manual cancel or
+        E-stop always leaves the system fully idle.
+        """
+        with self._nav_lock:
+            self._nav_gen += 1
+            gh = self._nav_goal_handle
+            self._nav_goal_handle = None
         self._clear_nav_viz()
+        # Abort any running sequence before cancelling the goal so the
+        # sequence does not try to advance after the cancel completes.
+        self._seq_stop_internal()
         if gh is not None:
             try:
                 gh.cancel_goal_async()
@@ -824,6 +977,110 @@ class Dashboard(Node):
                 pass
         self.log("✕ nav goal cancelled", "info")
         return {"ok": True}
+
+    # ── Waypoint sequence ─────────────────────────────────────────────────────
+
+    def _update_seq_state(self):
+        """Push current sequence state into the SSE broadcast dict."""
+        with self._lock:
+            self._state["seq"] = {
+                "goals": [[round(x, 2), round(y, 2)] for x, y in self._seq_goals],
+                "idx": self._seq_idx,
+            }
+
+    def _seq_stop_internal(self):
+        """Reset sequence index without cancelling the nav goal.
+
+        Called from _nav_done (callback context) or cancel_nav, where
+        the nav goal is already being handled separately.
+        """
+        if self._seq_idx >= 0:
+            self._seq_idx = -1
+            self._update_seq_state()
+
+    def seq_add(self, x_odom, y_odom):
+        """Append a waypoint to the sequence queue."""
+        if self._seq_idx >= 0:
+            return {"ok": False, "error": "stop the sequence before editing goals"}
+        self._seq_goals.append((float(x_odom), float(y_odom)))
+        self._update_seq_state()
+        return {"ok": True, "count": len(self._seq_goals)}
+
+    def seq_remove(self, idx):
+        """Remove the waypoint at position idx."""
+        if self._seq_idx >= 0:
+            return {"ok": False, "error": "stop the sequence before editing goals"}
+        if idx < 0 or idx >= len(self._seq_goals):
+            return {"ok": False, "error": "index out of range"}
+        self._seq_goals.pop(idx)
+        self._update_seq_state()
+        return {"ok": True}
+
+    def seq_clear(self):
+        """Remove all waypoints."""
+        if self._seq_idx >= 0:
+            return {"ok": False, "error": "stop the sequence before clearing goals"}
+        self._seq_goals = []
+        self._update_seq_state()
+        return {"ok": True}
+
+    def seq_start(self):
+        """Begin executing the waypoint sequence from goal 0."""
+        if not self._seq_goals:
+            return {"ok": False, "error": "no waypoints — add some first"}
+        if self._seq_idx >= 0:
+            return {"ok": True, "note": "sequence already running"}
+        self._seq_idx = 0
+        self._update_seq_state()
+        x, y = self._seq_goals[0]
+        self.log(f"📍 Waypoint sequence started — {len(self._seq_goals)} goal(s)", "run")
+        self.log(f"📍 Goal 1 / {len(self._seq_goals)}: ({x:.2f}, {y:.2f})", "run")
+        result = self.nav_goal(x, y)
+        if result and not result.get("ok", True):
+            self.log(f"📍 Sequence: failed to send goal 1 — {result.get('error', '?')}", "error")
+            self._seq_stop_internal()
+        return result or {"ok": True}
+
+    def _seq_next(self):
+        """Advance to the next waypoint after the current one succeeded.
+
+        Called from _nav_done in the action-callback context.
+        """
+        next_idx = self._seq_idx + 1
+        if next_idx >= len(self._seq_goals):
+            self.log(
+                f"✅ Waypoint sequence complete — {len(self._seq_goals)} goal(s) reached",
+                "info")
+            self._seq_stop_internal()
+            return
+        self._seq_idx = next_idx
+        self._update_seq_state()
+        x, y = self._seq_goals[next_idx]
+        self.log(f"📍 Goal {next_idx + 1} / {len(self._seq_goals)}: ({x:.2f}, {y:.2f})", "run")
+        result = self.nav_goal(x, y)
+        if result and not result.get("ok", True):
+            self.log(
+                f"📍 Sequence: failed to send goal {next_idx + 1} — "
+                f"{result.get('error', '?')}", "error")
+            self._seq_stop_internal()
+
+    def seq_stop(self):
+        """Cancel the active sequence and the in-flight nav goal."""
+        if self._seq_idx < 0:
+            return {"ok": True, "note": "sequence not running"}
+        # cancel_nav resets _seq_idx via _seq_stop_internal, so set it to -1
+        # first to suppress the cancel_nav log about the sequence.
+        self._seq_idx = -1
+        self._update_seq_state()
+        self.cancel_nav()
+        self.log("■ Waypoint sequence stopped", "info")
+        return {"ok": True}
+
+    def seq_toggle(self):
+        """Toggle sequence start/stop — wired to gamepad button A."""
+        if self._seq_idx >= 0:
+            return self.seq_stop()
+        return self.seq_start()
 
 
 # ── HTTP layer ────────────────────────────────────────────────────────────────
@@ -839,14 +1096,17 @@ class Handler(BaseHTTPRequestHandler):
         return self.server.dash
 
     def do_GET(self):
-        if self.path in ("/", "/index.html"):
+        # BaseHTTPRequestHandler keeps ?query on self.path — strip it so
+        # /camera.mjpg?ts=… matches (otherwise the <img> gets 404 / broken icon).
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/index.html"):
             body = PAGE.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-        elif self.path == "/events":
+        elif path == "/events":
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
@@ -869,10 +1129,41 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             finally:
                 self.dash.hub.detach(q)
+        elif path == "/camera.mjpg":
+            self.send_response(200)
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            last_seq = -1
+            try:
+                while True:
+                    with self.dash._cam_cond:
+                        self.dash._cam_cond.wait_for(
+                            lambda: self.dash._cam_seq != last_seq, timeout=5.0)
+                        frame, last_seq = self.dash._cam_frame, self.dash._cam_seq
+                    if frame is None:
+                        continue
+                    self.wfile.write(
+                        b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " +
+                        str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n")
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
         else:
             self.send_error(404)
 
     def do_POST(self):
+        if self.path == "/api/camera_frame":
+            length = int(self.headers.get("Content-Length", 0))
+            self.dash.set_camera_frame(self.rfile.read(length))
+            body = b'{"ok":true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         length = int(self.headers.get("Content-Length", 0))
         try:
             payload = json.loads(self.rfile.read(length) or b"{}")
@@ -894,6 +1185,19 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/nav_cancel":
             self.dash.cancel_nav()
             out = {"ok": True}
+        elif self.path == "/api/seq_add":
+            out = self.dash.seq_add(float(payload.get("x", 0.0)),
+                                    float(payload.get("y", 0.0)))
+        elif self.path == "/api/seq_remove":
+            out = self.dash.seq_remove(int(payload.get("idx", -1)))
+        elif self.path == "/api/seq_clear":
+            out = self.dash.seq_clear()
+        elif self.path == "/api/seq_start":
+            out = self.dash.seq_start()
+        elif self.path == "/api/seq_stop":
+            out = self.dash.seq_stop()
+        elif self.path == "/api/seq_toggle":
+            out = self.dash.seq_toggle()
         elif self.path == "/api/vision":
             if payload.get("toggle"):
                 proc = self.dash._vision_proc
@@ -1004,6 +1308,19 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
 .ln .t{color:var(--dim);margin-right:8px}
 .ln.info{color:var(--tx)} .ln.error{color:var(--err)} .ln.run{color:var(--run)} .ln.tool{color:#9fb8cc}
 @media (max-width:900px){main{grid-template-columns:1fr}}
+#camcard{flex-shrink:0}
+#camfeed{width:100%;border-radius:8px;background:#0a0f14;display:block;max-height:220px;object-fit:contain}
+#campause{color:var(--dim);font-size:12px;padding:10px 0;text-align:center}
+.sq-in{width:62px;background:#0a0f14;color:var(--acc);border:1px solid var(--edge);border-radius:6px;padding:5px 7px;font-family:ui-monospace,monospace}
+#seqlist{display:flex;flex-direction:column;gap:4px;max-height:200px;overflow-y:auto;margin-bottom:2px}
+.sq-item{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:6px;background:#0a0f14;border:1px solid var(--edge);font-size:12px;font-family:ui-monospace,monospace}
+.sq-item.sq-active{border-color:var(--ok);background:#0d2216}
+.sq-item.sq-done{opacity:.4}
+.sq-num{min-width:22px;font-weight:700;color:var(--acc)}
+.sq-active .sq-num{color:var(--ok)}
+.sq-rm{background:none;border:none;color:var(--dim);cursor:pointer;padding:0 4px;font-size:14px;margin-left:auto;line-height:1}
+.sq-rm:hover{color:var(--err)}
+#sq_status{font-size:12px;min-height:18px;margin-top:6px}
 </style></head><body>
 
 <header>
@@ -1033,6 +1350,7 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
     <div id="navmode">
       <label><input type="checkbox" id="navarm"> Nav-goal mode (click canvas to send goal)</label>
       <button class="btn stop" id="navcancel" style="padding:4px 12px">cancel goal</button>
+      <label style="margin-left:8px"><input type="checkbox" id="seqarm"> 📍 Seq-add mode (click = add waypoint)</label>
       <label style="margin-left:8px"><input type="checkbox" id="blarm"> 🚫 No-go mode (drag a circle)</label>
       <select id="bldur">
         <option value="60">1 min</option><option value="300" selected>5 min</option>
@@ -1103,7 +1421,29 @@ td.num{font-family:ui-monospace,Consolas,monospace;text-align:right}
 
       <div style="color:var(--dim);font-size:12px;margin-top:10px">
         🎮 Gamepad: <b>B</b> save map · <b>X</b> vision on/off ·
-        <b>LT+RT+LB+RB</b> IMU calibration</div>
+        <b>A</b> waypoint seq start/stop · <b>LT+RT+LB+RB</b> IMU calibration</div>
+    </section>
+
+    <section class="card">
+      <h2>📍 Waypoint Sequence</h2>
+      <div id="seqlist"></div>
+      <div style="display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap">
+        <label style="font-size:12px;color:var(--dim)">x <input id="sq_x" class="sq-in" value="0.00"></label>
+        <label style="font-size:12px;color:var(--dim)">y <input id="sq_y" class="sq-in" value="0.00"></label>
+        <button class="btn" id="sq_add" style="padding:5px 12px">✚ Add</button>
+        <button class="btn stop" id="sq_clear" style="padding:5px 10px">Clear all</button>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn" id="sq_start">▶ Start sequence</button>
+        <button class="btn stop" id="sq_stop">■ Stop</button>
+      </div>
+      <div id="sq_status"></div>
+    </section>
+
+    <section class="card" id="camcard">
+      <h2>📷 Camera feed</h2>
+      <img id="camfeed" style="display:none">
+      <p id="campause">Vision off — start vision to see camera feed</p>
     </section>
   </div>
 
@@ -1180,6 +1520,14 @@ function updatePanels(m){
   vb.textContent=m.vision?"Stop":"Start";
   vb.className=m.vision?"btn stop":"btn";
   $("visionpill").style.display=m.vision?"":"none";
+  const cam=$("camfeed"),pause=$("campause");
+  if(m.vision){
+    if(cam.style.display==="none"){cam.src="/camera.mjpg?ts="+Date.now();cam.style.display="block";}
+    pause.style.display="none";
+  }else if(cam.style.display!=="none"){
+    cam.style.display="none";cam.removeAttribute("src");   // closes the mjpeg connection
+    pause.style.display="";
+  }
   $("savepill").style.display=m.saving?"":"none";
   $("yolodet").textContent=(m.yolo_det&&m.yolo_det.length)?("👁 "+m.yolo_det.join(", ")):"";
 
@@ -1188,6 +1536,28 @@ function updatePanels(m){
     pill.style.display="";pill.textContent="⏳ "+m.tool;}
   else{run.style.display="none";pill.style.display="none";}
   document.querySelectorAll("[data-tool]").forEach(b=>b.disabled=!!m.tool);
+
+  // Waypoint sequence UI
+  if(m.seq){
+    const goals=m.seq.goals||[], idx=m.seq.idx;
+    const isRun=idx>=0;
+    const list=$("seqlist");
+    list.innerHTML=goals.map((g,i)=>{
+      const cls=i===idx?"sq-item sq-active":(i<idx?"sq-item sq-done":"sq-item");
+      const num=i+1;
+      return `<div class="${cls}">
+        <span class="sq-num">#${num}</span>
+        <span>(${g[0].toFixed(2)}, ${g[1].toFixed(2)})</span>
+        ${isRun?"":`<button class="sq-rm" onclick="seqRemove(${i})">✕</button>`}
+      </div>`;
+    }).join("");
+    $("sq_status").textContent=isRun?`▶ Running goal ${idx+1} / ${goals.length}`:(goals.length?`Idle · ${goals.length} waypoint(s)`:"No waypoints");
+    $("sq_status").style.color=isRun?"var(--ok)":"var(--dim)";
+    $("sq_start").disabled=isRun||!goals.length;
+    $("sq_stop").disabled=!isRun;
+    $("sq_add").disabled=isRun;
+    $("sq_clear").disabled=isRun||!goals.length;
+  }
 }
 
 // ── Console ──────────────────────────────────────────────────────────────────
@@ -1236,12 +1606,20 @@ function canvasToWorld(e){
   const px=(e.clientX-r.left)*(cv.width/r.width), py=(e.clientY-r.top)*(cv.height/r.height);
   return [S.pose[0]+(px-cv.width/2)/scale, S.pose[1]-(py-cv.height/2)/scale];
 }
+// Mutually exclusive arm modes
+$("navarm").onchange=()=>{if($("navarm").checked){$("seqarm").checked=false;$("blarm").checked=false;}};
+$("seqarm").onchange=()=>{if($("seqarm").checked){$("navarm").checked=false;$("blarm").checked=false;}};
+$("blarm").onchange=()=>{if($("blarm").checked){$("navarm").checked=false;$("seqarm").checked=false;}};
+
 cv.addEventListener("click",e=>{
-  if(!$("navarm").checked||$("blarm").checked||!S)return;
+  if(!S)return;
   const[wx,wy]=canvasToWorld(e);
-  // Optimistic flag so the marker appears on the first click, every time.
-  S.goal=[+wx.toFixed(2),+wy.toFixed(2)]; S.path=[];
-  post("/api/nav_goal",{x:wx,y:wy});
+  if($("navarm").checked&&!$("blarm").checked){
+    S.goal=[+wx.toFixed(2),+wy.toFixed(2)]; S.path=[];
+    post("/api/nav_goal",{x:wx,y:wy});
+  }else if($("seqarm").checked&&!$("blarm").checked){
+    post("/api/seq_add",{x:wx,y:wy});
+  }
 });
 // no-go zones: press = centre, drag = radius, release = send
 let blDrag=null;   // [cx, cy, r] in odom-frame metres
@@ -1311,13 +1689,30 @@ function draw(){
     ctx.stroke();ctx.setLineDash([]);
   }
 
-  // Goal flag
+  // Goal flag (stored in map frame, transformed to odom for canvas)
   if(S.goal){
-    const[gx,gy]=W(S.goal[0],S.goal[1]);
+    const[wX,wY]=MAP?mapToOdom(S.goal[0],S.goal[1]):[S.goal[0],S.goal[1]];
+    const[gx,gy]=W(wX,wY);
     ctx.strokeStyle="#ff5d5d";ctx.fillStyle="#ff5d5d";ctx.lineWidth=2;
     ctx.beginPath();ctx.moveTo(gx,gy);ctx.lineTo(gx,gy-28);ctx.stroke();
     ctx.beginPath();ctx.moveTo(gx,gy-28);ctx.lineTo(gx+16,gy-22);ctx.lineTo(gx,gy-16);ctx.closePath();ctx.fill();
     ctx.beginPath();ctx.arc(gx,gy,4,0,Math.PI*2);ctx.fill();
+  }
+
+  // Waypoint sequence markers (numbered)
+  if(S.seq&&S.seq.goals&&S.seq.goals.length){
+    const sGoals=S.seq.goals, sIdx=S.seq.idx;
+    ctx.font="bold 12px system-ui";ctx.textAlign="center";
+    sGoals.forEach(([gx,gy],i)=>{
+      const[px,py]=W(gx,gy);
+      const isActive=i===sIdx;
+      const isDone=i<sIdx;
+      ctx.fillStyle=isActive?"#3ddc84":(isDone?"rgba(125,143,161,.5)":"#4fc3f7");
+      ctx.beginPath();ctx.arc(px,py,10,0,6.2832);ctx.fill();
+      ctx.strokeStyle=isActive?"#000":"#0e141b";ctx.lineWidth=2;ctx.stroke();
+      ctx.fillStyle=isActive?"#000":"#0e141b";
+      ctx.fillText(String(i+1),px,py+4);
+    });
   }
 
   // lidar
@@ -1384,7 +1779,10 @@ document.querySelectorAll("#pad button[data-c]").forEach(b=>{
   if(b.id==="padstop")return;
   b.onclick=()=>{const[l,a]=b.dataset.c.split(",").map(Number);post("/api/nudge",{lin:l,ang:a});};
 });
-$("visionbtn").onclick=()=>post("/api/vision",{on:!(S&&S.vision)});
+$("visionbtn").onclick=(()=>{let busy=0;return()=>{
+  if(Date.now()<busy)return;busy=Date.now()+4000;
+  post("/api/vision",{on:!(S&&S.vision)});
+};})();
 $("savemap").onclick=()=>post("/api/save_map",{name:$("mapname").value});
 $("blclear").onclick=()=>post("/api/blacklist",{action:"clear"});
 document.querySelectorAll("[data-tool]").forEach(b=>{
@@ -1395,6 +1793,16 @@ document.querySelectorAll("[data-tool]").forEach(b=>{
     post("/api/run",{tool:t,params});
   };
 });
+
+// Waypoint sequence controls
+function seqRemove(idx){post("/api/seq_remove",{idx});}
+$("sq_add").onclick=()=>{
+  const x=parseFloat($("sq_x").value), y=parseFloat($("sq_y").value);
+  if(!isNaN(x)&&!isNaN(y))post("/api/seq_add",{x,y});
+};
+$("sq_clear").onclick=()=>post("/api/seq_clear");
+$("sq_start").onclick=()=>post("/api/seq_start");
+$("sq_stop").onclick=()=>post("/api/seq_stop");
 </script>
 </body></html>
 """
@@ -1402,24 +1810,72 @@ document.querySelectorAll("[data-tool]").forEach(b=>{
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+class _DashboardHTTPServer(ThreadingHTTPServer):
+    # Survives TIME_WAIT after Ctrl-C so a quick relaunch can rebind.
+    allow_reuse_address = True
+
+
+def _reclaim_tcp_port(port: int) -> None:
+    """Kill any leftover process still listening on our HTTP port.
+
+    Common after a previous launch was SIGKILL'd / crashed: the old
+    robot_dashboard holds :8080 and the next bringup dies with
+    'Address already in use' until reboot. Same-user fuser -k is enough
+    on the Pi; no sudo required for our own orphan.
+    """
+    try:
+        subprocess.run(
+            ["fuser", "-k", f"{port}/tcp"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+    time.sleep(0.4)
+
+
 def main(args=None):
     rclpy.init(args=args)
     node = Dashboard()
 
-    server = ThreadingHTTPServer(("0.0.0.0", node.port), Handler)
+    try:
+        server = _DashboardHTTPServer(("0.0.0.0", node.port), Handler)
+    except OSError as exc:
+        if getattr(exc, "errno", None) != 98:  # EADDRINUSE
+            raise
+        print(f"  ⚠ port {node.port} busy — reclaiming leftover dashboard…",
+              flush=True)
+        _reclaim_tcp_port(node.port)
+        try:
+            server = _DashboardHTTPServer(("0.0.0.0", node.port), Handler)
+        except OSError as exc2:
+            print(f"  ✖ still cannot bind :{node.port}: {exc2}\n"
+                  f"    Run:  bash kill_program.bash   then relaunch.",
+                  flush=True)
+            node.destroy_node()
+            if rclpy.ok():
+                rclpy.shutdown()
+            raise SystemExit(1) from exc2
+
     server.dash = node
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     # print() (not logger): visible even when bringup runs at FATAL log level.
     print(f"\n  🌐 Robot dashboard:  http://{_local_ip()}:{node.port}\n", flush=True)
 
+    # MultiThreadedExecutor: heavy TF/costmap ticks, sensor callbacks, the SSE
+    # push and the nav action client all share one reentrant callback group, so
+    # they run concurrently instead of serializing on one thread (the old
+    # rclpy.spin) — that serialization was the dashboard lag.
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        node.stop_vision()
         node.stop_tool()
         server.shutdown()
+        server.server_close()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

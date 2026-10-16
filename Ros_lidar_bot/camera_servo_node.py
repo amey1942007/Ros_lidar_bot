@@ -1,0 +1,871 @@
+#!/usr/bin/env python3
+"""
+camera_servo_node.py — Pan/tilt camera head driver + proximity buzzer.
+
+Drives a two-servo camera mount, controlled from the gamepad's RIGHT stick
+(joy_teleop publishes normalised rates on /camera_cmd):
+
+  OT5320M (base / PAN)  — 20 kg hobby PWM servo (JR plug, 4-8.4 V). Confirmed
+                          on the bench to be CONTINUOUS-ROTATION (a fixed
+                          pulse spins it forever, not to an angle) — set
+                          `pan_continuous:=true` when pan_driver=="arduino".
+  SG90    (head / TILT) — hobby PWM micro servo, positional, ~180°.
+
+Mount orientation
+  If the camera head is physically installed upside-down (rotated 180° around
+  the tilt axis), set `upside_down:=true`.  This automatically inverts both the
+  pan and tilt servo directions so that "right stick up" still tilts the camera
+  upward from the viewer's perspective, and D-pad left/right still snap to the
+  expected physical extremes.  Works independently of, and is XOR-combined with,
+  the per-axis `invert_pan` / `invert_tilt` parameters.
+
+The drive path is pluggable via the `pan_driver` parameter:
+  "pwm" (default) — any standard hobby servo (OT5320M, MG996R, …) on a GPIO.
+  "arduino"       — BOTH axes go to an Arduino Uno over UART; the Uno makes the
+                    pulses in hardware timers, so they never jitter when the
+                    Pi's cores are busy. Flash arduino/camera_head/camera_head.ino
+                    (wiring and protocol are documented at the top of it) and set
+                    `arduino_port`. This is the recommended setup.
+  "bus"           — a Feetech STS/SMS serial BUS servo (ST3215 and friends)
+                    on a TTL bus adapter. NOTE: a bus adapter cannot drive a
+                    PWM servo like the OT5320M — the two are different
+                    protocols, not different connectors.
+
+This node is a PARALLEL control path — it never touches /cmd_vel, Nav2 or
+frontier exploration. It only:
+  • subscribes  /camera_cmd   (geometry_msgs/Twist: angular.z = pan rate,
+                               angular.y = tilt rate, each normalised -1..1)
+  • integrates those rates into pan/tilt angle setpoints (rate control, so a
+    centred stick HOLDS the current heading), clamped to the mechanical limits
+  • writes the setpoints to the two servos every tick
+  • publishes /camera_joint_states (sensor_msgs/JointState) so RViz/TF and the
+    semantic-marker placement know where the camera actually points. This topic
+    is merged by joint_state_publisher (see rsp.launch.py source_list).
+
+HARDWARE ASSUMPTIONS (override via parameters if your setup differs):
+  • pan_driver == "arduino" needs `pip3 install pyserial` and an Uno flashed
+    with arduino/camera_head/camera_head.ino (pan on D6, tilt on D5, servo
+    power from an EXTERNAL supply with a common ground). The default port is
+    /dev/ttyUSB0 — the head's Uno is the only board on that port; the motor
+    driver and IMU Mega are on their own separate USB links — check
+    `ls -l /dev/serial/by-id/` and set `arduino_port` to the stable by-id
+    path if the numbers shuffle on you.
+  • Both PWM axes use gpiozero.AngularServo (lgpio backend, works on the RPi5).
+    Pan defaults to GPIO13 (PWM1, header pin 33), tilt to GPIO12 (PWM0, pin
+    32) — the RPi5's two hardware-PWM channels, sharing the ground on pin 34.
+    gpiozero drives them with SOFTWARE PWM regardless; the pin choice keeps
+    the door open to `rpi-hardware-pwm` if the big servo jitters at rest.
+  • The OT5320M's usable travel is ~±85° — hence the tighter default pan limits
+    when pan_driver == "pwm" (the bus path keeps the old ±150°).
+  • pan_driver == "bus" needs `pip3 install feetech-servo-sdk` (module:
+    scservo_sdk) and an STS/SMS-class servo with a 0..4095 tick range over
+    360°. For an older SCS/SCSCL-class servo (0..1023) the handler must switch
+    from sms_sts to scscl.
+
+Both hardware layers degrade gracefully: if the library or device is missing
+the node still runs, publishes joint states, and logs the reason once — so the
+rest of the robot is never blocked by a missing servo.
+
+PROXIMITY BUZZER (pin D9 on the Arduino Uno, shared USB0 link):
+  Subscribes to /scan (sensor_msgs/LaserScan) and watches the nearest valid
+  range reading.  When an obstacle is closer than `buzzer_warn_m` (default
+  0.45 m / 45 cm) the node sends  "B<duty>\n"  over the existing UART link.
+  <duty> is an integer 0-255 (mapped to Arduino analogWrite on D9):
+    • dist ≤ buzzer_near_m (0.30 m) → duty = 255  (full beep)
+    • buzzer_near_m < dist < buzzer_warn_m → duty fades linearly to 0
+    • dist ≥ buzzer_warn_m → duty = 0  (silent)
+  The "B" command MUST be added to camera_head.ino, e.g.:
+      else if (tag == 'B') { analogWrite(9, val); }
+  Set `buzzer_enabled:=false` to disable this feature entirely.
+"""
+
+import math
+import threading
+import time
+
+import rclpy
+from geometry_msgs.msg import Twist
+from rclpy.executors import ExternalShutdownException
+from rclpy.node import Node
+from sensor_msgs.msg import JointState, LaserScan
+
+# Feetech bus-servo SDK (SC-15 pan). Optional — see module docstring.
+try:
+    from scservo_sdk import PortHandler, sms_sts
+    _SCS_OK = True
+except Exception:                       # ImportError or lib load failure
+    _SCS_OK = False
+
+# gpiozero PWM servo. Optional. SOFTWARE PWM — the pulse edges are timed by a
+# Python thread, so under heavy CPU load (SLAM + Nav2 + YOLO) they land late
+# and the servo hunts. Fine on an idle Pi, not on a working robot.
+try:
+    from gpiozero import AngularServo
+    _GPIO_OK = True
+except Exception:
+    _GPIO_OK = False
+
+# rpi-hardware-pwm. Optional but STRONGLY preferred: the RP1 generates the
+# pulses in silicon, so they stay exact no matter what the CPU is doing.
+# Needs `pip3 install rpi-hardware-pwm --break-system-packages` AND this line
+# in /boot/firmware/config.txt followed by a reboot:
+#     dtoverlay=pwm-2chan,pin=12,func=4,pin2=13,func2=4
+try:
+    from rpi_hardware_pwm import HardwarePWM
+    _HWPWM_OK = True
+except Exception:
+    _HWPWM_OK = False
+
+# pyserial, for the Arduino Uno pan/tilt backend. Optional.
+try:
+    import serial
+    _SERIAL_OK = True
+except Exception:
+    _SERIAL_OK = False
+
+
+def _clamp(v, lo, hi):
+    return lo if v < lo else hi if v > hi else v
+
+
+def _deg_to_us(deg, min_deg, max_deg, min_us, max_us):
+    """Linear map from an angle within [min_deg, max_deg] to a pulse width."""
+    span = max_deg - min_deg
+    frac = 0.5 if span == 0 else (deg - min_deg) / span
+    return min_us + _clamp(frac, 0.0, 1.0) * (max_us - min_us)
+
+
+class _PanBus:
+    """SC-15 pan via a Feetech STS/SMS bus servo (position control)."""
+
+    def __init__(self, node, port, baud, servo_id, ticks_per_rev,
+                 center_tick, speed, acc):
+        self._log = node.get_logger()
+        self._id = int(servo_id)
+        self._tpr = int(ticks_per_rev)
+        self._center = int(center_tick)
+        self._speed = int(speed)
+        self._acc = int(acc)
+        self._packet = None
+        self._port = None
+        if not _SCS_OK:
+            self._log.warn("scservo_sdk not installed — pan servo DISABLED "
+                           "(pip3 install feetech-servo-sdk). Joint states "
+                           "still published.")
+            return
+        try:
+            self._port = PortHandler(port)
+            self._packet = sms_sts(self._port)
+            if not self._port.openPort():
+                raise RuntimeError(f"cannot open {port}")
+            if not self._port.setBaudRate(int(baud)):
+                raise RuntimeError(f"cannot set baud {baud}")
+            self._log.info(f"Pan bus servo ready: id={self._id} on {port}@{baud}")
+        except Exception as exc:
+            self._log.error(f"pan bus init failed ({exc}) — pan DISABLED")
+            self._packet = None
+
+    @property
+    def enabled(self):
+        return self._packet is not None
+
+    @property
+    def backend(self):
+        return "bus"
+
+    def write_deg(self, deg):
+        """deg is relative to centre (0 = camera forward)."""
+        if self._packet is None:
+            return
+        tick = int(round(self._center + (deg / 360.0) * self._tpr))
+        tick = _clamp(tick, 0, self._tpr - 1)
+        try:
+            self._packet.WritePosEx(self._id, tick, self._speed, self._acc)
+        except Exception as exc:
+            self._log.warn(f"pan write failed: {exc}",
+                           throttle_duration_sec=2.0)
+
+    def close(self):
+        if self._port is not None:
+            try:
+                self._port.closePort()
+            except Exception:
+                pass
+
+
+class _PwmServo:
+    """A standard hobby PWM servo (OT5320M, SG90, …) via gpiozero."""
+
+    def __init__(self, node, label, pin, min_deg, max_deg,
+                 min_pulse_us, max_pulse_us, idle_release_sec=1.5):
+        self._log = node.get_logger()
+        self._label = label
+        self._servo = None
+        # Rewriting an unchanged angle every tick keeps the servo actively
+        # driving and, with software PWM, re-jitters the pulse — the head
+        # hunts and the supply browns out. Write only on a real change, then
+        # let the servo go limp once it has had time to arrive.
+        self._last_deg = None
+        self._idle_release = float(idle_release_sec)
+        self._idle_since = None
+        if not _GPIO_OK:
+            self._log.warn(f"gpiozero not available — {label} servo DISABLED. "
+                           "Joint states still published.")
+            return
+        try:
+            self._servo = AngularServo(
+                int(pin),
+                min_angle=float(min_deg), max_angle=float(max_deg),
+                min_pulse_width=float(min_pulse_us) / 1e6,
+                max_pulse_width=float(max_pulse_us) / 1e6,
+            )
+            self._log.warn(
+                f"{label}: using SOFTWARE PWM on GPIO{int(pin)}. The pulse is "
+                "timed by the CPU, so the servo will hunt once SLAM/Nav2 load "
+                "the cores. See the rpi-hardware-pwm notes at the top of "
+                "camera_servo_node.py.")
+        except Exception as exc:
+            self._log.error(f"{label} PWM init failed ({exc}) — {label} DISABLED")
+            self._servo = None
+
+    @property
+    def enabled(self):
+        return self._servo is not None
+
+    @property
+    def backend(self):
+        return "software"
+
+    def write_deg(self, deg):
+        if self._servo is None:
+            return
+        deg = float(deg)
+        try:
+            # Unchanged setpoint: hold briefly so the servo reaches it, then
+            # detach. A detached servo stops drawing holding current, which is
+            # what keeps the supply out of over-current protection.
+            if self._last_deg is not None and abs(deg - self._last_deg) < 0.25:
+                if (self._idle_release > 0.0 and self._idle_since is not None
+                        and time.monotonic() - self._idle_since
+                        >= self._idle_release):
+                    self._servo.detach()
+                    self._idle_since = None
+                return
+            self._servo.angle = deg
+            self._last_deg = deg
+            self._idle_since = time.monotonic()
+        except Exception as exc:
+            self._log.warn(f"{self._label} write failed: {exc}",
+                           throttle_duration_sec=2.0)
+
+    def close(self):
+        if self._servo is not None:
+            try:
+                self._servo.detach()
+            except Exception:
+                pass
+
+
+class _ArduinoContinuousPan:
+    """Continuous-rotation ("360") PWM pan axis driven by the Uno over UART.
+
+    The OT5320M turns out to be continuous-rotation, not positional: a FIXED
+    pulse width makes it spin forever instead of settling on an angle. Pulse
+    width here sets speed/direction (midpoint = stop), not a target angle, and
+    there is no feedback wire, so this class tracks no position at all —
+    camera_servo_node dead-reckons an angle estimate itself, for joint_state/
+    RViz only.
+    """
+
+    def __init__(self, link, label, tag, min_us, max_us):
+        self._link = link
+        self._label = label
+        self._tag = tag
+        self._center_us = (float(min_us) + float(max_us)) / 2.0
+        self._half_us = (float(max_us) - float(min_us)) / 2.0
+
+    @property
+    def enabled(self):
+        return self._link.enabled
+
+    @property
+    def backend(self):
+        return "arduino-continuous"
+
+    def write_rate(self, cmd):
+        cmd = _clamp(float(cmd), -1.0, 1.0)
+        us = self._center_us + cmd * self._half_us
+        self._link.send(f"{self._tag}{int(round(us))}\n")
+
+    def close(self):
+        self._link.close()      # idempotent — both axes share the one link
+
+
+class _HwPwmServo:
+    """Same servo, driven by the RP1's hardware PWM instead of the CPU.
+
+    Immune to scheduling jitter, so the head holds still while SLAM and Nav2
+    are saturating the cores. Requires the pwm-2chan overlay (see the import
+    block at the top of this file); without it, construction fails and the
+    caller falls back to _PwmServo.
+    """
+
+    # Channel order follows `dtoverlay=pwm-2chan,pin=12,...,pin2=13,...`.
+    _CHANNEL = {12: 0, 13: 1, 18: 0, 19: 1}
+    _PERIOD_US = 20000.0                    # 50 Hz servo frame
+
+    def __init__(self, node, label, pin, min_deg, max_deg,
+                 min_pulse_us, max_pulse_us, idle_release_sec=1.5, chip=2):
+        self._log = node.get_logger()
+        self._label = label
+        self._pwm = None
+        self._min_deg, self._max_deg = float(min_deg), float(max_deg)
+        self._min_us, self._max_us = float(min_pulse_us), float(max_pulse_us)
+        self._last_deg = None
+        self._idle_release = float(idle_release_sec)
+        self._idle_since = None
+        if not _HWPWM_OK:
+            self._log.warn(
+                f"{label}: rpi-hardware-pwm not installed — falling back to "
+                "software PWM (pip3 install rpi-hardware-pwm "
+                "--break-system-packages)")
+            return
+        channel = self._CHANNEL.get(int(pin))
+        if channel is None:
+            self._log.warn(f"GPIO{int(pin)} is not a hardware-PWM pin — "
+                           f"{label} falls back to software PWM")
+            return
+        try:
+            self._pwm = HardwarePWM(pwm_channel=channel,
+                                    hz=int(1e6 / self._PERIOD_US),
+                                    chip=int(chip))
+            self._pwm.start(0.0)            # 0% = no pulse = servo released
+            self._log.info(f"{label} HARDWARE PWM on GPIO{int(pin)} "
+                           f"(chip {chip} channel {channel})")
+        except Exception as exc:
+            self._log.warn(f"{label} hardware PWM unavailable ({exc}) — "
+                           "falling back to software PWM")
+            self._pwm = None
+
+    @property
+    def enabled(self):
+        return self._pwm is not None
+
+    @property
+    def backend(self):
+        return "hardware"
+
+    def _duty(self, deg):
+        us = _deg_to_us(deg, self._min_deg, self._max_deg,
+                        self._min_us, self._max_us)
+        return us / self._PERIOD_US * 100.0
+
+    def write_deg(self, deg):
+        if self._pwm is None:
+            return
+        deg = _clamp(float(deg), self._min_deg, self._max_deg)
+        try:
+            if self._last_deg is not None and abs(deg - self._last_deg) < 0.25:
+                if (self._idle_release > 0.0 and self._idle_since is not None
+                        and time.monotonic() - self._idle_since
+                        >= self._idle_release):
+                    self._pwm.change_duty_cycle(0.0)
+                    self._idle_since = None
+                return
+            self._pwm.change_duty_cycle(self._duty(deg))
+            self._last_deg = deg
+            self._idle_since = time.monotonic()
+        except Exception as exc:
+            self._log.warn(f"{self._label} write failed: {exc}",
+                           throttle_duration_sec=2.0)
+
+    def close(self):
+        if self._pwm is not None:
+            try:
+                self._pwm.stop()
+            except Exception:
+                pass
+
+
+class _ArduinoLink:
+    """Serial link to an Uno running arduino/camera_head/camera_head.ino.
+
+    One link, shared by both axes — the sketch takes a "P<us>" / "T<us>" line
+    per axis. Reconnects on its own: a replugged USB cable, or an Uno reset by
+    the reflash you just did, heals within `retry_sec` without restarting ROS.
+    """
+
+    _RETRY_SEC = 2.0
+
+    def __init__(self, node, port, baud, boot_delay_sec):
+        self._log = node.get_logger()
+        self._port = port
+        self._baud = int(baud)
+        self._boot = float(boot_delay_sec)
+        self._ser = None
+        self._ready_at = 0.0        # opening the port resets the Uno (DTR)
+        self._retry_at = 0.0
+        self._warned = False
+        if not _SERIAL_OK:
+            self._log.warn("pyserial not installed — camera servos DISABLED "
+                           "(pip3 install pyserial). Joint states still "
+                           "published.")
+            return
+        self._open()
+
+    @property
+    def enabled(self):
+        return self._ser is not None
+
+    def _open(self):
+        try:
+            self._ser = serial.Serial(self._port, self._baud, timeout=0)
+            self._ser.reset_input_buffer()      # drop the boot banner
+            # Opening the port toggles DTR, which resets the Uno. Writes sent
+            # while the bootloader is running are eaten, so wait it out.
+            self._ready_at = time.monotonic() + self._boot
+            self._log.info(f"Camera head Arduino on {self._port}@{self._baud} "
+                           f"(ready in {self._boot:.1f}s)")
+            self._warned = False
+        except Exception as exc:
+            self._ser = None
+            self._retry_at = time.monotonic() + self._RETRY_SEC
+            if not self._warned:
+                self._warned = True
+                self._log.error(
+                    f"camera head Arduino not on {self._port} ({exc}) — "
+                    "retrying in the background. Check "
+                    "`ls -l /dev/serial/by-id/` and the arduino_port param.")
+
+    def send(self, line):
+        now = time.monotonic()
+        if self._ser is None:
+            if now >= self._retry_at:
+                self._open()
+            return
+        if now < self._ready_at:
+            return
+        try:
+            self._ser.write(line.encode())
+        except Exception as exc:
+            self._log.warn(f"camera head serial write failed: {exc} — "
+                           "reconnecting", throttle_duration_sec=5.0)
+            self.close()
+            self._retry_at = now + self._RETRY_SEC
+
+    def close(self):
+        if self._ser is not None:
+            try:
+                self._ser.close()
+            except Exception:
+                pass
+            self._ser = None
+
+
+class _ArduinoServo:
+    """One axis of the pan/tilt head, driven by the Uno over UART.
+
+    Sends the setpoint every tick rather than only on change: it is ~7 bytes at
+    115200 baud, and it means a reconnected (hence reset, hence detached) Uno
+    picks the pose back up on the next tick instead of waiting for the stick.
+    """
+
+    def __init__(self, link, label, tag, min_deg, max_deg,
+                 min_us, max_us, idle_release_sec=0.0):
+        self._link = link
+        self._label = label
+        self._tag = tag                 # "P" for pan, "T" for tilt
+        self._min_deg, self._max_deg = float(min_deg), float(max_deg)
+        self._min_us, self._max_us = float(min_us), float(max_us)
+        self._idle_release = float(idle_release_sec)
+        self._last_deg = None
+        self._idle_since = None
+        self._released = False
+
+    @property
+    def enabled(self):
+        return self._link.enabled
+
+    @property
+    def backend(self):
+        return "arduino"
+
+    def write_deg(self, deg):
+        deg = _clamp(float(deg), self._min_deg, self._max_deg)
+        moved = self._last_deg is None or abs(deg - self._last_deg) >= 0.25
+        if moved:
+            self._last_deg = deg
+            self._idle_since = time.monotonic()
+            self._released = False
+        elif (self._idle_release > 0.0
+                and time.monotonic() - self._idle_since >= self._idle_release):
+            # Held long enough to have arrived: let it go limp so it stops
+            # drawing holding current. "0" is the sketch's detach command.
+            if not self._released:
+                self._released = True
+                self._link.send(f"{self._tag}0\n")
+            return
+        elif self._released:
+            return
+        us = _deg_to_us(deg, self._min_deg, self._max_deg,
+                        self._min_us, self._max_us)
+        self._link.send(f"{self._tag}{int(round(us))}\n")
+
+    def close(self):
+        self._link.close()      # idempotent — both axes share the one link
+
+
+def _make_pwm_servo(node, backend, label, pin, min_deg, max_deg,
+                    min_us, max_us, idle_release, chip):
+    """Hardware PWM if we can get it, software PWM if we can't."""
+    if backend in ("auto", "hardware"):
+        servo = _HwPwmServo(node, label, pin, min_deg, max_deg,
+                            min_us, max_us, idle_release, chip)
+        if servo.enabled:
+            return servo
+        if backend == "hardware":
+            node.get_logger().error(
+                f"{label}: pwm_backend=hardware was requested but is "
+                "unavailable — check the pwm-2chan overlay in "
+                "/boot/firmware/config.txt, then reboot.")
+    return _PwmServo(node, label, pin, min_deg, max_deg,
+                     min_us, max_us, idle_release)
+
+
+class CameraServo(Node):
+    def __init__(self):
+        super().__init__("camera_servo")
+
+        d = self.declare_parameter
+        # ── Topics / joints ─────────────────────────────────────────────────
+        self._cmd_topic = d("cmd_topic", "/camera_cmd").value
+        self._js_topic = d("joint_state_topic", "/camera_joint_states").value
+        self._pan_joint = d("pan_joint_name", "camera_pan_joint").value
+        self._tilt_joint = d("tilt_joint_name", "camera_tilt_joint").value
+        self._rate_hz = float(d("rate_hz", 30.0).value)
+        # "auto" prefers the RP1's hardware PWM and silently falls back to
+        # gpiozero; "hardware" or "gpiozero" force one of them.
+        pwm_backend = str(d("pwm_backend", "auto").value).lower()
+        pwm_chip = int(d("pwm_chip", 2).value)      # RPi5 = 2, RPi4 = 0
+
+        # ── Pan ─────────────────────────────────────────────────────────────
+        # "pwm" = hobby servo on a GPIO (OT5320M); "arduino" = both axes on an
+        # Uno over UART; "bus" = Feetech STS/SMS.
+        pan_driver = str(d("pan_driver", "pwm").value).lower()
+        # The OT5320M turns out to be continuous-rotation (a fixed pulse spins
+        # it forever, confirmed on the bench) — only meaningful with
+        # pan_driver=="arduino". No position feedback exists, so pan_min/max
+        # don't apply; the angle tracked is a dead-reckoned estimate only.
+        self._pan_continuous = bool(d("pan_continuous", False).value)
+        # A PWM servo only has ~±85° of travel; a bus servo has the full turn.
+        pan_limit = 150.0 if pan_driver == "bus" else 85.0
+        self._pan_min = float(d("pan_min_deg", -pan_limit).value)
+        self._pan_max = float(d("pan_max_deg", pan_limit).value)
+        self._pan_rate = float(d("pan_max_rate_dps", 90.0).value)
+        self._pan_inv = bool(d("invert_pan", False).value)
+        pan_pin = int(d("pan_pwm_pin", 13).value)
+        # 1000-2000 us is the standard range every hobby servo accepts. Wider
+        # values (500/2500) reach further on servos that support them but drive
+        # the rest into their mechanical stops, where they stall, buzz and pull
+        # locked-rotor current. Widen only after checking the servo still moves
+        # freely at both ends.
+        pan_min_us = float(d("pan_min_pulse_us", 1000.0).value)
+        pan_max_us = float(d("pan_max_pulse_us", 2000.0).value)
+        # Releasing pan when idle was a workaround for software-PWM hunting
+        # burning current. With hardware PWM there is nothing to hunt, and a
+        # released servo just goes limp and drifts with the robot's motion, so
+        # hold by default. Set >0 to trade holding torque for current draw.
+        pan_idle = float(d("pan_idle_release_sec", 0.0).value)
+        bus_port = d("bus_port", "/dev/ttyUSB0").value
+        bus_baud = int(d("bus_baud", 1000000).value)
+        pan_id = int(d("pan_servo_id", 1).value)
+        pan_tpr = int(d("pan_ticks_per_rev", 4096).value)
+        pan_center = int(d("pan_center_tick", 2048).value)
+        pan_speed = int(d("pan_speed", 2400).value)
+        pan_acc = int(d("pan_accel", 50).value)
+        # The head's Uno is on its own USB0 link; the motor driver and IMU
+        # Mega are on separate ports. Prefer a /dev/serial/by-id/... path if
+        # the numbering shuffles.
+        ard_port = d("arduino_port", "/dev/ttyUSB0").value
+        ard_baud = int(d("arduino_baud", 115200).value)
+        # Opening the port resets the Uno; its bootloader eats ~1.6 s of input.
+        ard_boot = float(d("arduino_boot_delay_sec", 2.0).value)
+
+        # ── Tilt (SG90 PWM servo) ───────────────────────────────────────────
+        self._tilt_min = float(d("tilt_min_deg", -80.0).value)
+        self._tilt_max = float(d("tilt_max_deg", 80.0).value)
+        self._tilt_rate = float(d("tilt_max_rate_dps", 90.0).value)
+        self._tilt_inv = bool(d("invert_tilt", False).value)
+        tilt_pin = int(d("tilt_pwm_pin", 12).value)
+
+        # ── Upside-down mount correction ─────────────────────────────────────
+        # When the camera is installed upside-down (rotated 180°), both the pan
+        # and tilt physical axes are mirrored.  XOR the upside_down flag with
+        # the per-axis invert flags so all existing parameter overrides still
+        # work correctly after flipping the mount orientation.
+        upside_down = bool(d("upside_down", False).value)
+        if upside_down:
+            self._pan_inv  = not self._pan_inv
+            self._tilt_inv = not self._tilt_inv
+        # SG90's usable range really is 1000-2000 us — see the pan note above.
+        tilt_min_us = float(d("tilt_min_pulse_us", 1000.0).value)
+        tilt_max_us = float(d("tilt_max_pulse_us", 2000.0).value)
+        # Tilt carries the camera against gravity — releasing it makes the head
+        # droop, so hold by default. Set >0 if your mount is balanced.
+        tilt_idle = float(d("tilt_idle_release_sec", 0.0).value)
+
+        # ── State ───────────────────────────────────────────────────────────
+        self._pan_deg = float(_clamp(d("pan_center_deg", 0.0).value,
+                                     self._pan_min, self._pan_max))
+        self._tilt_deg = float(_clamp(d("tilt_center_deg", 0.0).value,
+                                      self._tilt_min, self._tilt_max))
+        self._pan_cmd = 0.0     # normalised rate -1..1
+        self._tilt_cmd = 0.0
+        # D-pad pan snap for continuous-rotation servo: spin at full rate for
+        # a fixed duration (no position feedback, so we can't jump to an angle).
+        # pan_snap_dur is tunable — set longer if the servo needs more time to
+        # reach its physical stop, shorter if the camera overshoots.
+        self._pan_snap_dur  = float(d("pan_snap_duration_sec", 1.5).value)
+        self._pan_snap_rate = 0.0   # ±1.0 during an active snap, else 0
+        self._pan_snap_until = 0.0  # monotonic deadline for the snap spin
+        self._lock = threading.Lock()
+        self._last = time.monotonic()
+
+        if pan_driver == "arduino":
+            # One serial link, both axes — the Uno drives pan on D6, tilt D5.
+            link = _ArduinoLink(self, ard_port, ard_baud, ard_boot)
+            if self._pan_continuous:
+                self._pan = _ArduinoContinuousPan(link, "pan", "P",
+                                                  pan_min_us, pan_max_us)
+            else:
+                self._pan = _ArduinoServo(link, "pan", "P",
+                                          self._pan_min, self._pan_max,
+                                          pan_min_us, pan_max_us, pan_idle)
+            self._tilt = _ArduinoServo(link, "tilt", "T",
+                                       self._tilt_min, self._tilt_max,
+                                       tilt_min_us, tilt_max_us, tilt_idle)
+        else:
+            if pan_driver == "bus":
+                self._pan = _PanBus(self, bus_port, bus_baud, pan_id, pan_tpr,
+                                    pan_center, pan_speed, pan_acc)
+            else:
+                self._pan = _make_pwm_servo(self, pwm_backend, "pan", pan_pin,
+                                            self._pan_min, self._pan_max,
+                                            pan_min_us, pan_max_us, pan_idle,
+                                            pwm_chip)
+            self._tilt = _make_pwm_servo(self, pwm_backend, "tilt", tilt_pin,
+                                         self._tilt_min, self._tilt_max,
+                                         tilt_min_us, tilt_max_us, tilt_idle,
+                                         pwm_chip)
+
+        self.create_subscription(Twist, self._cmd_topic, self._cmd_cb, 10)
+        self._js_pub = self.create_publisher(JointState, self._js_topic, 10)
+        self.create_timer(1.0 / self._rate_hz, self._tick)
+
+        # ── Proximity buzzer (D9 PWM on the Arduino Uno) ────────────────────
+        # Buzzer is only useful when the Arduino link is live (pan_driver ==
+        # "arduino") but we keep the subscriber running regardless — a future
+        # PWM-only setup might control the buzzer via a separate GPIO.
+        self._buzzer_enabled = bool(d("buzzer_enabled", True).value)
+        # Distance at or below which the buzzer is at full intensity (metres).
+        self._buzzer_near_m = float(d("buzzer_near_m", 0.30).value)
+        # Distance at or above which the buzzer is completely silent (metres).
+        self._buzzer_warn_m = float(d("buzzer_warn_m", 0.45).value)
+        # Scan topic (standard LaserScan from any LIDAR driver).
+        _scan_topic = str(d("scan_topic", "/scan").value)
+        # Keep track of the last duty sent so we avoid hammering the UART with
+        # identical bytes on every scan (most LIDAR drivers publish at 10–15 Hz).
+        self._buzzer_last_duty = -1
+        # _arduino_link is set only when pan_driver == "arduino".
+        # For other drivers we still subscribe but the send() path is a no-op.
+        self._arduino_link: _ArduinoLink | None = None
+        if pan_driver == "arduino":
+            # The link object was captured inside _pan/_tilt.  Re-expose it so
+            # the LiDAR callback can reach it without going through the servo.
+            self._arduino_link = link   # 'link' is still in scope here
+        if self._buzzer_enabled:
+            self.create_subscription(
+                LaserScan, _scan_topic, self._lidar_cb, 10)
+            self.get_logger().info(
+                f"Proximity buzzer ENABLED (D9): near={self._buzzer_near_m*100:.0f} cm, "
+                f"warn={self._buzzer_warn_m*100:.0f} cm, scan on '{_scan_topic}'.")
+        else:
+            self.get_logger().info("Proximity buzzer DISABLED (buzzer_enabled:=false).")
+
+        # Drive servos to their start pose immediately (pan: send "stop" — a
+        # continuous-rotation axis has no pose to go to).
+        if self._pan_continuous:
+            self._pan.write_rate(0.0)
+        else:
+            self._pan.write_deg(-self._pan_deg if self._pan_inv else self._pan_deg)
+        self._tilt.write_deg(-self._tilt_deg if self._tilt_inv else self._tilt_deg)
+        self.get_logger().info(
+            f"Camera pan/tilt ready — "
+            f"pan[{self._pan.backend}] {'ON' if self._pan.enabled else 'off'}, "
+            f"tilt[{self._tilt.backend}] {'ON' if self._tilt.enabled else 'off'}. "
+            f"Cmd on {self._cmd_topic} (right stick).")
+
+    def _cmd_cb(self, msg: Twist):
+        with self._lock:
+            # D-pad snap mode: linear.z == 1.0 signals an absolute snap command.
+            # linear.x encodes the pan  target: +1.0 → pan_max, -1.0 → pan_min,
+            #                                    0.0 → no change (only tilt snap).
+            # linear.y encodes the tilt target: +1.0 → tilt_max, -1.0 → tilt_min,
+            #                                    0.0 → no change (only pan snap).
+            if msg.linear.z == 1.0:
+                # ── Tilt (always positional) ─────────────────────────────────
+                if msg.linear.y > 0.5:
+                    self._tilt_deg = self._tilt_max
+                elif msg.linear.y < -0.5:
+                    self._tilt_deg = self._tilt_min
+
+                # ── Pan ──────────────────────────────────────────────────────
+                if self._pan_continuous:
+                    # Continuous-rotation servo: no position feedback, so we
+                    # cannot jump to an angle.  Instead, spin at full rate for
+                    # pan_snap_duration_sec so the camera sweeps to its limit.
+                    if msg.linear.x > 0.5:
+                        self._pan_snap_rate  = 1.0
+                        self._pan_snap_until = time.monotonic() + self._pan_snap_dur
+                    elif msg.linear.x < -0.5:
+                        self._pan_snap_rate  = -1.0
+                        self._pan_snap_until = time.monotonic() + self._pan_snap_dur
+                    # If linear.x == 0: pan-only tilt snap, leave pan running.
+                else:
+                    # Positional servo: jump directly to the mechanical extreme.
+                    if msg.linear.x > 0.5:
+                        self._pan_deg = self._pan_max
+                    elif msg.linear.x < -0.5:
+                        self._pan_deg = self._pan_min
+
+                # Zero the stick rate so the servo holds after the snap.
+                self._pan_cmd = 0.0
+                self._tilt_cmd = 0.0
+                return
+            self._pan_cmd = _clamp(msg.angular.z, -1.0, 1.0)
+            self._tilt_cmd = _clamp(msg.angular.y, -1.0, 1.0)
+
+    # ── Proximity buzzer ────────────────────────────────────────────────────
+    def _lidar_cb(self, msg: LaserScan):
+        """Compute nearest valid range and drive the buzzer on Arduino pin D9.
+
+        Duty-cycle mapping (duty is an integer 0-255 for analogWrite):
+          dist ≤ near_m   → 255  (full beep)
+          near_m < dist < warn_m → linear fade from 255 → 0
+          dist ≥ warn_m   → 0   (silent)
+
+        Sends  "B<duty>\n"  over the Arduino UART.  The sketch must handle it:
+            else if (tag == 'B') { analogWrite(9, val); }
+        """
+        if not self._buzzer_enabled:
+            return
+
+        # Filter out NaN / Inf / out-of-range values reported by the driver.
+        valid = [
+            r for r in msg.ranges
+            if msg.range_min <= r <= msg.range_max
+        ]
+        if not valid:
+            # No valid readings (e.g. highly reflective surface or sensor
+            # dropout) — leave the buzzer in its previous state.
+            return
+
+        min_dist = min(valid)   # metres
+
+        near = self._buzzer_near_m
+        warn = self._buzzer_warn_m
+
+        if min_dist <= near:
+            duty = 255
+        elif min_dist >= warn:
+            duty = 0
+        else:
+            # Linear interpolation: full at near_m, zero at warn_m.
+            frac = (min_dist - near) / (warn - near)   # 0.0 … 1.0
+            duty = int(round(255 * (1.0 - frac)))
+
+        # Avoid flooding the UART with identical commands.
+        if duty == self._buzzer_last_duty:
+            return
+        self._buzzer_last_duty = duty
+
+        cmd = f"B{duty}\n"
+        if self._arduino_link is not None:
+            self._arduino_link.send(cmd)
+        else:
+            # No Arduino link open (pwm / bus driver) — log once so the
+            # operator knows they need to wire up buzzer control separately.
+            self.get_logger().warn(
+                "Proximity buzzer: Arduino link not available "
+                "(pan_driver != 'arduino'). Cannot drive D9 buzzer.",
+                throttle_duration_sec=30.0)
+
+    def _tick(self):
+        now = time.monotonic()
+        dt = now - self._last
+        self._last = now
+        # Guard against a stalled timer producing a huge integration step.
+        if dt <= 0.0 or dt > 0.5:
+            dt = 1.0 / self._rate_hz
+
+        with self._lock:
+            pan_cmd, tilt_cmd = self._pan_cmd, self._tilt_cmd
+
+        self._tilt_deg = _clamp(self._tilt_deg + tilt_cmd * self._tilt_rate * dt,
+                                self._tilt_min, self._tilt_max)
+        self._tilt.write_deg(-self._tilt_deg if self._tilt_inv else self._tilt_deg)
+
+        if self._pan_continuous:
+            # No feedback wire — this is a dead-reckoned estimate for
+            # joint_state/RViz only, wrapped since it can spin forever.
+            # D-pad snap overrides the stick rate for pan_snap_duration_sec;
+            # any stick input cancels the snap immediately.
+            effective_pan = pan_cmd
+            if pan_cmd == 0.0 and time.monotonic() < self._pan_snap_until:
+                effective_pan = self._pan_snap_rate
+            elif pan_cmd != 0.0:
+                self._pan_snap_until = 0.0  # stick moved — cancel pending snap
+            self._pan_deg = (self._pan_deg + effective_pan * self._pan_rate * dt
+                             + 180.0) % 360.0 - 180.0
+            self._pan.write_rate(-effective_pan if self._pan_inv else effective_pan)
+        else:
+            self._pan_deg = _clamp(self._pan_deg + pan_cmd * self._pan_rate * dt,
+                                   self._pan_min, self._pan_max)
+            self._pan.write_deg(-self._pan_deg if self._pan_inv else self._pan_deg)
+
+        js = JointState()
+        js.header.stamp = self.get_clock().now().to_msg()
+        js.name = [self._pan_joint, self._tilt_joint]
+        js.position = [math.radians(self._pan_deg), math.radians(self._tilt_deg)]
+        self._js_pub.publish(js)
+
+    def close(self):
+        # Silence the buzzer before we close the serial port.
+        if self._buzzer_enabled and self._arduino_link is not None:
+            try:
+                self._arduino_link.send("B0\n")
+                time.sleep(0.05)    # let the byte flush before port closes
+            except Exception:
+                pass
+        self._pan.close()
+        self._tilt.close()
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = CameraServo()
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        # SIGINT from a terminal, SIGTERM from `ros2 launch` shutting down.
+        # Both are normal; close() below still releases the servos.
+        pass
+    finally:
+        node.close()
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

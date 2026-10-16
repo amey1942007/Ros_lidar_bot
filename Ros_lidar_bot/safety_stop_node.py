@@ -38,12 +38,23 @@ class SafetyStop(Node):
 
         self.declare_parameter("min_safe_distance", 0.35)  # metres
         self.declare_parameter("ignore_below", 0.30)       # ignore chassis (≤~0.30 m)
-        self.declare_parameter("front_opening_deg", 90.0)  # total forward arc
+        # 50° (was 90°): a ±25° cone covers the robot's actual forward path.
+        # At 90° a person standing beside the robot (±44°) within 0.35 m froze
+        # forward drive — the crowd-freeze failure. Narrowing it means only a
+        # genuinely head-on obstacle blocks motion.
+        self.declare_parameter("front_opening_deg", 50.0)  # total forward arc
         self.declare_parameter("rear_opening_deg", 50.0)   # total rear arc
+        # Hysteresis: block engages at min_safe_distance but only releases once
+        # the path is clear past min_safe_distance + clear_margin. Without this
+        # gap an obstacle hovering right at the threshold chatters the block on
+        # and off every scan → visible stop-go-stop stutter in a crowd.
+        self.declare_parameter("clear_margin", 0.10)
         self.declare_parameter("odom_raw_timeout_sec", 0.5)
 
         self._min_dist = float(self.get_parameter("min_safe_distance").value)
         self._ignore_below = float(self.get_parameter("ignore_below").value)
+        self._clear_dist = self._min_dist + float(
+            self.get_parameter("clear_margin").value)
         self._front_half = math.radians(
             float(self.get_parameter("front_opening_deg").value) / 2.0
         )
@@ -74,6 +85,7 @@ class SafetyStop(Node):
 
         self.get_logger().info(
             f"SafetyStop ready: stop<{self._min_dist:.2f} m, "
+            f"release>{self._clear_dist:.2f} m, "
             f"ignore_self<{self._ignore_below:.2f} m, "
             f"front±{math.degrees(self._front_half):.0f}°, "
             f"odom_raw_timeout={self._odom_timeout:.1f}s"
@@ -117,8 +129,12 @@ class SafetyStop(Node):
             angle += msg.angle_increment
 
         prev_fwd = self._blocked_fwd
-        self._blocked_fwd = min_front < self._min_dist
-        self._blocked_bwd = min_rear < self._min_dist
+        # Hysteresis: while already blocked, require clearance past the wider
+        # clear distance before releasing; while open, trip at min distance.
+        fwd_thresh = self._clear_dist if self._blocked_fwd else self._min_dist
+        bwd_thresh = self._clear_dist if self._blocked_bwd else self._min_dist
+        self._blocked_fwd = min_front < fwd_thresh
+        self._blocked_bwd = min_rear < bwd_thresh
 
         if self._blocked_fwd and not prev_fwd:
             self._blocked_since = time.monotonic()
