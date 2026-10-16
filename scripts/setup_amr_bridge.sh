@@ -64,7 +64,9 @@ cd "$REPO/amr-bridge"
 "$VENV/bin/pip" install -U pip
 "$VENV/bin/pip" install -r requirements.txt
 "$VENV/bin/pip" freeze | grep -Ei '^(supabase|httpx|websockets|realtime|postgrest)' | tee "$HOME/amr_bridge_pip_versions.txt" || true
-"$VENV/bin/python" -c "import sys; sys.path.insert(0,'.'); import amr_telemetry_bridge.bridge; print('bridge import OK')" \
+# bridge.py imports httpx, and supabase (create_client) when the hub starts.
+# It does not import websockets or realtime itself.
+"$VENV/bin/python" -c "import sys; sys.path.insert(0,'.'); import httpx; from supabase import create_client; import amr_telemetry_bridge.bridge; print('bridge import OK')" \
   || die "The bridge failed to import. See the error above."
 
 say "6/8 Creating the secrets file $ENV_FILE (owned by YOU, not root; never overwritten if it exists)"
@@ -130,7 +132,5 @@ Setup finished. Your only manual step:
   2) ~/run_robot_with_bridge.sh
 Then check: ps aux | grep amr_telemetry_bridge
             amrslam.tech/control -> pick "Hardware bot" -> online in ~3 s
-Rollback (bridge off): ~/run_robot_with_bridge.sh enable_amr_bridge:=false
-Rollback (repo):       git -C $REPO checkout "\$(cat ~/amr_bridge_rollback_commit.txt)"
-                       # branch you were on: \$(cat ~/amr_bridge_rollback_branch.txt)
+Rollback: git -C $REPO checkout "\$(cat ~/amr_bridge_rollback_branch.txt)"
 DONE

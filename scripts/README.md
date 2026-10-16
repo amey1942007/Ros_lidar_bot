@@ -39,16 +39,6 @@ Do not commit either value. This repository must not contain real secrets.
 
 ### Rollback
 
-Run the robot without the bridge:
-
 ```bash
-~/run_robot_with_bridge.sh enable_amr_bridge:=false
+git -C ~/Desktop/ros2_ws/src/Ros_lidar_bot checkout "$(cat ~/amr_bridge_rollback_branch.txt)"
 ```
-
-Put the repo back on the commit saved on the first run:
-
-```bash
-git -C ~/Desktop/ros2_ws/src/Ros_lidar_bot checkout "$(cat ~/amr_bridge_rollback_commit.txt)"
-```
-
-`~/amr_bridge_rollback_branch.txt` is only the branch name from that first run. You do not need a second checkout.

@@ -134,6 +134,42 @@ def _resolve_python(arg: str, bridge_root: Path | None) -> tuple[str, str | None
     return "python3", "[amr_bridge] no venv python found; using python3"
 
 
+# Process variables the bridge may need. Everything else (ROS PYTHONPATH,
+# PYTHONHOME, AMENT_*, secrets that are not AMR_*) stays out. ExecuteProcess
+# env= replaces the environment; additional_env= would merge and ignore pops.
+_PASSTHROUGH_ENV = (
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+)
+
+
+def _isolated_base_env(file_env: dict[str, str]) -> dict[str, str]:
+    env: dict[str, str] = {}
+    for key in _PASSTHROUGH_ENV:
+        val = os.environ.get(key)
+        if val:
+            env[key] = val
+    for key, val in os.environ.items():
+        if key.startswith("AMR_") or key.startswith("NEXT_PUBLIC_"):
+            env[key] = val
+    env.update(file_env)
+    env.pop("PYTHONHOME", None)
+    env.pop("PYTHONPATH", None)
+    return env
+
+
 def _skipped(reason: str, fix: str) -> LogInfo:
     return LogInfo(msg=f"[amr_bridge] SKIPPED: {reason}. Fix: {fix}")
 
@@ -169,11 +205,9 @@ def _launch_bridge_body(context):
         ))
         file_env = {}
 
-    # File overrides process env. This dict is the child's entire environment
-    # (ExecuteProcess env=, not additional_env). additional_env is merged onto
-    # the parent, so omitting PYTHONPATH / PYTHONHOME would not remove them.
-    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME")}
-    env.update(file_env)
+    # Child environment is only the passthrough keys plus AMR_* / file values.
+    # env= replaces the parent environment, so a missing key is really gone.
+    env = _isolated_base_env(file_env)
     # bot_id's default is non-empty, so the launch arg overrides AMR_BOT_ID.
     env["AMR_BOT_ID"] = bot_id or env.get("AMR_BOT_ID", "hardware-bot")
     if dashboard:
