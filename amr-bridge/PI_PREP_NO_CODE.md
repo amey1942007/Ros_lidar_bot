@@ -29,8 +29,11 @@ Set at least:
 ```bash
 AMR_BOT_ID=hardware-bot          # must match site bot picker
 AMR_SUPABASE_URL=https://khucmrlbstdlbxcuboub.supabase.co
-AMR_SUPABASE_KEY=…               # publishable/anon (not service_role)
+AMR_SUPABASE_KEY=…               # publishable key (not service_role)
 AMR_BRIDGE_TOKEN=…               # plaintext whose sha256 is in amr_bridge_config
+AMR_BRIDGE_EMAIL=…               # bridge Auth user for private channels
+AMR_BRIDGE_PASSWORD=…            # never commit this
+AMR_PUBLIC_CHANNEL=0             # 1 reopens the legacy topic (spoofable rank, no deadman)
 AMR_DASHBOARD_URL=http://127.0.0.1:8080
 AMR_GAMEPAD_URL=http://127.0.0.1:8765
 ```

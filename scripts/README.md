@@ -34,11 +34,32 @@ After it finishes, the only values you type by hand are in `/etc/amr-bridge.env`
 
 - `AMR_SUPABASE_KEY` — the Supabase **publishable** key (`sb_publishable_...`). Never the `service_role` / secret key, and never `AMR_SUPABASE_SERVICE_KEY`.
 - `AMR_BRIDGE_TOKEN` — the bridge token from the website owner's private `amr-bridge/.env.pi`.
+- `AMR_BRIDGE_EMAIL` and `AMR_BRIDGE_PASSWORD` — the bridge Auth user for private channels. Leave them blank until that user exists. Private channels stay off without them. `AMR_PUBLIC_CHANNEL` defaults to `0`. Set it to `1` only during cut-over: the legacy topic trusts a client-supplied rank (spoofable) and has no deadman.
 
-Do not commit either value. This repository must not contain real secrets.
+Do not commit any of these values. This repository must not contain real secrets.
+
+### Run without the bridge
+
+```bash
+~/run_robot_with_bridge.sh enable_amr_bridge:=false
+```
+
+That launcher starts `launch_robot.launch.py` and forwards extra arguments.
+`autonomous_robot.launch.py` takes the same `enable_amr_bridge` argument
+(default `true`) and passes it through, so this also works:
+
+```bash
+ros2 launch Ros_lidar_bot autonomous_robot.launch.py enable_amr_bridge:=false
+```
 
 ### Rollback
 
+The saved commit is the real rollback. That checkout leaves HEAD detached.
+Checking out the saved branch afterwards attaches HEAD again (the branch tip,
+which may be newer than the saved commit).
+
 ```bash
+git -C ~/Desktop/ros2_ws/src/Ros_lidar_bot checkout "$(cat ~/amr_bridge_rollback_commit.txt)"
+# optional, afterwards, to leave detached HEAD:
 git -C ~/Desktop/ros2_ws/src/Ros_lidar_bot checkout "$(cat ~/amr_bridge_rollback_branch.txt)"
 ```

@@ -79,11 +79,19 @@ else
 # amr_telemetry_bridge settings for the HARDWARE bot. Keep this file private.
 AMR_BOT_ID=hardware-bot
 AMR_SUPABASE_URL=$SUPABASE_URL
-# >>> YOU FILL THESE TWO <<<
+# >>> YOU FILL THE KEY AND THE TOKEN. EMAIL AND PASSWORD ARE FOR PRIVATE CHANNELS. <<<
 # Publishable key (starts with sb_publishable_...): Supabase dashboard > Project Settings > API Keys. NOT the service_role / secret key.
 AMR_SUPABASE_KEY=
 # Bridge token: the plaintext from the website owner's private amr-bridge/.env.pi
 AMR_BRIDGE_TOKEN=
+# Bridge Auth user for private Realtime channels. Leave blank until that user exists.
+# Private channels stay off until both are set. The public channel is off too
+# unless AMR_PUBLIC_CHANNEL is set to 1 below.
+AMR_BRIDGE_EMAIL=
+AMR_BRIDGE_PASSWORD=
+# 0 is the default. 1 reopens the legacy public channel during cut-over only.
+# Rank on that topic is whatever the client sends (spoofable), and it has no deadman.
+AMR_PUBLIC_CHANNEL=0
 # Local robot services
 AMR_DASHBOARD_URL=http://127.0.0.1:8080
 # Joystick endpoint (leave this line out for a telemetry + nudge-only test)
@@ -115,7 +123,9 @@ for k in AMR_SUPABASE_KEY AMR_BRIDGE_TOKEN; do
   v="${v#\'}"; v="${v%\'}"
   [ -n "$v" ] || { echo "Missing $k in $ENV_FILE. Add it first (nano $ENV_FILE)."; exit 1; }
 done
-echo "SAFETY: anyone with the public Supabase key can currently drive the bot via the bridge (review finding C1)."
+echo "SAFETY: AMR_PUBLIC_CHANNEL defaults off. Set it to 1 only to let the legacy public channel drive the bot."
+echo "SAFETY: AMR_PUBLIC_CHANNEL=1 trusts the rank in the message (spoofable) and that path has no deadman."
+echo "Private control needs AMR_BRIDGE_EMAIL and AMR_BRIDGE_PASSWORD in $ENV_FILE (names only in git)."
 echo "Keep the wheels lifted / the bot supervised. To run WITHOUT the bridge: add  enable_amr_bridge:=false"
 read -r -p "Type 'yes' to continue: " a; [ "$a" = "yes" ] || exit 1
 set +u; source /opt/ros/jazzy/setup.bash; source "$HOME/Desktop/ros2_ws/install/setup.bash"; set -u
@@ -128,9 +138,16 @@ chmod +x "$HOME/run_robot_with_bridge.sh"
 cat <<DONE
 
 Setup finished. Your only manual step:
-  1) nano $ENV_FILE      -> fill AMR_SUPABASE_KEY and AMR_BRIDGE_TOKEN (save with Ctrl+O, exit Ctrl+X)
+  1) nano $ENV_FILE      -> fill AMR_SUPABASE_KEY and AMR_BRIDGE_TOKEN.
+                           For private channels also fill AMR_BRIDGE_EMAIL and AMR_BRIDGE_PASSWORD.
+                           Save with Ctrl+O, exit Ctrl+X.
   2) ~/run_robot_with_bridge.sh
 Then check: ps aux | grep amr_telemetry_bridge
             amrslam.tech/control -> pick "Hardware bot" -> online in ~3 s
-Rollback: git -C $REPO checkout "\$(cat ~/amr_bridge_rollback_branch.txt)"
+Run without the bridge: ~/run_robot_with_bridge.sh enable_amr_bridge:=false
+  That launcher starts launch_robot.launch.py. autonomous_robot.launch.py
+  accepts the same flag (default true) and passes it through.
+Rollback: git -C $REPO checkout "\$(cat ~/amr_bridge_rollback_commit.txt)"
+          # optional, afterwards, to leave detached HEAD:
+          git -C $REPO checkout "\$(cat ~/amr_bridge_rollback_branch.txt)"
 DONE
