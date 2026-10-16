@@ -8,6 +8,7 @@ launch_robot.launch.py), then launches the frontier explorer node.
 Usage:
   ros2 launch Ros_lidar_bot autonomous_robot.launch.py
   ros2 launch Ros_lidar_bot autonomous_robot.launch.py verbose:=true
+  ros2 launch Ros_lidar_bot autonomous_robot.launch.py enable_amr_bridge:=false
 """
 
 import os
@@ -44,6 +45,7 @@ def _launch_setup(context, *args, **kwargs):
         launch_arguments={
             "verbose": LaunchConfiguration("verbose"),
             "expect_frontier": "true",
+            "enable_amr_bridge": LaunchConfiguration("enable_amr_bridge"),
         }.items(),
     )
 
@@ -70,6 +72,11 @@ def generate_launch_description():
             "verbose",
             default_value="false",
             description="If true, all node logs go to the terminal (old spammy mode).",
+        ),
+        DeclareLaunchArgument(
+            "enable_amr_bridge",
+            default_value="true",
+            description="Passed through to launch_robot. If true, start amr_telemetry_bridge.",
         ),
         OpaqueFunction(function=_launch_setup),
     ])

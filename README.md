@@ -205,9 +205,12 @@ ros2 launch Ros_lidar_bot launch_robot.launch.py \
 ### `autonomous_robot.launch.py`
 
 Includes `launch_robot.launch.py` with `expect_frontier:=true`, then starts
-`frontier_explorer_node` at T=22 s. Argument: `verbose` (default `false`).
-Other `launch_robot` arguments keep their defaults, including
-`enable_amr_bridge:=true`.
+`frontier_explorer_node` at T=22 s.
+
+| Argument | Default | |
+|---|---|---|
+| `verbose` | `false` | Node logs on the terminal when true |
+| `enable_amr_bridge` | `true` | Passed through to `launch_robot` |
 
 ### `amr_bridge.launch.py`
 

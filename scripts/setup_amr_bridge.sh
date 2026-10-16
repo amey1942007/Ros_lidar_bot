@@ -132,5 +132,10 @@ Setup finished. Your only manual step:
   2) ~/run_robot_with_bridge.sh
 Then check: ps aux | grep amr_telemetry_bridge
             amrslam.tech/control -> pick "Hardware bot" -> online in ~3 s
-Rollback: git -C $REPO checkout "\$(cat ~/amr_bridge_rollback_branch.txt)"
+Run without the bridge: ~/run_robot_with_bridge.sh enable_amr_bridge:=false
+  That launcher starts launch_robot.launch.py. autonomous_robot.launch.py
+  accepts the same flag (default true) and passes it through.
+Rollback: git -C $REPO checkout "\$(cat ~/amr_bridge_rollback_commit.txt)"
+          # optional, afterwards, to leave detached HEAD:
+          git -C $REPO checkout "\$(cat ~/amr_bridge_rollback_branch.txt)"
 DONE
