@@ -76,8 +76,12 @@ Browsers request `full` (10 Hz + lidar/camera/3D) or `board` (1 Hz vitals). When
 
 `src/lib/telemetry/protocol.ts` ↔ `amr_telemetry_bridge/protocol.py`
 
-Legacy public topics (flag `AMR_PUBLIC_CHANNEL`, default off): `amr-bot-amr4`, `amr-bot-hardware-bot`. Events: `telemetry`, `map`, `log`, `hb`, `command`.
+The bridge publishes `telemetry`, `map`, `log`, and `hb` on the public topic `amr-bot-<id>` whenever that join reaches `SUBSCRIBED`, including when `AMR_PUBLIC_CHANNEL` is off. That flag (default off) only listens for `command` on the same topic. Commands there are spoofable and do not arm the deadman.
 
-Private topics: `bot:<id>:status` (bridge sends `telemetry`, `map`, `log`, `hb`), `bot:<id>:cmd` and `bot:<id>:cmdq` (bridge receives `command`), `bot:<id>:ctl` (bridge receives `control`). Sign-in uses `AMR_BRIDGE_EMAIL` / `AMR_BRIDGE_PASSWORD`. Motion still goes out through the dashboard and gamepad HTTP APIs onto `/cmd_vel`.
+Private topics: `bot:<id>:status` (bridge sends `telemetry`, `map`, `log`, `hb`), `bot:<id>:cmd` and `bot:<id>:cmdq` (bridge receives `command`), `bot:<id>:ctl` (bridge receives `control`). Sign-in uses `AMR_BRIDGE_EMAIL` / `AMR_BRIDGE_PASSWORD`. A failed `:status` join does not drop the public topic. Motion still goes out through the dashboard and gamepad HTTP APIs onto `/cmd_vel`.
 
-Env names (values stay in `/etc/amr-bridge.env`, never in git): `AMR_SUPABASE_URL`, `AMR_SUPABASE_KEY` (publishable), `AMR_BRIDGE_TOKEN`, `AMR_BRIDGE_EMAIL`, `AMR_BRIDGE_PASSWORD`, `AMR_PUBLIC_CHANNEL`. Do not set `AMR_SUPABASE_SERVICE_KEY`.
+Every 10 s the process logs one `bridge stats:` line (ready flags, send counters, SSE frames, last pose and scan size). Send failures log at WARNING, at most once per 30 s per exception type.
+
+`/scan` on `telemetry` is capped (`AMR_SCAN_MAX_POINTS`, default 90) and included on every `ceil(10/AMR_SCAN_HZ)`-th full-rate frame, starting with the first (default 5 Hz). Other full-rate frames send `"scan": null`. The current website treats a null scan as an empty list, so those frames clear the drawn scan until the page keeps the previous one. Frames over `AMR_TELEMETRY_MAX_BYTES` (default 200000) drop `cameraJpegB64`, then `scan`, then `frontier` / `yoloDet` / `sem` / `path`. An oversize `map` frame is dropped. `AMR_PUBLIC_REST=1` also POSTs the public payload to Realtime's REST broadcast endpoint at most 5 times a second (default off).
+
+Env names (values stay in `/etc/amr-bridge.env`, never in git): `AMR_SUPABASE_URL`, `AMR_SUPABASE_KEY` (publishable), `AMR_BRIDGE_TOKEN`, `AMR_BRIDGE_EMAIL`, `AMR_BRIDGE_PASSWORD`, `AMR_PUBLIC_CHANNEL`, `AMR_SCAN_MAX_POINTS` (90, clamp 20–360), `AMR_SCAN_HZ` (5, clamp 1–10), `AMR_TELEMETRY_MAX_BYTES` (200000, clamp 20000–250000), `AMR_PUBLIC_REST` (0). Do not set `AMR_SUPABASE_SERVICE_KEY`.

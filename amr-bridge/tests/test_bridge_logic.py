@@ -1807,11 +1807,15 @@ class _FakeChannel:
             self.state = "errored"
             if callback:
                 callback("CHANNEL_ERROR", _STATUS_JOIN_ERROR)
+        elif script == "raise":
+            raise RuntimeError("subscribe exploded")
         else:
             self.state = "joining"
         return self
 
     async def send_broadcast(self, event, data):
+        if getattr(self, "fail_send", False):
+            raise RuntimeError("send down")
         self.sent.append((event, data))
 
     async def unsubscribe(self):
@@ -1884,6 +1888,7 @@ class _FakeRpc:
 
     def execute(self):
         self._sink["called"] = True
+        self._sink["calls"] = self._sink.get("calls", 0) + 1
         return type("Res", (), {"data": True})()
 
 
@@ -1975,6 +1980,9 @@ class RealtimeClientTests(unittest.TestCase):
             import asyncio
             asyncio.run(_wait_subscribed())
             channel = created[0].channels[0]
+            from amr_telemetry_bridge.bridge import _PUBLIC_CHANNEL_PARAMS
+
+            self.assertEqual(channel.params, _PUBLIC_CHANNEL_PARAMS)
             self.assertFalse(hub._public_ready)
             hub.send("hb", {"t": "hb"})
             self.assertEqual(channel.sent, [])
@@ -2178,6 +2186,8 @@ class RealtimeClientTests(unittest.TestCase):
             self.assertFalse(hub._private_ready)
             hub.send("telemetry", {"t": "telemetry", "seq": 1})
             self.assertEqual(public.sent, [("telemetry", {"t": "telemetry", "seq": 1})])
+            self.assertGreaterEqual(hub.stats()["sent_ok"].get("telemetry", 0), 1)
+            self.assertEqual(hub.stats()["dropped"].get("telemetry", 0), 0)
             hub.send("cmd_ack", {"seq": 1})
             self.assertEqual(len(public.sent), 1)
             for channel in created[0].channels:
@@ -2224,6 +2234,378 @@ class RealtimeClientTests(unittest.TestCase):
             self.assertLess(len(created), 8)
         finally:
             hub.close()
+
+    def test_send_dropped_when_no_channel_is_ready(self):
+        hub = _hub(created=[], public_enabled=True)
+        hub.send("telemetry", {"pose": [0, 0, 0]})
+        hub.send("hb", {"t": "hb"})
+        hub.send("cmd_ack", {"seq": 1})
+        snap = hub.stats()
+        self.assertEqual(snap["dropped"], {"telemetry": 1, "hb": 1})
+        self.assertEqual(snap["sent_ok"], {})
+        self.assertEqual(snap["sent_fail"], {})
+        self.assertFalse(snap["public_ready"])
+        self.assertFalse(snap["private_ready"])
+
+    def test_send_failure_is_warned_and_touch_keeps_running(self):
+        created = []
+        sink = {}
+        hub = _hub(created=created, script="subscribed", public_enabled=True)
+        hub._client = _FakeRest(sink)
+        bridge = _dispatch_bridge()
+        bridge._hub = hub
+        try:
+            hub.connect()
+            import asyncio
+            asyncio.run(_wait_until(lambda: hub._public_ready, timeout=1.5))
+            created[0].channels[0].fail_send = True
+
+            async def run():
+                bridge._loop = asyncio.get_running_loop()
+                task = asyncio.create_task(bridge._presence_touch_loop())
+                await _wait_until(lambda: sink.get("calls", 0) >= 1, timeout=1.5)
+                with self.assertLogs("amr_bridge", level="WARNING") as logs:
+                    hub.send("telemetry", {"pose": [0, 0, 0]})
+                    hub.send("telemetry", {"pose": [1, 0, 0]})
+                self.assertFalse(task.done())
+                snap = hub.stats()
+                self.assertGreaterEqual(snap["sent_fail"].get("telemetry", 0), 2)
+                text = "\n".join(logs.output)
+                self.assertEqual(text.count("broadcast telemetry failed"), 1)
+                self.assertIn("RuntimeError", text)
+                bridge._stop.set()
+                await asyncio.wait_for(task, timeout=1.0)
+
+            asyncio.run(run())
+        finally:
+            hub.close()
+            _close_bridge(bridge)
+
+    def test_subscribe_raise_keeps_touch_loop(self):
+        created = []
+        sink = {}
+        hub = _hub(
+            created=created,
+            script="raise",
+            public_enabled=True,
+            private_enabled=True,
+            email="bridge@example.com",
+            password="secret",
+            reconnect_min_s=0.05,
+            reconnect_max_s=0.2,
+        )
+        hub._client = _FakeRest(sink)
+        bridge = _dispatch_bridge()
+        bridge._hub = hub
+        try:
+            import asyncio
+
+            async def run():
+                bridge._loop = asyncio.get_running_loop()
+                await asyncio.to_thread(hub.connect)
+                task = asyncio.create_task(bridge._presence_touch_loop())
+                await _wait_until(lambda: sink.get("calls", 0) >= 2, timeout=6.5)
+                self.assertFalse(task.done())
+                self.assertTrue(hub._thread.is_alive())
+                bridge._stop.set()
+                await asyncio.wait_for(task, timeout=1.0)
+
+            asyncio.run(run())
+        finally:
+            hub.close()
+            _close_bridge(bridge)
+
+    def test_public_channel_error_logs_hint_once(self):
+        created = []
+        hub = _hub(
+            created=created,
+            script="error",
+            public_enabled=True,
+            reconnect_min_s=0.05,
+            reconnect_max_s=0.2,
+        )
+        try:
+            with self.assertLogs("amr_bridge", level="INFO") as logs:
+                hub.connect()
+                import asyncio
+                asyncio.run(_wait_until(
+                    lambda: _topic_joins(created, "amr-bot-hardware-bot") >= 3,
+                    timeout=1.5,
+                ))
+            text = "\n".join(logs.output)
+            self.assertEqual(text.count("public join denied"), 1)
+            self.assertIn("Allow public access", text)
+            self.assertEqual(text.count("public channel using publishable key"), 1)
+        finally:
+            hub.close()
+
+    def test_public_rest_posts_when_enabled(self):
+        created = []
+        hub = _hub(created=created, script="subscribed", public_enabled=True)
+        posted = []
+
+        def _post(url, headers, body):
+            posted.append((url, headers, body))
+
+        hub._public_rest = True
+        hub._post_rest = _post
+        try:
+            hub.connect()
+            import asyncio
+            asyncio.run(_wait_until(lambda: hub._public_ready, timeout=1.5))
+            hub.send("telemetry", {"pose": [1, 2, 3]})
+            hub.send("telemetry", {"pose": [1, 2, 4]})
+            self.assertEqual(len(posted), 1)
+            url, headers, body = posted[0]
+            self.assertTrue(url.endswith("/realtime/v1/api/broadcast"))
+            self.assertEqual(headers["apikey"], "sb_publishable_example")
+            message = body["messages"][0]
+            self.assertEqual(message["topic"], "amr-bot-hardware-bot")
+            self.assertEqual(message["event"], "telemetry")
+            self.assertFalse(message["private"])
+            self.assertEqual(message["payload"]["pose"], [1, 2, 3])
+            hub._public_rest = False
+            hub.send("hb", {"t": "hb"})
+            self.assertEqual(len(posted), 1)
+        finally:
+            hub.close()
+
+
+class TelemetryShapeTests(unittest.TestCase):
+    def test_scan_is_capped_ordered_and_rounded(self):
+        import asyncio
+
+        bridge = _dispatch_bridge()
+        sent = []
+
+        async def capture(event, payload):
+            sent.append((event, payload))
+
+        bridge._broadcast = capture
+        scan = [[i * 0.01, 1.23456] for i in range(160)]
+
+        async def run():
+            await bridge._handle_sse_event({
+                "t": "state",
+                "pose": [1.0, 2.0, 0.5],
+                "scan": scan,
+            })
+            bridge._last_pub = 0.0
+            await bridge._handle_sse_event({
+                "t": "state",
+                "pose": [1.1, 2.0, 0.5],
+                "scan": scan,
+            })
+
+        try:
+            asyncio.run(run())
+        finally:
+            _close_bridge(bridge)
+        self.assertEqual(sent[0][0], "telemetry")
+        points = sent[0][1]["scan"]
+        self.assertIsInstance(points, list)
+        self.assertGreater(len(points), 0)
+        self.assertLessEqual(len(points), 90)
+        self.assertEqual([p[0] for p in points], sorted(p[0] for p in points))
+        for angle, dist in points:
+            self.assertEqual(angle, round(angle, 3))
+            self.assertEqual(dist, round(dist, 2))
+        self.assertEqual(points[0][1], 1.23)
+        self.assertIsNone(sent[1][1]["scan"])
+        self.assertEqual(bridge._sse_state_frames, 2)
+        self.assertEqual(bridge._last_scan_pts, len(points))
+
+    def test_pose_only_state_still_publishes(self):
+        import asyncio
+
+        bridge = _dispatch_bridge()
+        sent = []
+
+        async def capture(event, payload):
+            sent.append((event, payload))
+
+        bridge._broadcast = capture
+
+        async def run():
+            await bridge._handle_sse_event({"pose": [1.5, -2.0, 0.25]})
+
+        try:
+            asyncio.run(run())
+        finally:
+            _close_bridge(bridge)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], "telemetry")
+        self.assertEqual(sent[0][1]["pose"], [1.5, -2.0, 0.25])
+        self.assertIsNone(sent[0][1]["mapPose"])
+        self.assertIsNone(sent[0][1]["imu"])
+        self.assertEqual(sent[0][1]["scan"], [])
+
+    def test_oversize_drops_optional_fields_and_still_sends(self):
+        import asyncio
+
+        bridge = _dispatch_bridge()
+        bridge.telemetry_max_bytes = 900
+        sent = []
+
+        async def capture(event, payload):
+            sent.append((event, payload))
+
+        async def jpeg(_max_kb):
+            return "A" * 4000
+
+        bridge._broadcast = capture
+        bridge.dash.fetch_camera_jpeg = jpeg
+        bridge._cam_every = 14
+
+        async def run():
+            with self.assertLogs("amr_bridge", level="WARNING") as logs:
+                await bridge._handle_sse_event({
+                    "pose": [0.1, 0.2, 0.3],
+                    "vel": [0.0, 0.0],
+                    "scan": [[i * 0.02, 2.5] for i in range(160)],
+                    "frontier": {"zones": [[0, 0, 1, "x"] for _ in range(40)], "queue": []},
+                    "path": [[i, i] for i in range(40)],
+                })
+                await bridge._handle_sse_event({
+                    "pose": [0.2, 0.2, 0.3],
+                    "scan": [[0.0, 1.0]],
+                })
+            return logs
+
+        try:
+            logs = asyncio.run(run())
+        finally:
+            _close_bridge(bridge)
+        self.assertGreaterEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], "telemetry")
+        self.assertNotIn("cameraJpegB64", sent[0][1])
+        self.assertEqual(sent[0][1]["pose"], [0.1, 0.2, 0.3])
+        text = "\n".join(logs.output)
+        self.assertIn("telemetry oversize, dropped fields:", text)
+        self.assertEqual(text.count("telemetry oversize, dropped fields:"), 1)
+
+    def test_oversize_map_is_dropped(self):
+        import asyncio
+
+        bridge = _dispatch_bridge()
+        bridge.telemetry_max_bytes = 80
+        sent = []
+
+        async def capture(event, payload):
+            sent.append((event, payload))
+
+        bridge._broadcast = capture
+
+        async def run():
+            with self.assertLogs("amr_bridge", level="WARNING") as logs:
+                await bridge._handle_sse_event({
+                    "t": "map",
+                    "w": 10,
+                    "h": 10,
+                    "data": "x" * 500,
+                    "tf": [0, 0, 0],
+                })
+            return logs
+
+        try:
+            logs = asyncio.run(run())
+        finally:
+            _close_bridge(bridge)
+        self.assertEqual(sent, [])
+        self.assertIn("map oversize, dropped frame", "\n".join(logs.output))
+
+    def test_scan_env_is_clamped(self):
+        keys = {
+            "AMR_SCAN_MAX_POINTS": "9999",
+            "AMR_SCAN_HZ": "0",
+            "AMR_TELEMETRY_MAX_BYTES": "10",
+            "AMR_PUBLIC_REST": "1",
+        }
+        old = {key: os.environ.get(key) for key in keys}
+        os.environ.update(keys)
+        try:
+            bridge = _dispatch_bridge()
+            self.assertEqual(bridge.scan_max_points, 360)
+            self.assertEqual(bridge.scan_hz, 1)
+            self.assertEqual(bridge.telemetry_max_bytes, 20000)
+            self.assertTrue(bridge.public_rest)
+        finally:
+            for key, value in old.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            _close_bridge(bridge)
+
+    def test_heartbeat_reports_ready_flags_and_seq(self):
+        import asyncio
+
+        bridge = _dispatch_bridge()
+        sent = []
+
+        async def capture(event, payload):
+            sent.append((event, payload))
+
+        bridge._broadcast = capture
+        bridge._hub = type("Hub", (), {"_public_ready": True, "_private_ready": False})()
+
+        async def run():
+            task = asyncio.create_task(bridge._heartbeat_loop())
+            await _wait_until(lambda: sent, timeout=1.5)
+            bridge._stop.set()
+            await asyncio.wait_for(task, timeout=1.0)
+
+        try:
+            asyncio.run(run())
+        finally:
+            _close_bridge(bridge)
+        self.assertEqual(sent[0][0], "hb")
+        self.assertTrue(sent[0][1]["public"])
+        self.assertFalse(sent[0][1]["private"])
+        self.assertEqual(sent[0][1]["seq"], 1)
+
+    def test_stats_line_includes_pose_and_counters(self):
+        import asyncio
+
+        bridge = _dispatch_bridge()
+        bridge._sse_state_frames = 4
+        bridge._last_scan_pts = 80
+        bridge._last_pose = [1.25, -0.5, 0.1]
+        bridge._hub = type("Hub", (), {
+            "stats": lambda self: {
+                "public_ready": True,
+                "private_ready": False,
+                "sent_ok": {"telemetry": 12, "hb": 3},
+                "sent_fail": {"telemetry": 1},
+                "dropped": {"hb": 2},
+            },
+        })()
+
+        async def run():
+            with self.assertLogs("amr_bridge", level="INFO") as logs:
+                task = asyncio.create_task(bridge._stats_loop())
+                await _wait_until(
+                    lambda: any("bridge stats:" in line for line in logs.output),
+                    timeout=1.5,
+                )
+                bridge._stop.set()
+                await asyncio.wait_for(task, timeout=1.0)
+            return logs
+
+        try:
+            logs = asyncio.run(run())
+        finally:
+            _close_bridge(bridge)
+        line = next(item for item in logs.output if "bridge stats:" in item)
+        self.assertIn("public_ready=True", line)
+        self.assertIn("private_ready=False", line)
+        self.assertIn("telemetry_ok=12", line)
+        self.assertIn("hb_ok=3", line)
+        self.assertIn("fail=1", line)
+        self.assertIn("dropped_not_ready=2", line)
+        self.assertIn("sse_state_frames=4", line)
+        self.assertIn("last_scan_pts=80", line)
+        self.assertIn("last_pose=1.250,-0.500,0.100", line)
 
 
 def _topic_joins(created, suffix: str) -> int:
