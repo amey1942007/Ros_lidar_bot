@@ -1,6 +1,7 @@
-build/
-install/
-log/
+# Colcon workspace output (repo root only)
+/build/
+/install/
+/log/
 .pytest_cache/
 __pycache__/
 *.pyc
@@ -20,11 +21,14 @@ amr-bridge/.env.pi
 !.env.pi.example
 *.env
 amr-bridge.env
-**/amr-bridge.env
 
-# Keys, tokens, and credential files
+# Keys, tokens, and credential files.
+# *secret* still ignores directories and non-doc files. The two exceptions
+# re-allow only a file whose own name ends in .md or .py (not a secrets/ folder).
 *token*.txt
 *secret*
+!*secret*.md
+!*secret*.py
 *.key
 *.pem
 *.p12
@@ -35,13 +39,6 @@ service-account*.json
 supabase/.temp
 supabase/.branches
 
-# Local environments, bytecode, editor junk, colcon output
+# Local environments and editor junk
 .venv/
-amr-bridge/.venv/
-__pycache__/
-*.pyc
 .DS_Store
-.cursor/
-build/
-install/
-log/
