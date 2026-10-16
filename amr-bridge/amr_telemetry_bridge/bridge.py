@@ -3,21 +3,25 @@
 amr_telemetry_bridge — Pi → Supabase Realtime → https://amrslam.tech/control
 
 Runs on the robot (RPi5) beside robot_dashboard_node.py. Reads the local SSE
-feed and POSTs commands back to the dashboard HTTP API.
-
-Network path (preferred):
-  Pi ── Tailscale ── laptop/ops   (management)
-  Pi ── Cloudflare Tunnel / Supabase Realtime ── browsers on /control
+feed and POSTs commands back to the dashboard HTTP API. Motion always goes
+through that API (or the gamepad HTTP API). Both publish /cmd_vel, so
+safety_stop stays in front of the motors. This process never publishes
+/cmd_vel_safe.
 
 Env (see /etc/amr-bridge.env — also loaded by amr_bridge.launch.py):
-  AMR_BOT_ID=amr4|hardware-bot
+  AMR_BOT_ID=hardware-bot
   AMR_SUPABASE_URL=https://….supabase.co
-  AMR_SUPABASE_KEY=…                  # publishable/anon key (Realtime + touch RPC)
+  AMR_SUPABASE_KEY=…                  # publishable key only
   AMR_BRIDGE_TOKEN=…                  # shared secret → public.touch_amr_bot
-  AMR_SUPABASE_SERVICE_KEY=…          # optional legacy; not required
+  AMR_BRIDGE_EMAIL=…                  # bridge Auth user (private channels)
+  AMR_BRIDGE_PASSWORD=…
+  AMR_PUBLIC_CHANNEL=1                # legacy amr-bot-<id> until cut-over
+  AMR_PRIVATE_CHANNEL=1               # bot:<id>:status|cmd|cmdq|ctl
   AMR_DASHBOARD_URL=http://127.0.0.1:8080
   AMR_CAMERA_URL=                     # optional public MJPEG (CF tunnel)
   AMR_CAMERA_JPEG_MAX_KB=24           # inline JPEG budget when scraping /camera.mjpg
+
+AMR_SUPABASE_SERVICE_KEY is ignored. Do not set it on the robot.
 """
 
 from __future__ import annotations
@@ -29,16 +33,35 @@ import json
 import logging
 import os
 import signal
-import threading
 import time
 from typing import Any, Optional
 
 import httpx
 
 from . import __version__
-from .protocol import BOARD_RATE_HZ, BOT_IDS, BRIDGE_VERSION, FULL_RATE_HZ, channel_name
+from .control import (
+    ControlTracker,
+    clamp_poll_interval,
+    flag_enabled,
+)
+from .protocol import (
+    BOARD_RATE_HZ,
+    BOT_IDS,
+    BRIDGE_VERSION,
+    CMD_EVENT,
+    CTL_EVENT,
+    FULL_RATE_HZ,
+    STATUS_EVENTS,
+    channel_name,
+    private_topic,
+)
 
 log = logging.getLogger("amr_bridge")
+
+# How often to check whether the bridge JWT should be refreshed.
+AUTH_REFRESH_CHECK_S = 15.0
+# Refresh this long before expires_at, then re-apply Realtime auth.
+AUTH_REFRESH_SKEW_S = 90.0
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -86,69 +109,385 @@ class DashboardClient:
         return None
 
 
+def _create_supabase(url: str, key: str):
+    """Publishable key only. Session is not written to disk."""
+    from supabase import create_client
+
+    options = None
+    try:
+        from supabase import ClientOptions
+    except ImportError:
+        try:
+            from supabase.lib.client_options import ClientOptions  # type: ignore
+        except ImportError:
+            ClientOptions = None  # type: ignore
+    if ClientOptions is not None:
+        try:
+            options = ClientOptions(auto_refresh_token=False, persist_session=False)
+        except Exception:
+            options = None
+    if options is not None:
+        try:
+            return create_client(url, key, options=options)
+        except TypeError:
+            pass
+    return create_client(url, key)
+
+
+def _session_parts(res: Any) -> tuple[str, str | None, float | None]:
+    session = getattr(res, "session", None)
+    if session is None and isinstance(res, dict):
+        session = res.get("session")
+    if session is None:
+        raise RuntimeError("bridge sign-in returned no session")
+
+    def field(name: str) -> Any:
+        if isinstance(session, dict):
+            return session.get(name)
+        return getattr(session, name, None)
+
+    access = field("access_token")
+    refresh = field("refresh_token")
+    expires = field("expires_at")
+    if not access:
+        raise RuntimeError("bridge sign-in returned no access token")
+    exp = float(expires) if expires else None
+    return str(access), (str(refresh) if refresh else None), exp
+
+
 class RealtimeHub:
-    """Thin sync supabase-py wrapper used from the asyncio loop via to_thread."""
+    """Sync supabase-py wrapper. Call it from the asyncio loop via to_thread."""
 
-    def __init__(self, url: str, key: str, bot_id: str, on_command, bridge_token: str | None):
-        from supabase import create_client
-
+    def __init__(
+        self,
+        url: str,
+        key: str,
+        bot_id: str,
+        bridge_token: str | None,
+        *,
+        email: str | None,
+        password: str | None,
+        public_enabled: bool,
+        private_enabled: bool,
+        on_public_command,
+        on_private_command,
+        on_control,
+        on_link,
+    ):
         self._bot_id = bot_id
-        self._on_command = on_command
         self._bridge_token = bridge_token
-        self._client = create_client(url, key)
-        self._channel = self._client.channel(channel_name(bot_id))
-        self._ready = threading.Event()
+        self._email = email
+        self._password = password
+        self._public_enabled = public_enabled
+        self._private_enabled = private_enabled
+        self._on_public_command = on_public_command
+        self._on_private_command = on_private_command
+        self._on_control = on_control
+        self._on_link = on_link
+        self._client = _create_supabase(url, key)
+        self._channels: list[Any] = []
+        self._public_channel = None
+        self._status_channel = None
+        self._public_ready = False
+        self._private_ready = False
+        self._signed_in = False
+        self._access_token: str | None = None
+        self._refresh_token: str | None = None
+        self._expires_at = 0.0
+        self._need_reauth = False
+        self._closed = False
 
     def connect(self) -> None:
-        def _cb(message: dict) -> None:
-            payload = message.get("payload") if isinstance(message, dict) else message
-            if isinstance(payload, str):
-                try:
-                    payload = json.loads(payload)
-                except json.JSONDecodeError:
-                    return
-            if isinstance(payload, dict):
-                self._on_command(payload)
-
-        # supabase-py 2.x broadcast API
-        try:
-            self._channel.on_broadcast(event="command", callback=_cb)
-        except Exception:
-            self._channel.on("broadcast", {"event": "command"}, _cb)
-
-        self._channel.subscribe()
-        self._ready.set()
-        log.info("realtime subscribed (%s)", channel_name(self._bot_id))
+        if self._public_enabled:
+            self._subscribe_public()
+        if self._private_enabled:
+            try:
+                self._sign_in()
+                self._subscribe_private()
+            except Exception as exc:
+                log.error("private channel setup failed: %s", self._redact(exc))
 
     def send(self, event: str, payload: dict) -> None:
-        if not self._ready.is_set():
+        if event not in STATUS_EVENTS:
             return
-        try:
-            self._channel.send_broadcast(event, payload)
-        except Exception:
-            try:
-                self._channel.send({"type": "broadcast", "event": event, "payload": payload})
-            except Exception as exc:
-                log.debug("broadcast %s failed: %s", event, exc)
+        if self._public_ready and self._public_channel is not None:
+            self._send_one(self._public_channel, event, payload)
+        if self._private_ready and self._status_channel is not None:
+            self._send_one(self._status_channel, event, payload)
 
-    def touch_bot_row(self, camera_url: str | None) -> None:
+    def touch_bot_row(self, camera_url: str | None) -> bool | None:
+        """Heartbeat public.touch_amr_bot. Logs a false result. Never logs the token."""
         if not self._bridge_token:
-            return
+            log.warning("touch_amr_bot skipped: AMR_BRIDGE_TOKEN is unset")
+            return None
         try:
-            self._client.rpc("touch_amr_bot", {
+            res = self._client.rpc("touch_amr_bot", {
                 "p_bot_id": self._bot_id,
                 "p_token": self._bridge_token,
                 "p_bridge_version": BRIDGE_VERSION,
                 "p_camera_url": camera_url,
             }).execute()
         except Exception as exc:
-            log.debug("amr_bots touch skipped: %s", exc)
+            log.warning("touch_amr_bot failed: %s", type(exc).__name__)
+            return None
+        ok = res.data
+        if isinstance(ok, list):
+            ok = ok[0] if ok else None
+        if ok is False:
+            log.warning(
+                "touch_amr_bot returned false for bot %s "
+                "(bad token, or the server locked the RPC after 10 bad tokens this minute)",
+                self._bot_id,
+            )
+            return False
+        if ok is True:
+            return True
+        log.warning("touch_amr_bot returned an unexpected result")
+        return None
+
+    def poll_control(self) -> tuple[dict, dict | None]:
+        control = (
+            self._client.table("bot_control")
+            .select("bot_id,controller,epoch,lease_expires_at")
+            .eq("bot_id", self._bot_id)
+            .limit(1)
+            .execute()
+        )
+        token = (
+            self._client.table("bot_control_tokens")
+            .select("bot_id,epoch,token")
+            .eq("bot_id", self._bot_id)
+            .limit(1)
+            .execute()
+        )
+        rows = control.data or []
+        if not rows:
+            raise RuntimeError("bot_control returned no row")
+        token_rows = token.data or []
+        return rows[0], (token_rows[0] if token_rows else None)
+
+    def refresh_auth_if_due(self) -> bool:
+        """Refresh the bridge JWT when it is near expiry and re-apply Realtime auth.
+
+        Also retries sign-in after a failed startup. Returns True when a new
+        access token was applied.
+        """
+        if not self._private_enabled or self._closed:
+            return False
+        if not self._signed_in:
+            self._sign_in()
+        if not self._private_ready:
+            self._subscribe_private()
+            return True
+        now = time.time()
+        if self._expires_at and now < self._expires_at - AUTH_REFRESH_SKEW_S:
+            return False
+        if self._refresh_token:
+            res = self._client.auth.refresh_session(self._refresh_token)
+        else:
+            res = self._client.auth.refresh_session()
+        self._store_session(res)
+        self._apply_realtime_auth(self._access_token or "")
+        log.info("bridge auth refreshed; realtime auth re-applied")
+        return True
 
     def close(self) -> None:
+        self._closed = True
+        for channel in self._channels:
+            try:
+                self._client.remove_channel(channel)
+            except Exception:
+                pass
+        self._channels.clear()
+
+    def _subscribe_public(self) -> None:
+        topic = channel_name(self._bot_id)
+        channel = self._client.channel(topic)
+        self._bind_broadcast(channel, CMD_EVENT, self._public_cb)
+        channel.subscribe()
+        self._public_channel = channel
+        self._channels.append(channel)
+        self._public_ready = True
+        log.info("realtime subscribed (%s)", topic)
+
+    def _subscribe_private(self) -> None:
+        if self._private_ready or self._closed:
+            return
+        if not self._access_token:
+            raise RuntimeError("private subscribe without a bridge access token")
+        self._apply_realtime_auth(self._access_token)
+        specs = (
+            ("cmd", CMD_EVENT, self._cmd_cb),
+            ("cmdq", CMD_EVENT, self._cmdq_cb),
+            ("ctl", CTL_EVENT, self._ctl_cb),
+            ("status", None, None),
+        )
+        made = []
         try:
-            self._client.remove_channel(self._channel)
+            for kind, event, callback in specs:
+                topic = private_topic(self._bot_id, kind)
+                channel = self._open_private_channel(topic)
+                if event and callback:
+                    self._bind_broadcast(channel, event, callback)
+                try:
+                    channel.subscribe(self._status_cb)
+                except TypeError:
+                    channel.subscribe()
+                made.append(channel)
+                if kind == "status":
+                    self._status_channel = channel
         except Exception:
-            pass
+            for channel in made:
+                try:
+                    self._client.remove_channel(channel)
+                except Exception:
+                    pass
+            self._status_channel = None
+            raise
+        self._channels.extend(made)
+        self._private_ready = True
+        log.info(
+            "realtime subscribed private (%s)",
+            ", ".join(private_topic(self._bot_id, kind) for kind, _, _ in specs),
+        )
+
+    def _open_private_channel(self, topic: str):
+        params = {"config": {"private": True}}
+        try:
+            return self._client.channel(topic, params)
+        except TypeError:
+            return self._client.channel(topic, params=params)
+
+    def _bind_broadcast(self, channel, event: str, callback) -> None:
+        try:
+            channel.on_broadcast(event=event, callback=callback)
+        except Exception:
+            channel.on("broadcast", {"event": event}, callback)
+
+    def _public_cb(self, message) -> None:
+        payload = _unwrap_callback(message)
+        if isinstance(payload, dict):
+            self._on_public_command(payload)
+
+    def _cmd_cb(self, message) -> None:
+        payload = _unwrap_callback(message)
+        if isinstance(payload, dict):
+            self._on_private_command(payload, "cmd")
+
+    def _cmdq_cb(self, message) -> None:
+        payload = _unwrap_callback(message)
+        if isinstance(payload, dict):
+            self._on_private_command(payload, "cmdq")
+
+    def _ctl_cb(self, message) -> None:
+        payload = _unwrap_callback(message)
+        if isinstance(payload, dict):
+            self._on_control(payload)
+
+    def _status_cb(self, *args) -> None:
+        status = args[0] if args else ""
+        name = str(getattr(status, "value", status) or "")
+        if "SUBSCRIBED" in name:
+            self._reapply_if_needed()
+            if self._on_link:
+                self._on_link(True)
+            return
+        if any(token in name for token in ("CLOSED", "CHANNEL_ERROR", "TIMED_OUT")):
+            self._need_reauth = True
+            log.warning("realtime private channel %s", name)
+
+    def _reapply_if_needed(self) -> None:
+        if not self._need_reauth or not self._access_token:
+            return
+        self._need_reauth = False
+        try:
+            self._apply_realtime_auth(self._access_token)
+            log.info("realtime auth re-applied after reconnect")
+        except Exception as exc:
+            self._need_reauth = True
+            log.warning("realtime auth re-apply failed: %s", type(exc).__name__)
+
+    def _sign_in(self) -> None:
+        if not self._email or not self._password:
+            raise RuntimeError("AMR_BRIDGE_EMAIL and AMR_BRIDGE_PASSWORD are required")
+        res = self._client.auth.sign_in_with_password({
+            "email": self._email,
+            "password": self._password,
+        })
+        self._store_session(res)
+        self._apply_realtime_auth(self._access_token or "")
+        self._signed_in = True
+        log.info("bridge auth signed in")
+
+    def _store_session(self, res: Any) -> None:
+        access, refresh, expires = _session_parts(res)
+        self._access_token = access
+        if refresh:
+            self._refresh_token = refresh
+        self._expires_at = expires if expires else time.time() + 3600
+        self._signed_in = True
+
+    def _apply_realtime_auth(self, access_token: str) -> None:
+        if not access_token:
+            raise RuntimeError("missing bridge access token")
+        realtime = self._client.realtime
+        connect = getattr(realtime, "connect", None)
+        if callable(connect):
+            try:
+                connect()
+            except Exception as exc:
+                text = str(exc).lower()
+                if "already" not in text and "connected" not in text:
+                    log.debug("realtime connect before set_auth: %s", type(exc).__name__)
+        set_auth = getattr(realtime, "set_auth", None)
+        if not callable(set_auth):
+            raise RuntimeError("supabase realtime client has no set_auth")
+        try:
+            set_auth(access_token)
+        except Exception as exc:
+            text = str(exc).lower()
+            if callable(connect) and "connect" in text:
+                connect()
+                set_auth(access_token)
+                return
+            raise
+
+    def _send_one(self, channel, event: str, payload: dict) -> None:
+        try:
+            channel.send_broadcast(event, payload)
+        except Exception:
+            try:
+                channel.send({"type": "broadcast", "event": event, "payload": payload})
+            except Exception as exc:
+                log.debug("broadcast %s failed: %s", event, type(exc).__name__)
+
+    def _redact(self, exc: BaseException) -> str:
+        text = f"{type(exc).__name__}: {exc}"
+        if self._password and self._password in text:
+            text = text.replace(self._password, "[redacted]")
+        if self._access_token and self._access_token in text:
+            text = text.replace(self._access_token, "[redacted]")
+        return text[:400]
+
+
+def _unwrap_callback(message: Any) -> Any:
+    """Return the broadcast body. A missing payload keeps the message itself."""
+    if isinstance(message, str):
+        try:
+            message = json.loads(message)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(message, dict):
+        return message
+    payload = message.get("payload")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return None
+    if isinstance(payload, dict):
+        return payload
+    return message
 
 
 class Bridge:
@@ -161,6 +500,12 @@ class Bridge:
         dashboard_url: str,
         camera_url: str | None,
         camera_jpeg_max_kb: int,
+        *,
+        bridge_email: str | None = None,
+        bridge_password: str | None = None,
+        public_channel: bool = True,
+        private_channel: bool = True,
+        control_poll_s: float = 2.0,
     ):
         if bot_id not in BOT_IDS:
             raise SystemExit(f"AMR_BOT_ID must be one of {BOT_IDS}")
@@ -168,6 +513,17 @@ class Bridge:
         self.supabase_url = supabase_url.rstrip("/")
         self.api_key = api_key
         self.bridge_token = bridge_token
+        self.bridge_email = bridge_email
+        self._bridge_password = bridge_password
+        self.public_channel = public_channel
+        self.private_channel = private_channel and bool(bridge_email) and bool(bridge_password)
+        if private_channel and not self.private_channel:
+            log.warning(
+                "private channels skipped: set AMR_BRIDGE_EMAIL and AMR_BRIDGE_PASSWORD "
+                "to sign in as the bridge user"
+            )
+        if not self.public_channel and not self.private_channel:
+            log.warning("no Realtime channel is enabled; telemetry will not be published")
         self.dash = DashboardClient(dashboard_url)
         self.camera_url = camera_url
         self.camera_jpeg_max_kb = camera_jpeg_max_kb
@@ -178,24 +534,68 @@ class Bridge:
         self._cam_every = 0
         self._last_pub = 0.0
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._gate = ControlTracker(bot_id)
+        self._poll_s = clamp_poll_interval(control_poll_s)
+        self._poll_lock = asyncio.Lock()
 
-    def _queue_command(self, env: dict) -> None:
+    def _queue_public(self, env: dict) -> None:
+        self._schedule(self._handle_public_command(env))
+
+    def _queue_private(self, env: dict, source: str) -> None:
+        self._schedule(self._handle_private_command(env, source))
+
+    def _queue_control(self, env: dict) -> None:
+        self._schedule(self._handle_control(env))
+
+    def _queue_link(self, up: bool) -> None:
+        if up:
+            self._schedule(self._handle_link_up())
+
+    def _schedule(self, coro) -> None:
         if self._loop and self._loop.is_running():
-            asyncio.run_coroutine_threadsafe(self._handle_command(env), self._loop)
+            asyncio.run_coroutine_threadsafe(coro, self._loop)
+        else:
+            coro.close()
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._hub = RealtimeHub(
-            self.supabase_url, self.api_key, self.bot_id, self._queue_command, self.bridge_token,
+            self.supabase_url,
+            self.api_key,
+            self.bot_id,
+            self.bridge_token,
+            email=self.bridge_email,
+            password=self._bridge_password,
+            public_enabled=self.public_channel,
+            private_enabled=self.private_channel,
+            on_public_command=self._queue_public,
+            on_private_command=self._queue_private,
+            on_control=self._queue_control,
+            on_link=self._queue_link,
         )
         await asyncio.to_thread(self._hub.connect)
-        await asyncio.gather(
+        tasks = [
             self._sse_loop(),
             self._heartbeat_loop(),
             self._presence_touch_loop(),
-        )
+            self._watchdog_loop(),
+        ]
+        if self.private_channel:
+            tasks.append(self._control_poll_loop())
+            tasks.append(self._auth_refresh_loop())
+        await asyncio.gather(*tasks)
 
-    async def _handle_command(self, env: dict) -> None:
+    async def _handle_link_up(self) -> None:
+        self._gate.note_contact(time.monotonic())
+
+    async def _handle_control(self, env: dict) -> None:
+        reasons = self._gate.apply_ctl(env, time.monotonic())
+        await self._apply_watchdog(reasons)
+        if reasons:
+            await self._poll_once()
+
+    async def _handle_public_command(self, env: dict) -> None:
+        # Legacy public topic. Rank gates stay until cut-over turns this path off.
         if env.get("botId") not in (self.bot_id, None):
             return
         cmd = env.get("cmd") or {}
@@ -204,73 +604,125 @@ class Bridge:
         log.info("command %s from rank=%s", typ, rank)
         try:
             if typ == "set_rate":
-                mode = cmd.get("mode")
-                if mode in ("full", "board"):
-                    self.mode = mode
-                    log.info("rate mode → %s", mode)
+                self._apply_rate(cmd)
                 return
-            if rank < 1 and typ != "set_rate":
+            if rank < 1:
                 return
-            if typ == "estop":
-                await self.dash.post("/api/estop")
-            elif typ in ("nudge", "drive"):
-                await self.dash.post("/api/nudge", {
-                    "lin": float(cmd.get("lin", 0)),
-                    "ang": float(cmd.get("ang", 0)),
-                })
-            elif typ == "joy":
-                # Prefer web_gamepad_node HTTP fallback when configured.
-                gamepad = os.environ.get("AMR_GAMEPAD_URL", "").rstrip("/")
-                axes = cmd.get("axes") or [0.0] * 8
-                buttons = int(cmd.get("buttons") or 0)
-                if gamepad:
-                    await self.dash._http.post(
-                        f"{gamepad}/api/joy",
-                        json={"a": list(axes)[:8], "b": buttons},
-                    )
-                else:
-                    # Differential approx from left stick: axes[1]=fwd, axes[0]=yaw
-                    ax = list(axes) + [0.0] * 8
-                    lin = max(-0.4, min(0.4, -float(ax[1]) * 0.35))
-                    ang = max(-1.0, min(1.0, -float(ax[0]) * 0.9))
-                    if abs(lin) > 0.02 or abs(ang) > 0.02:
-                        await self.dash.post("/api/nudge", {"lin": lin, "ang": ang})
-            elif typ == "nav_goal":
-                await self.dash.post("/api/nav_goal", {
-                    "x": float(cmd.get("x", 0)),
-                    "y": float(cmd.get("y", 0)),
-                })
-            elif typ == "nav_cancel":
-                await self.dash.post("/api/nav_cancel")
-            elif typ == "vision":
-                await self.dash.post("/api/vision", {"on": bool(cmd.get("on"))})
-            elif typ == "save_map":
-                if rank < 2:
-                    return
-                await self.dash.post("/api/save_map", {"name": cmd.get("name")})
-            elif typ == "run_tool":
-                if rank < 1:
-                    return
-                await self.dash.post("/api/run", {
-                    "tool": cmd.get("tool"),
-                    "params": cmd.get("params") or {},
-                })
-            elif typ == "stop_tool":
-                await self.dash.post("/api/stop")
-            elif typ == "blacklist":
-                if rank < 1:
-                    return
-                if cmd.get("action") == "clear":
-                    await self.dash.post("/api/blacklist", {"action": "clear"})
-                else:
-                    await self.dash.post("/api/blacklist", {
-                        "x": float(cmd.get("x", 0)),
-                        "y": float(cmd.get("y", 0)),
-                        "radius": float(cmd.get("radius", 0.8)),
-                        "duration": float(cmd.get("duration", 300)),
-                    })
+            if typ == "save_map" and rank < 2:
+                return
+            await self._dispatch_cmd(cmd)
         except Exception as exc:
             log.warning("command failed: %s", exc)
+
+    async def _handle_private_command(self, env: dict, source: str) -> None:
+        now_s = time.time()
+        now_mono = time.monotonic()
+        self._gate.note_contact(now_mono)
+        result = self._gate.verify(env, source=source, now_s=now_s, now_mono=now_mono)
+        if not result.ok:
+            log.info("rejected %s command type=%s: %s", source, result.cmd_type, result.reason)
+            return
+        log.info("accepted %s command type=%s", source, result.cmd_type)
+        cmd = result.cmd or {}
+        try:
+            if cmd.get("type") == "set_rate":
+                self._apply_rate(cmd)
+                return
+            await self._dispatch_cmd(cmd)
+        except Exception as exc:
+            log.warning("command failed: %s", exc)
+
+    def _apply_rate(self, cmd: dict) -> None:
+        mode = cmd.get("mode")
+        if mode in ("full", "board"):
+            self.mode = mode
+            log.info("rate mode → %s", mode)
+
+    async def _dispatch_cmd(self, cmd: dict) -> None:
+        """Forward a command through the dashboard / gamepad HTTP APIs.
+
+        Those processes publish /cmd_vel. safety_stop is the only publisher of
+        /cmd_vel_safe. Do not add a publisher here.
+        """
+        typ = cmd.get("type")
+        if typ == "estop":
+            await self.dash.post("/api/estop")
+        elif typ in ("nudge", "drive"):
+            await self.dash.post("/api/nudge", {
+                "lin": float(cmd.get("lin", 0)),
+                "ang": float(cmd.get("ang", 0)),
+            })
+        elif typ == "joy":
+            gamepad = os.environ.get("AMR_GAMEPAD_URL", "").rstrip("/")
+            axes = cmd.get("axes") or [0.0] * 8
+            buttons = int(cmd.get("buttons") or 0)
+            if gamepad:
+                await self.dash._http.post(
+                    f"{gamepad}/api/joy",
+                    json={"a": list(axes)[:8], "b": buttons},
+                )
+            else:
+                # Differential approx from left stick: axes[1]=fwd, axes[0]=yaw
+                ax = list(axes) + [0.0] * 8
+                lin = max(-0.4, min(0.4, -float(ax[1]) * 0.35))
+                ang = max(-1.0, min(1.0, -float(ax[0]) * 0.9))
+                if abs(lin) > 0.02 or abs(ang) > 0.02:
+                    await self.dash.post("/api/nudge", {"lin": lin, "ang": ang})
+        elif typ == "nav_goal":
+            await self.dash.post("/api/nav_goal", {
+                "x": float(cmd.get("x", 0)),
+                "y": float(cmd.get("y", 0)),
+            })
+        elif typ == "nav_cancel":
+            await self.dash.post("/api/nav_cancel")
+        elif typ == "vision":
+            await self.dash.post("/api/vision", {"on": bool(cmd.get("on"))})
+        elif typ == "save_map":
+            await self.dash.post("/api/save_map", {"name": cmd.get("name")})
+        elif typ == "run_tool":
+            await self.dash.post("/api/run", {
+                "tool": cmd.get("tool"),
+                "params": cmd.get("params") or {},
+            })
+        elif typ == "stop_tool":
+            await self.dash.post("/api/stop")
+        elif typ == "blacklist":
+            if cmd.get("action") == "clear":
+                await self.dash.post("/api/blacklist", {"action": "clear"})
+            else:
+                await self.dash.post("/api/blacklist", {
+                    "x": float(cmd.get("x", 0)),
+                    "y": float(cmd.get("y", 0)),
+                    "radius": float(cmd.get("radius", 0.8)),
+                    "duration": float(cmd.get("duration", 300)),
+                })
+
+    async def _zero_motion(self, reason: str) -> None:
+        """Stop motion through the same HTTP paths that publish /cmd_vel.
+
+        A zero nudge streams Twist zeros on /cmd_vel. A zero joy packet makes
+        joy_teleop publish one zero Twist and then yield. Neither path writes
+        /cmd_vel_safe.
+        """
+        log.warning("watchdog: zero motion (%s)", reason)
+        try:
+            await self.dash.post("/api/nudge", {"lin": 0.0, "ang": 0.0})
+        except Exception as exc:
+            log.warning("watchdog zero nudge failed: %s", exc)
+        gamepad = os.environ.get("AMR_GAMEPAD_URL", "").rstrip("/")
+        if not gamepad:
+            return
+        try:
+            await self.dash._http.post(
+                f"{gamepad}/api/joy",
+                json={"a": [0.0] * 8, "b": 0},
+            )
+        except Exception as exc:
+            log.warning("watchdog zero joy failed: %s", exc)
+
+    async def _apply_watchdog(self, reasons: list[str]) -> None:
+        if reasons:
+            await self._zero_motion(",".join(reasons))
 
     async def _broadcast(self, event: str, payload: dict) -> None:
         if not self._hub:
@@ -406,6 +858,47 @@ class Bridge:
             except asyncio.TimeoutError:
                 pass
 
+    async def _watchdog_loop(self) -> None:
+        while not self._stop.is_set():
+            reasons = self._gate.tick(time.time(), time.monotonic())
+            await self._apply_watchdog(reasons)
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=0.05)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _control_poll_loop(self) -> None:
+        while not self._stop.is_set():
+            await self._poll_once()
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=self._poll_s)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _poll_once(self) -> None:
+        if not self._hub or self._stop.is_set():
+            return
+        async with self._poll_lock:
+            try:
+                control, token = await asyncio.to_thread(self._hub.poll_control)
+            except Exception as exc:
+                log.warning("control poll failed: %s", type(exc).__name__)
+                return
+            reasons = self._gate.apply_poll(control, token, time.monotonic())
+            await self._apply_watchdog(reasons)
+
+    async def _auth_refresh_loop(self) -> None:
+        while not self._stop.is_set():
+            if self._hub:
+                try:
+                    await asyncio.to_thread(self._hub.refresh_auth_if_due)
+                except Exception as exc:
+                    log.warning("bridge auth refresh failed: %s", type(exc).__name__)
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=AUTH_REFRESH_CHECK_S)
+            except asyncio.TimeoutError:
+                pass
+
     async def stop(self) -> None:
         self._stop.set()
         await self.dash.close()
@@ -415,16 +908,28 @@ class Bridge:
 
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if _env("AMR_SUPABASE_SERVICE_KEY"):
+        log.warning(
+            "AMR_SUPABASE_SERVICE_KEY is set and is ignored. "
+            "Use AMR_SUPABASE_KEY (the publishable key) only."
+        )
     p = argparse.ArgumentParser(description="AMR cloud telemetry bridge")
-    p.add_argument("--bot-id", default=_env("AMR_BOT_ID", "amr4"))
+    p.add_argument("--bot-id", default=_env("AMR_BOT_ID", "hardware-bot"))
     p.add_argument("--supabase-url", default=_env("AMR_SUPABASE_URL") or _env("NEXT_PUBLIC_SUPABASE_URL"))
     p.add_argument(
         "--api-key",
-        default=_env("AMR_SUPABASE_KEY")
-        or _env("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY")
-        or _env("AMR_SUPABASE_SERVICE_KEY"),
+        default=_env("AMR_SUPABASE_KEY") or _env("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY"),
     )
     p.add_argument("--bridge-token", default=_env("AMR_BRIDGE_TOKEN"))
+    p.add_argument("--bridge-email", default=_env("AMR_BRIDGE_EMAIL"))
+    p.add_argument("--bridge-password", default=_env("AMR_BRIDGE_PASSWORD"))
+    p.add_argument("--public-channel", default=_env("AMR_PUBLIC_CHANNEL", "1"))
+    p.add_argument("--private-channel", default=_env("AMR_PRIVATE_CHANNEL", "1"))
+    p.add_argument(
+        "--control-poll-s",
+        type=float,
+        default=float(_env("AMR_CONTROL_POLL_S", "2") or 2),
+    )
     p.add_argument("--dashboard", default=_env("AMR_DASHBOARD_URL", "http://127.0.0.1:8080"))
     p.add_argument("--camera-url", default=_env("AMR_CAMERA_URL"))
     p.add_argument("--camera-jpeg-max-kb", type=int, default=int(_env("AMR_CAMERA_JPEG_MAX_KB", "24") or 24))
@@ -441,6 +946,11 @@ def main(argv: list[str] | None = None) -> None:
         dashboard_url=args.dashboard,
         camera_url=args.camera_url,
         camera_jpeg_max_kb=args.camera_jpeg_max_kb,
+        bridge_email=args.bridge_email,
+        bridge_password=args.bridge_password,
+        public_channel=flag_enabled(str(args.public_channel) if args.public_channel is not None else None, True),
+        private_channel=flag_enabled(str(args.private_channel) if args.private_channel is not None else None, True),
+        control_poll_s=args.control_poll_s,
     )
 
     loop = asyncio.new_event_loop()

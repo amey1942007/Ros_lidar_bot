@@ -79,11 +79,17 @@ else
 # amr_telemetry_bridge settings for the HARDWARE bot. Keep this file private.
 AMR_BOT_ID=hardware-bot
 AMR_SUPABASE_URL=$SUPABASE_URL
-# >>> YOU FILL THESE TWO <<<
+# >>> YOU FILL THE KEY AND THE TOKEN. EMAIL AND PASSWORD ARE FOR PRIVATE CHANNELS. <<<
 # Publishable key (starts with sb_publishable_...): Supabase dashboard > Project Settings > API Keys. NOT the service_role / secret key.
 AMR_SUPABASE_KEY=
 # Bridge token: the plaintext from the website owner's private amr-bridge/.env.pi
 AMR_BRIDGE_TOKEN=
+# Bridge Auth user for private Realtime channels. Leave blank until that user exists.
+# The legacy public channel still runs without these.
+AMR_BRIDGE_EMAIL=
+AMR_BRIDGE_PASSWORD=
+# 1 keeps the legacy public channel until cut-over is approved. 0 turns it off.
+AMR_PUBLIC_CHANNEL=1
 # Local robot services
 AMR_DASHBOARD_URL=http://127.0.0.1:8080
 # Joystick endpoint (leave this line out for a telemetry + nudge-only test)
@@ -115,7 +121,8 @@ for k in AMR_SUPABASE_KEY AMR_BRIDGE_TOKEN; do
   v="${v#\'}"; v="${v%\'}"
   [ -n "$v" ] || { echo "Missing $k in $ENV_FILE. Add it first (nano $ENV_FILE)."; exit 1; }
 done
-echo "SAFETY: anyone with the public Supabase key can currently drive the bot via the bridge (review finding C1)."
+echo "SAFETY: AMR_PUBLIC_CHANNEL defaults on, so the legacy public channel can still drive the bot until cut-over."
+echo "Private control needs AMR_BRIDGE_EMAIL and AMR_BRIDGE_PASSWORD in $ENV_FILE (names only in git)."
 echo "Keep the wheels lifted / the bot supervised. To run WITHOUT the bridge: add  enable_amr_bridge:=false"
 read -r -p "Type 'yes' to continue: " a; [ "$a" = "yes" ] || exit 1
 set +u; source /opt/ros/jazzy/setup.bash; source "$HOME/Desktop/ros2_ws/install/setup.bash"; set -u
@@ -128,7 +135,9 @@ chmod +x "$HOME/run_robot_with_bridge.sh"
 cat <<DONE
 
 Setup finished. Your only manual step:
-  1) nano $ENV_FILE      -> fill AMR_SUPABASE_KEY and AMR_BRIDGE_TOKEN (save with Ctrl+O, exit Ctrl+X)
+  1) nano $ENV_FILE      -> fill AMR_SUPABASE_KEY and AMR_BRIDGE_TOKEN.
+                           For private channels also fill AMR_BRIDGE_EMAIL and AMR_BRIDGE_PASSWORD.
+                           Save with Ctrl+O, exit Ctrl+X.
   2) ~/run_robot_with_bridge.sh
 Then check: ps aux | grep amr_telemetry_bridge
             amrslam.tech/control -> pick "Hardware bot" -> online in ~3 s

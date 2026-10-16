@@ -34,8 +34,9 @@ After it finishes, the only values you type by hand are in `/etc/amr-bridge.env`
 
 - `AMR_SUPABASE_KEY` — the Supabase **publishable** key (`sb_publishable_...`). Never the `service_role` / secret key, and never `AMR_SUPABASE_SERVICE_KEY`.
 - `AMR_BRIDGE_TOKEN` — the bridge token from the website owner's private `amr-bridge/.env.pi`.
+- `AMR_BRIDGE_EMAIL` and `AMR_BRIDGE_PASSWORD` — the bridge Auth user for private channels. Leave them blank until that user exists. The legacy public channel still runs without them. `AMR_PUBLIC_CHANNEL=1` keeps that legacy channel until cut-over; set it to `0` to turn it off.
 
-Do not commit either value. This repository must not contain real secrets.
+Do not commit any of these values. This repository must not contain real secrets.
 
 ### Rollback
 

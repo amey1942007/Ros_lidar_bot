@@ -11,9 +11,11 @@ Precedence (launch arg wins over the env file when the arg is non-empty):
   dashboard -> AMR_DASHBOARD_URL
   gamepad   -> AMR_GAMEPAD_URL, except none/off/- which unsets it
                (joy then falls back to /api/nudge).
-File values override the process environment. AMR_SUPABASE_URL is always
-required. AMR_SUPABASE_KEY + AMR_BRIDGE_TOKEN, or AMR_SUPABASE_SERVICE_KEY,
-must also be set. Do not put the service_role key on the robot.
+File values override the process environment. AMR_SUPABASE_URL,
+AMR_SUPABASE_KEY (publishable), and AMR_BRIDGE_TOKEN are required.
+AMR_SUPABASE_SERVICE_KEY is never passed to the bridge. Private channels
+also need AMR_BRIDGE_EMAIL and AMR_BRIDGE_PASSWORD; without them the legacy
+public channel still runs when AMR_PUBLIC_CHANNEL is on (the default).
 """
 
 from __future__ import annotations
@@ -49,16 +51,14 @@ def _load_env_file(path: Path) -> tuple[dict[str, str], str | None]:
 
 
 def _missing_required(env: dict[str, str]) -> list[str]:
-    """URL is always required. KEY+TOKEN or SERVICE_KEY satisfies the rest."""
+    """URL, publishable key, and bridge token. The service key does not count."""
     missing: list[str] = []
     if not env.get("AMR_SUPABASE_URL"):
         missing.append("AMR_SUPABASE_URL")
-    has_pair = bool(env.get("AMR_SUPABASE_KEY")) and bool(env.get("AMR_BRIDGE_TOKEN"))
-    if not has_pair and not env.get("AMR_SUPABASE_SERVICE_KEY"):
-        if not env.get("AMR_SUPABASE_KEY"):
-            missing.append("AMR_SUPABASE_KEY")
-        if not env.get("AMR_BRIDGE_TOKEN"):
-            missing.append("AMR_BRIDGE_TOKEN")
+    if not env.get("AMR_SUPABASE_KEY"):
+        missing.append("AMR_SUPABASE_KEY")
+    if not env.get("AMR_BRIDGE_TOKEN"):
+        missing.append("AMR_BRIDGE_TOKEN")
     return missing
 
 
@@ -222,14 +222,15 @@ def _launch_bridge_body(context):
     if missing:
         return [_skipped(
             f"missing {missing}",
-            f"put them in {env_file} (AMR_SUPABASE_URL is always required; "
-            "AMR_SUPABASE_KEY and AMR_BRIDGE_TOKEN, or AMR_SUPABASE_SERVICE_KEY)",
+            f"put them in {env_file} (AMR_SUPABASE_URL, AMR_SUPABASE_KEY, "
+            "and AMR_BRIDGE_TOKEN). Do not use AMR_SUPABASE_SERVICE_KEY.",
         )]
     if env.get("AMR_SUPABASE_SERVICE_KEY"):
         notes.append(LogInfo(
-            msg="[amr_bridge] AMR_SUPABASE_SERVICE_KEY is set. "
-                "Do not put the service_role key on the robot.",
+            msg="[amr_bridge] AMR_SUPABASE_SERVICE_KEY is set and will not be "
+                "passed to the bridge. Use AMR_SUPABASE_KEY (publishable key) only.",
         ))
+        env.pop("AMR_SUPABASE_SERVICE_KEY", None)
 
     bridge_root = _resolve_bridge_root()
     if bridge_root is None:
