@@ -48,9 +48,10 @@ Run one process per robot (`AMR_BOT_ID=amr4` or `hardware-bot`).
 ## Authority
 
 The private path (`bot:<id>:cmd` / `:cmdq`) does not use ranks. A command is
-accepted only when the epoch, token, lease, seq, and timestamp check out.
+accepted only when the epoch, token, and lease check out and the seq is new
+(or a restart after a short gap). E-stop skips the seq and timestamp checks.
 The legacy public channel still applies the rank table below while
-`AMR_PUBLIC_CHANNEL=1` (the default, until cut-over).
+`AMR_PUBLIC_CHANNEL=1`. That flag defaults to off.
 
 | Rank | Label | Drive | Preempt |
 | --- | --- | --- | --- |
@@ -69,7 +70,7 @@ Browsers request `full` (10 Hz + lidar/camera/3D) or `board` (1 Hz vitals). When
 
 `src/lib/telemetry/protocol.ts` ↔ `amr_telemetry_bridge/protocol.py`
 
-Legacy public topics (flag `AMR_PUBLIC_CHANNEL`, default on): `amr-bot-amr4`, `amr-bot-hardware-bot`. Events: `telemetry`, `map`, `log`, `hb`, `command`.
+Legacy public topics (flag `AMR_PUBLIC_CHANNEL`, default off): `amr-bot-amr4`, `amr-bot-hardware-bot`. Events: `telemetry`, `map`, `log`, `hb`, `command`.
 
 Private topics: `bot:<id>:status` (bridge sends `telemetry`, `map`, `log`, `hb`), `bot:<id>:cmd` and `bot:<id>:cmdq` (bridge receives `command`), `bot:<id>:ctl` (bridge receives `control`). Sign-in uses `AMR_BRIDGE_EMAIL` / `AMR_BRIDGE_PASSWORD`. Motion still goes out through the dashboard and gamepad HTTP APIs onto `/cmd_vel`.
 

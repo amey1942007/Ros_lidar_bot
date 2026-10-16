@@ -4,37 +4,61 @@ No network, no ROS. bridge.py applies the results. Velocity is never decided
 here; the caller zeros motion through the existing dashboard / gamepad HTTP
 paths, which publish /cmd_vel so safety_stop stays in front of the motors.
 
-Assumptions that the spec left open (see the PR notes):
+Checks the private path actually applies:
 
-- Command ``ts`` is fresh if it is within 2 s of now as unix milliseconds
-  (what ``send_command`` stamps) or as unix seconds (``:cmd`` did not name a unit).
-- ``:cmd`` requires ``token``. ``:cmdq`` does not: ``send_command`` stamps
-  ``sender``, not a token. A token on ``:cmdq``, if present, must still match.
-- ``:cmd`` and ``:cmdq`` share one strictly-increasing seq per epoch. Gaps are
-  allowed. Seq restarts when the epoch changes.
-- The motion deadman is 0.5 s from the last accepted joy/nudge/drive. Discrete
-  commands do not refresh it and are not cancelled by the zero.
-- "Supabase unreachable for a few seconds" is 5 s without a successful private
-  contact, and only after the private path has connected once.
+- ``:cmd`` requires ``token`` (compared with ``hmac.compare_digest``).
+  ``:cmdq`` trusts the server-stamped ``sender``. A token on ``:cmdq``, if
+  present, must still match. ``from`` / ``rank`` are ignored.
+- ``:cmd`` and ``:cmdq`` share one seq per epoch. A higher seq is accepted
+  (gaps are fine, so a time-based seq such as ``Date.now()`` works). An equal
+  seq is a duplicate. A lower seq is a controller restart: it is accepted only
+  after ``SEQ_RESET_GAP_S`` with no accepted command, then seq starts over.
+  Replaying an old higher seq after that reset is not rejected — the site
+  should use a time-based seq. E-stop does not consume seq.
+- E-stop is idempotent and skips seq and timestamp checks. It still requires
+  the bot, the current epoch, a live lease, and the token (``:cmd``) or
+  sender (``:cmdq``).
+- Timestamp freshness is not enforced. The Pi clock can be minutes off before
+  NTP. A non-finite timestamp is still rejected, except on e-stop.
+- ``:ctl`` is not authority. The bridge treats it as a cue to poll. Epoch,
+  controller, token, and lease come only from that poll.
+- The motion deadman is 0.5 s from the last accepted joy/nudge/drive that is
+  actually asking for motion. Discrete commands do not refresh it.
+- "Supabase unreachable for a few seconds" is 5 s without a successful poll
+  or an accepted command, and only after one of those has happened.
 - Control poll default is 2 s, clamped to the spec's 2–5 s range.
+- Joy accepts the website shape ``{type:'joy', a, b}`` and the older
+  ``axes`` / ``buttons`` shape. Numbers must be finite. lin/ang and axes are
+  clamped to the dashboard limits.
 """
 
 from __future__ import annotations
 
+import base64
+import hmac
 import json
 import math
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 # joy / nudge / drive must keep arriving, or motion is zeroed.
 MOTION_WATCHDOG_S = 0.5
+# Same gap the deadman uses. A browser reload can send seq 1 again once this
+# long has passed with no accepted command, instead of locking the driver out
+# until the lease expires.
+SEQ_RESET_GAP_S = MOTION_WATCHDOG_S
 # A few seconds, longer than one missed poll so a single blip does not stop the robot.
 SUPABASE_UNREACHABLE_S = 5.0
-TS_WINDOW_S = 2.0
 CONTROL_POLL_MIN_S = 2.0
 CONTROL_POLL_MAX_S = 5.0
 CONTROL_POLL_S = 2.0
+
+LIN_LIMIT = 0.3
+ANG_LIMIT = 1.0
+AXIS_LIMIT = 1.0
+JOY_AXES = 8
 
 MOTION_TYPES = ("joy", "nudge", "drive")
 # Same set public.send_command allows, plus the bridge-local rate switch.
@@ -53,6 +77,21 @@ ALLOWED_TYPES = frozenset({
     "set_rate",
 })
 
+# Dashboard TOOLS. Unknown tools and unknown param names are rejected.
+# (default, min, max) — omitted params are left for the dashboard default.
+_TOOL_PARAMS: dict[str, dict[str, tuple[float, float, float]]] = {
+    "imu_test": {},
+    "imu_calibration": {
+        "speed": (0.5, 0.1, 1.0),
+        "rotations": (2.0, 0.5, 4.0),
+    },
+    "drive_distance": {
+        "distance": (1.0, -5.0, 5.0),
+        "max_vel": (0.3, 0.05, 0.5),
+    },
+}
+
+_MAP_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _STRIP_KEYS = ("from", "rank")
 
 
@@ -62,6 +101,52 @@ class VerifyResult:
     reason: str
     cmd_type: str | None = None
     cmd: dict | None = None
+
+
+class MotionGuard:
+    """Whether a zero is still owed, and whether new motion must be cancelled.
+
+    ``hard`` is a lease expiry or a Supabase outage: a zero is retried until
+    it succeeds, and motion posted while ``hard`` is set is followed by
+    another zero. A deadman or an epoch change is soft: a newer accepted
+    motion cancels it.
+    """
+
+    def __init__(self) -> None:
+        self.hard = False
+        self._gen = 0
+        self._owed_gen: int | None = None
+
+    @property
+    def owed_gen(self) -> int | None:
+        return self._owed_gen
+
+    @property
+    def owed(self) -> bool:
+        return self._owed_gen is not None
+
+    def set_hard(self, hard: bool) -> None:
+        self.hard = hard
+
+    def arm(self, *, hard: bool) -> int:
+        self._gen += 1
+        self._owed_gen = self._gen
+        if hard:
+            self.hard = True
+        return self._gen
+
+    def release_for_motion(self) -> None:
+        """A legitimate motion command. Cancels a soft zero; a hard stop stays."""
+        self._gen += 1
+        if not self.hard:
+            self._owed_gen = None
+
+    def still_owed(self, gen: int) -> bool:
+        return self._owed_gen == gen
+
+    def mark_zeroed(self, gen: int) -> None:
+        if self._owed_gen == gen:
+            self._owed_gen = None
 
 
 def flag_enabled(value: str | None, default: bool) -> bool:
@@ -86,6 +171,31 @@ def clamp_poll_interval(seconds: float) -> float:
     if not math.isfinite(value):
         return CONTROL_POLL_S
     return min(CONTROL_POLL_MAX_S, max(CONTROL_POLL_MIN_S, value))
+
+
+def looks_like_service_key(value: str | None) -> bool:
+    """True for an sb_secret_ key or a JWT whose payload role is service_role.
+
+    The signature is not checked. This only refuses to start; it is not auth.
+    """
+    if value is None:
+        return False
+    text = value.strip()
+    if not text:
+        return False
+    if text.startswith("sb_secret_"):
+        return True
+    parts = text.split(".")
+    if len(parts) != 3:
+        return False
+    payload = parts[1]
+    pad = "=" * (-len(payload) % 4)
+    try:
+        raw = base64.urlsafe_b64decode(payload + pad)
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return isinstance(data, dict) and data.get("role") == "service_role"
 
 
 def parse_timestamptz(value: Any) -> float | None:
@@ -138,6 +248,30 @@ def _as_int(value: Any) -> int | None:
     return None
 
 
+def _finite_float(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            number = float(text)
+        except ValueError:
+            return None
+    else:
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _clamp(value: float, limit: float) -> float:
+    return max(-limit, min(limit, value))
+
+
 def _casefold(value: Any) -> str | None:
     if value is None or isinstance(value, bool):
         return None
@@ -145,6 +279,17 @@ def _casefold(value: Any) -> str | None:
     if not text:
         return None
     return text.casefold()
+
+
+def _secrets_equal(presented: str | None, expected: str | None) -> bool:
+    """Case-insensitive compare that does not leak the token through timing."""
+    if not presented or not expected:
+        return False
+    left = presented.encode("utf-8")
+    right = expected.encode("utf-8")
+    if len(left) != len(right):
+        return False
+    return hmac.compare_digest(left, right)
 
 
 def _strip_rank(body: dict) -> dict:
@@ -205,38 +350,170 @@ def _auth_field(env: dict, cmd: dict, name: str) -> Any:
     return cmd.get(name)
 
 
-def ts_within_window(ts: Any, now_s: float, window_s: float = TS_WINDOW_S) -> bool:
-    if isinstance(ts, bool) or ts is None:
-        return False
-    try:
-        value = float(ts)
-    except (TypeError, ValueError):
-        return False
-    if not math.isfinite(value):
-        return False
-    as_ms = abs(now_s * 1000.0 - value) <= window_s * 1000.0
-    as_s = abs(now_s - value) <= window_s
-    return as_ms or as_s
+def _joy_axes_raw(cmd: dict) -> Any:
+    """Website sends ``a``. Older callers send ``axes``. 0 and [] are real values."""
+    if "a" in cmd:
+        return cmd.get("a")
+    return cmd.get("axes")
 
 
-def _motion_active(cmd: dict) -> bool:
+def _joy_buttons_raw(cmd: dict) -> Any:
+    if "b" in cmd:
+        return cmd.get("b")
+    return cmd.get("buttons")
+
+
+def motion_command(cmd: dict) -> bool:
+    """True when this command is asking the wheels to move."""
     typ = cmd.get("type")
     if typ in ("nudge", "drive"):
-        try:
-            lin = float(cmd.get("lin") or 0)
-            ang = float(cmd.get("ang") or 0)
-        except (TypeError, ValueError):
-            return True
-        return abs(lin) > 1e-3 or abs(ang) > 1e-3
+        lin = _finite_float(cmd.get("lin"))
+        ang = _finite_float(cmd.get("ang"))
+        if lin is None and ang is None:
+            return False
+        return abs(lin or 0.0) > 1e-3 or abs(ang or 0.0) > 1e-3
     if typ == "joy":
-        axes = cmd.get("axes") or []
+        axes = _joy_axes_raw(cmd)
         if not isinstance(axes, (list, tuple)):
-            return True
-        try:
-            return any(abs(float(axis)) > 0.02 for axis in axes)
-        except (TypeError, ValueError):
-            return True
+            return False
+        for axis in axes:
+            number = _finite_float(axis)
+            if number is not None and abs(number) > 0.02:
+                return True
+        return False
     return False
+
+
+def sanitize_command(cmd: dict) -> tuple[dict | None, str | None]:
+    """Return a cleaned command, or (None, \"value\") when a field is illegal.
+
+    Clamps match the dashboard: lin ±0.3, ang ±1.0, joy axes [-1, 1].
+    """
+    if not isinstance(cmd, dict):
+        return None, "value"
+    typ = cmd.get("type")
+    if typ not in ALLOWED_TYPES:
+        return None, "type"
+
+    if typ == "estop" or typ in ("nav_cancel", "stop_tool"):
+        return {"type": typ}, None
+
+    if typ in ("nudge", "drive"):
+        lin = _finite_float(cmd.get("lin", 0))
+        ang = _finite_float(cmd.get("ang", 0))
+        if lin is None or ang is None:
+            return None, "value"
+        return {
+            "type": typ,
+            "lin": _clamp(lin, LIN_LIMIT),
+            "ang": _clamp(ang, ANG_LIMIT),
+        }, None
+
+    if typ == "joy":
+        raw_axes = _joy_axes_raw(cmd)
+        if raw_axes is None:
+            raw_axes = [0.0] * JOY_AXES
+        if not isinstance(raw_axes, (list, tuple)):
+            return None, "value"
+        axes: list[float] = []
+        for axis in list(raw_axes)[:JOY_AXES]:
+            number = _finite_float(axis)
+            if number is None:
+                return None, "value"
+            axes.append(_clamp(number, AXIS_LIMIT))
+        while len(axes) < JOY_AXES:
+            axes.append(0.0)
+        raw_buttons = _joy_buttons_raw(cmd)
+        if raw_buttons is None:
+            raw_buttons = 0
+        buttons = _as_int(raw_buttons)
+        if buttons is None or buttons < 0:
+            return None, "value"
+        return {
+            "type": "joy",
+            "a": axes,
+            "b": buttons,
+            "axes": list(axes),
+            "buttons": buttons,
+        }, None
+
+    if typ == "nav_goal":
+        x = _finite_float(cmd.get("x"))
+        y = _finite_float(cmd.get("y"))
+        if x is None or y is None:
+            return None, "value"
+        return {"type": "nav_goal", "x": x, "y": y}, None
+
+    if typ == "vision":
+        on = cmd.get("on", False)
+        if isinstance(on, bool):
+            flag = on
+        elif on in (0, 1):
+            flag = bool(on)
+        else:
+            return None, "value"
+        return {"type": "vision", "on": flag}, None
+
+    if typ == "save_map":
+        name = cmd.get("name", "")
+        if name is None:
+            name = ""
+        if not isinstance(name, str):
+            return None, "value"
+        if name != "" and _MAP_NAME.fullmatch(name) is None:
+            return None, "value"
+        return {"type": "save_map", "name": name}, None
+
+    if typ == "run_tool":
+        tool = cmd.get("tool")
+        if not isinstance(tool, str) or tool not in _TOOL_PARAMS:
+            return None, "value"
+        spec = _TOOL_PARAMS[tool]
+        params = cmd.get("params", {})
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            return None, "value"
+        if any(key not in spec for key in params):
+            return None, "value"
+        clean: dict[str, float] = {}
+        for key, value in params.items():
+            number = _finite_float(value)
+            if number is None:
+                return None, "value"
+            _default, lo, hi = spec[key]
+            clean[key] = min(hi, max(lo, number))
+        return {"type": "run_tool", "tool": tool, "params": clean}, None
+
+    if typ == "blacklist":
+        action = cmd.get("action")
+        if action == "clear":
+            return {"type": "blacklist", "action": "clear"}, None
+        if action not in (None, "add"):
+            return None, "value"
+        x = _finite_float(cmd.get("x"))
+        y = _finite_float(cmd.get("y"))
+        if x is None or y is None:
+            return None, "value"
+        radius = _finite_float(cmd.get("radius", 0.8))
+        duration = _finite_float(cmd.get("duration", 300))
+        if radius is None or duration is None:
+            return None, "value"
+        return {
+            "type": "blacklist",
+            "x": x,
+            "y": y,
+            "radius": min(5.0, max(0.1, radius)),
+            "duration": max(0.0, duration),
+        }, None
+
+    if typ == "set_rate":
+        mode = cmd.get("mode")
+        if mode not in ("full", "board"):
+            return None, "value"
+        return {"type": "set_rate", "mode": mode}, None
+
+    return None, "type"
 
 
 class ControlTracker:
@@ -254,6 +531,7 @@ class ControlTracker:
         self.controller: str | None = None
         self.lease_expires_at: float | None = None
         self._last_seq: dict[int, int] = {}
+        self._last_seq_mono: dict[int, float] = {}
         self._last_motion_mono: float | None = None
         self._motion_latched = False
         self._lease_was_valid = False
@@ -261,30 +539,20 @@ class ControlTracker:
         self._zeroed: set[str] = set()
 
     def note_contact(self, now_mono: float) -> None:
-        """A successful private poll, subscribe, or inbound event."""
+        """A successful control poll, or a command that passed verification."""
         self.private_enabled = True
         self._last_contact_mono = now_mono
         self._zeroed.discard("supabase")
 
-    def apply_ctl(self, message: Any, now_mono: float) -> list[str]:
-        """bot:<id>:ctl event ``control``. Token and lease stay unknown until poll."""
+    def ctl_needs_poll(self, message: Any) -> bool:
+        """``bot:<id>:ctl`` only means "poll now". It does not change epoch."""
         env = normalize_message(message)
         if not env:
-            return []
+            return False
         bot = env.get("bot_id") or env.get("botId")
         if bot and str(bot) != self.bot_id:
-            return []
-        epoch = _as_int(env.get("epoch"))
-        if epoch is None:
-            return []
-        if self.epoch is not None and epoch < self.epoch:
-            self.note_contact(now_mono)
-            return []
-        reasons = self._set_epoch(epoch)
-        controller = env.get("controller")
-        self.controller = str(controller) if controller else None
-        self.note_contact(now_mono)
-        return reasons
+            return False
+        return True
 
     def apply_poll(self, control: dict, token: dict | None, now_mono: float) -> list[str]:
         """Rows from bot_control and bot_control_tokens (token row may be absent)."""
@@ -339,7 +607,7 @@ class ControlTracker:
         if source == "cmd":
             presented = _casefold(_auth_field(env, cmd, "token"))
             expected = _casefold(self.token)
-            if not presented or not expected or presented != expected:
+            if not _secrets_equal(presented, expected):
                 return VerifyResult(False, "token", cmd_type=typ, cmd=cmd)
         else:
             sender = _casefold(env.get("sender"))
@@ -350,25 +618,44 @@ class ControlTracker:
             if env.get("token") is not None or cmd.get("token") is not None:
                 presented = _casefold(_auth_field(env, cmd, "token"))
                 expected = _casefold(self.token)
-                if not presented or not expected or presented != expected:
+                if not _secrets_equal(presented, expected):
                     return VerifyResult(False, "token", cmd_type=typ, cmd=cmd)
 
-        seq = _as_int(_auth_field(env, cmd, "seq"))
-        if seq is None:
-            return VerifyResult(False, "seq", cmd_type=typ, cmd=cmd)
-        last = self._last_seq.get(epoch, 0)
-        if seq <= last:
-            return VerifyResult(False, "seq", cmd_type=typ, cmd=cmd)
+        clean, reason = sanitize_command(cmd)
+        if clean is None:
+            return VerifyResult(False, reason or "value", cmd_type=typ, cmd=cmd)
 
-        ts = _auth_field(env, cmd, "ts")
-        if not ts_within_window(ts, now_s):
-            return VerifyResult(False, "ts", cmd_type=typ, cmd=cmd)
+        if typ != "estop":
+            seq = _as_int(_auth_field(env, cmd, "seq"))
+            if seq is None:
+                return VerifyResult(False, "seq", cmd_type=typ, cmd=clean)
+            if not self._seq_ok(epoch, seq, now_mono):
+                return VerifyResult(False, "seq", cmd_type=typ, cmd=clean)
+            ts = _auth_field(env, cmd, "ts")
+            if _finite_float(ts) is None:
+                return VerifyResult(False, "ts", cmd_type=typ, cmd=clean)
+            self._last_seq[epoch] = seq
+            self._last_seq_mono[epoch] = now_mono
 
-        self._last_seq[epoch] = seq
         if typ in MOTION_TYPES:
             self._last_motion_mono = now_mono
-            self._motion_latched = _motion_active(cmd)
-        return VerifyResult(True, "ok", cmd_type=typ, cmd=cmd)
+            self._motion_latched = motion_command(clean)
+        self.note_contact(now_mono)
+        return VerifyResult(True, "ok", cmd_type=typ, cmd=clean)
+
+    def fault_active(self, now_s: float, now_mono: float) -> bool:
+        """Lease already observed and now expired, or contact has gone stale."""
+        if not self.private_enabled:
+            return False
+        lease_open = self.lease_expires_at is not None and self.lease_expires_at > now_s
+        if self._lease_was_valid and not lease_open:
+            return True
+        if (
+            self._last_contact_mono is not None
+            and now_mono - self._last_contact_mono >= SUPABASE_UNREACHABLE_S
+        ):
+            return True
+        return False
 
     def tick(self, now_s: float, now_mono: float) -> list[str]:
         """Watchdog edges. Each fault zeros once until it clears."""
@@ -407,6 +694,18 @@ class ControlTracker:
             self._motion_latched = False
         return reasons
 
+    def _seq_ok(self, epoch: int, seq: int, now_mono: float) -> bool:
+        last = self._last_seq.get(epoch)
+        if last is None or seq > last:
+            return True
+        if seq == last:
+            return False
+        previous = self._last_seq_mono.get(epoch)
+        if previous is None:
+            return True
+        # The exact boundary counts. Subtracting two floats can land a hair under.
+        return (now_mono - previous) + 1e-9 >= SEQ_RESET_GAP_S
+
     def _set_epoch(self, epoch: int) -> list[str]:
         if self.epoch is None or epoch == self.epoch:
             self.epoch = epoch
@@ -417,6 +716,7 @@ class ControlTracker:
         self._lease_was_valid = False
         self._motion_latched = False
         self._last_seq.clear()
+        self._last_seq_mono.clear()
         return ["epoch_change"]
 
 

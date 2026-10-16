@@ -131,13 +131,14 @@ AMR_SUPABASE_KEY=sb_publishable_…  # publishable key — NOT service_role
 AMR_BRIDGE_TOKEN=…                 # must match sha256 in public.amr_bridge_config
 AMR_BRIDGE_EMAIL=…                 # bridge Auth user (private channels)
 AMR_BRIDGE_PASSWORD=…              # never commit; env file only
-AMR_PUBLIC_CHANNEL=1               # 0 disables the legacy public channel
+AMR_PUBLIC_CHANNEL=0               # 1 enables the legacy public channel
 AMR_DASHBOARD_URL=http://127.0.0.1:8080
 ```
 
 `AMR_BRIDGE_EMAIL` / `AMR_BRIDGE_PASSWORD` sign the bridge in so it can join
-`bot:<id>:status|cmd|cmdq|ctl`. Without them, private channels stay off and the
-legacy public channel still runs. Do not set `AMR_SUPABASE_SERVICE_KEY`.
+`bot:<id>:status|cmd|cmdq|ctl`. Without them, private channels stay off.
+`AMR_PUBLIC_CHANNEL` defaults to off, so the legacy public channel stays off
+too unless it is set to `1`. Do not set `AMR_SUPABASE_SERVICE_KEY`.
 
 Optional:
 
@@ -257,10 +258,11 @@ Important state fields forwarded (subset): `pose`, `map_pose`, `vel`, `cmd`,
 
 ### Outbound (browser command → dashboard)
 
-Private-channel commands that pass epoch / token / lease / seq / timestamp
-checks skip the rank gates. The public channel still applies them while
-`AMR_PUBLIC_CHANNEL` is on. Motion is posted to the dashboard or gamepad,
-which publish `/cmd_vel`. The bridge does not publish `/cmd_vel_safe`.
+Private-channel commands that pass epoch / token / lease / seq checks skip
+the rank gates. E-stop skips seq and timestamp. The public channel still
+applies the rank gates while `AMR_PUBLIC_CHANNEL=1` (default is off). Motion
+is posted to the dashboard or gamepad, which publish `/cmd_vel`. The bridge
+does not publish `/cmd_vel_safe`.
 
 | Command `type` | Rank gate (public channel only) | Dashboard |
 | --- | --- | --- |

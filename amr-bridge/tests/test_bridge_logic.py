@@ -7,6 +7,7 @@ import ast
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -19,12 +20,16 @@ from amr_telemetry_bridge.control import (  # noqa: E402
     CONTROL_POLL_MIN_S,
     CONTROL_POLL_S,
     MOTION_WATCHDOG_S,
+    SEQ_RESET_GAP_S,
     SUPABASE_UNREACHABLE_S,
-    TS_WINDOW_S,
     ControlTracker,
+    MotionGuard,
     clamp_poll_interval,
     flag_enabled,
+    looks_like_service_key,
+    motion_command,
     parse_timestamptz,
+    sanitize_command,
 )
 from amr_telemetry_bridge.protocol import (  # noqa: E402
     BOARD_RATE_HZ,
@@ -170,7 +175,7 @@ class LaunchWiringTests(unittest.TestCase):
         self.assertIn("AMR_BRIDGE_TOKEN=REPLACE_WITH_BRIDGE_TOKEN", example)
         self.assertIn("AMR_BRIDGE_EMAIL=REPLACE_WITH_BRIDGE_EMAIL", example)
         self.assertIn("AMR_BRIDGE_PASSWORD=REPLACE_WITH_BRIDGE_PASSWORD", example)
-        self.assertIn("AMR_PUBLIC_CHANNEL=1", example)
+        self.assertIn("AMR_PUBLIC_CHANNEL=0", example)
         self.assertNotIn("AMR_SUPABASE_SERVICE_KEY=", example)
         self.assertNotIn("eyJ", example)  # no JWT literals
 
@@ -362,40 +367,41 @@ class ControlTrackerTests(unittest.TestCase):
             gate2.verify(self._envelope(seq=0), source="cmd", now_s=NOW, now_mono=1.0).reason,
             "seq",
         )
-        # Gaps are still strictly increasing.
+        # Gaps are still accepted.
         self.assertTrue(gate2.verify(
             self._envelope(seq=4), source="cmd", now_s=NOW, now_mono=1.0,
         ).ok)
 
-        late = gate.verify(
-            self._envelope(seq=2, ts=int(NOW * 1000) - 2001),
-            source="cmd", now_s=NOW, now_mono=0.0,
-        )
-        self.assertEqual(late.reason, "ts")
-        future = gate.verify(
-            self._envelope(seq=2, ts=int(NOW * 1000) + 2001),
-            source="cmd", now_s=NOW, now_mono=0.0,
-        )
-        self.assertEqual(future.reason, "ts")
-        edge = gate.verify(
-            self._envelope(seq=2, ts=int(NOW * 1000) + 2000),
-            source="cmd", now_s=NOW, now_mono=0.0,
-        )
-        self.assertTrue(edge.ok, edge.reason)
-
-    def test_ts_seconds_and_retry_after_stale_ts_keeps_seq(self):
+    def test_skewed_clock_ts_is_accepted_and_non_finite_is_not(self):
         gate, _ = self._arm()
-        stale = gate.verify(
-            self._envelope(seq=7, ts=NOW - 2.001),
+        # A day off, in milliseconds. The Pi may not have NTP yet.
+        late = gate.verify(
+            self._envelope(seq=1, ts=int(NOW * 1000) - 86_400_000),
             source="cmd", now_s=NOW, now_mono=0.0,
         )
-        self.assertEqual(stale.reason, "ts")
-        # Seconds form, exactly on the 2 s boundary, same seq (not consumed).
-        ok = gate.verify(
-            self._envelope(seq=7, ts=NOW + TS_WINDOW_S),
-            source="cmd", now_s=NOW, now_mono=0.0,
+        self.assertTrue(late.ok, late.reason)
+        # Seconds, also far from the bridge clock.
+        ahead = gate.verify(
+            self._envelope(seq=2, ts=NOW + 10_000),
+            source="cmd", now_s=NOW, now_mono=0.1,
         )
-        self.assertTrue(ok.ok, ok.reason)
+        self.assertTrue(ahead.ok, ahead.reason)
+        bad = gate.verify(
+            self._envelope(seq=3, ts=float("nan")),
+            source="cmd", now_s=NOW, now_mono=0.2,
+        )
+        self.assertEqual(bad.reason, "ts")
+        missing = self._envelope(seq=3)
+        del missing["ts"]
+        self.assertEqual(
+            gate.verify(missing, source="cmd", now_s=NOW, now_mono=0.2).reason,
+            "ts",
+        )
+        # The bad timestamp did not consume seq 3.
+        self.assertTrue(gate.verify(
+            self._envelope(seq=3, ts=0),
+            source="cmd", now_s=NOW, now_mono=0.3,
+        ).ok)
 
     def test_cmdq_trusts_server_sender_not_rank_or_inner_sender(self):
         gate, _ = self._arm()
@@ -451,41 +457,29 @@ class ControlTrackerTests(unittest.TestCase):
         replay["seq"] = 2
         self.assertTrue(gate.verify(replay, source="cmdq", now_s=NOW, now_mono=0.0).ok)
 
-    def test_epoch_change_resets_seq_and_clears_token_until_poll(self):
+    def test_ctl_only_triggers_poll_and_poll_moves_epoch(self):
         gate, _ = self._arm()
         self.assertTrue(gate.verify(
             self._envelope(seq=9), source="cmd", now_s=NOW, now_mono=0.0,
         ).ok)
-        reasons = gate.apply_ctl(
-            {
-                "bot_id": "hardware-bot",
-                "controller": "user-2",
-                "controller_name": "Two",
-                "epoch": 4,
-            },
-            now_mono=1.0,
-        )
-        self.assertEqual(reasons, ["epoch_change"])
-        self.assertIsNone(gate.token)
-        self.assertIsNone(gate.lease_expires_at)
-        held = gate.verify(
-            self._envelope(epoch=4, token="tok-1", seq=1),
-            source="cmd", now_s=NOW, now_mono=1.0,
-        )
-        self.assertEqual(held.reason, "lease")
-        # Stale poll must not roll the epoch or the token backwards.
-        self.assertEqual(gate.apply_poll(
-            {
-                "bot_id": "hardware-bot",
-                "controller": "user-1",
-                "epoch": 3,
-                "lease_expires_at": NOW + 30,
-            },
-            {"bot_id": "hardware-bot", "epoch": 3, "token": "tok-1"},
-            1.1,
-        ), [])
-        self.assertEqual(gate.epoch, 4)
-        self.assertIsNone(gate.token)
+        self.assertTrue(gate.ctl_needs_poll({
+            "bot_id": "hardware-bot",
+            "controller": "user-2",
+            "controller_name": "Two",
+            "epoch": 4,
+        }))
+        self.assertFalse(gate.ctl_needs_poll({
+            "bot_id": "amr4",
+            "controller": "user-2",
+            "epoch": 9,
+        }))
+        # :ctl is not authority. Epoch, token, and lease stay until a poll.
+        self.assertEqual(gate.epoch, 3)
+        self.assertEqual(gate.token, "tok-1")
+        self.assertIsNotNone(gate.lease_expires_at)
+        self.assertTrue(gate.verify(
+            self._envelope(seq=10), source="cmd", now_s=NOW, now_mono=1.0,
+        ).ok)
 
         reasons = gate.apply_poll(
             {
@@ -497,10 +491,25 @@ class ControlTrackerTests(unittest.TestCase):
             {"bot_id": "hardware-bot", "epoch": 4, "token": "tok-2"},
             1.2,
         )
-        self.assertEqual(reasons, [])
+        self.assertEqual(reasons, ["epoch_change"])
+        self.assertEqual(gate.token, "tok-2")
+        self.assertEqual(gate.controller, "user-2")
+        # Stale poll must not roll the epoch or the token backwards.
+        self.assertEqual(gate.apply_poll(
+            {
+                "bot_id": "hardware-bot",
+                "controller": "user-1",
+                "epoch": 3,
+                "lease_expires_at": NOW + 30,
+            },
+            {"bot_id": "hardware-bot", "epoch": 3, "token": "tok-1"},
+            1.3,
+        ), [])
+        self.assertEqual(gate.epoch, 4)
+        self.assertEqual(gate.token, "tok-2")
         self.assertTrue(gate.verify(
             self._envelope(epoch=4, token="tok-2", seq=1),
-            source="cmd", now_s=NOW, now_mono=1.2,
+            source="cmd", now_s=NOW, now_mono=1.4,
         ).ok)
 
     def test_poll_epoch_change_installs_new_token(self):
@@ -640,6 +649,249 @@ class ControlTrackerTests(unittest.TestCase):
         )
         self.assertEqual(closed.reason, "lease")
 
+    def test_website_joy_ab_arms_deadman_and_axes_still_work(self):
+        self.assertEqual(SEQ_RESET_GAP_S, 0.5)
+        gate, _ = self._arm(now_mono=10.0)
+        website = {"type": "joy", "a": [0.0, 0.8, 0, 0, 0, 0, 0, 0], "b": 0}
+        result = gate.verify(
+            self._envelope(seq=1, cmd=website),
+            source="cmd", now_s=NOW, now_mono=10.0,
+        )
+        self.assertTrue(result.ok, result.reason)
+        self.assertEqual(result.cmd["a"][1], 0.8)
+        self.assertEqual(result.cmd["b"], 0)
+        self.assertTrue(motion_command(result.cmd or {}))
+        self.assertEqual(gate.tick(NOW, 10.49), [])
+        self.assertEqual(gate.tick(NOW, 10.5), ["command_timeout"])
+
+        # All-zero website stick does not hold the deadman open.
+        zero = gate.verify(
+            self._envelope(seq=2, cmd={"type": "joy", "a": [0.0] * 8, "b": 0}),
+            source="cmd", now_s=NOW, now_mono=12.0,
+        )
+        self.assertTrue(zero.ok, zero.reason)
+        self.assertFalse(motion_command(zero.cmd or {}))
+        self.assertEqual(gate.tick(NOW, 12.6), [])
+
+        axes = gate.verify(
+            self._envelope(seq=3, cmd=_joy()),
+            source="cmd", now_s=NOW, now_mono=13.0,
+        )
+        self.assertTrue(axes.ok, axes.reason)
+        self.assertEqual(axes.cmd["axes"][1], 0.5)
+        self.assertEqual(gate.tick(NOW, 13.5), ["command_timeout"])
+
+    def test_estop_is_idempotent_and_skips_seq_and_ts(self):
+        gate, _ = self._arm()
+        self.assertTrue(gate.verify(
+            self._envelope(seq=5), source="cmd", now_s=NOW, now_mono=0.0,
+        ).ok)
+        first = gate.verify(
+            self._envelope(seq=1, ts=float("inf"), cmd={"type": "estop"}),
+            source="cmd", now_s=NOW, now_mono=0.1,
+        )
+        self.assertTrue(first.ok, first.reason)
+        again = gate.verify(
+            self._envelope(seq=1, cmd={"type": "estop"}),
+            source="cmd", now_s=NOW, now_mono=0.2,
+        )
+        self.assertTrue(again.ok, again.reason)
+        bare = {"epoch": 3, "token": "tok-1", "cmd": {"type": "estop"}}
+        self.assertTrue(gate.verify(
+            bare, source="cmd", now_s=NOW, now_mono=0.3,
+        ).ok)
+        # E-stop did not move the seq cursor.
+        self.assertEqual(
+            gate.verify(
+                self._envelope(seq=5), source="cmd", now_s=NOW, now_mono=0.4,
+            ).reason,
+            "seq",
+        )
+        self.assertTrue(gate.verify(
+            self._envelope(seq=6), source="cmd", now_s=NOW, now_mono=0.4,
+        ).ok)
+        self.assertEqual(
+            gate.verify(
+                self._envelope(epoch=2, seq=1, cmd={"type": "estop"}),
+                source="cmd", now_s=NOW, now_mono=0.5,
+            ).reason,
+            "epoch",
+        )
+        self.assertEqual(
+            gate.verify(
+                self._envelope(token="nope", seq=1, cmd={"type": "estop"}),
+                source="cmd", now_s=NOW, now_mono=0.5,
+            ).reason,
+            "token",
+        )
+        held = {
+            "sender": "other",
+            "epoch": 3,
+            "cmd": {"type": "estop"},
+        }
+        self.assertEqual(
+            gate.verify(held, source="cmdq", now_s=NOW, now_mono=0.6).reason,
+            "sender",
+        )
+
+    def test_lower_seq_after_gap_and_time_based_seq(self):
+        gate, _ = self._arm()
+        self.assertTrue(gate.verify(
+            self._envelope(seq=10), source="cmd", now_s=NOW, now_mono=0.0,
+        ).ok)
+        early = gate.verify(
+            self._envelope(seq=1), source="cmd", now_s=NOW, now_mono=0.1,
+        )
+        self.assertEqual(early.reason, "seq")
+        # A time-based seq (Date.now()) is still higher, so a reload that
+        # uses it is accepted immediately.
+        stamped = int(NOW * 1000)
+        self.assertTrue(gate.verify(
+            self._envelope(seq=stamped), source="cmd", now_s=NOW, now_mono=0.2,
+        ).ok)
+        # And a browser that reset to 1 is accepted once the gap has passed,
+        # not after a 30 s lockout.
+        reset = gate.verify(
+            self._envelope(seq=1),
+            source="cmd", now_s=NOW, now_mono=0.2 + SEQ_RESET_GAP_S,
+        )
+        self.assertTrue(reset.ok, reset.reason)
+        self.assertTrue(gate.verify(
+            self._envelope(seq=2),
+            source="cmd", now_s=NOW, now_mono=0.2 + SEQ_RESET_GAP_S,
+        ).ok)
+
+    def test_inputs_are_finite_clamped_and_allowlisted(self):
+        gate, _ = self._arm()
+        huge = gate.verify(
+            self._envelope(seq=1, cmd={"type": "nudge", "lin": 9, "ang": -9}),
+            source="cmd", now_s=NOW, now_mono=0.0,
+        )
+        self.assertTrue(huge.ok, huge.reason)
+        self.assertEqual(huge.cmd["lin"], 0.3)
+        self.assertEqual(huge.cmd["ang"], -1.0)
+
+        bad = gate.verify(
+            self._envelope(seq=2, cmd={"type": "nudge", "lin": float("nan"), "ang": 0}),
+            source="cmd", now_s=NOW, now_mono=0.1,
+        )
+        self.assertEqual(bad.reason, "value")
+        # Rejected values do not consume seq.
+        self.assertTrue(gate.verify(
+            self._envelope(seq=2, cmd={"type": "nudge", "lin": 0.1, "ang": 0}),
+            source="cmd", now_s=NOW, now_mono=0.1,
+        ).ok)
+
+        joy = sanitize_command({
+            "type": "joy",
+            "a": [2, -2, 0, 0, 0, 0, 0, 0],
+            "b": 0,
+        })
+        self.assertEqual(joy[0]["a"][0], 1.0)
+        self.assertEqual(joy[0]["a"][1], -1.0)
+        self.assertIsNone(sanitize_command({
+            "type": "joy",
+            "a": [0, float("inf"), 0, 0, 0, 0, 0, 0],
+            "b": 1,
+        })[0])
+
+        tool = sanitize_command({
+            "type": "run_tool",
+            "tool": "imu_calibration",
+            "params": {"speed": 9, "rotations": 0.1},
+        })
+        self.assertEqual(tool[0]["params"]["speed"], 1.0)
+        self.assertEqual(tool[0]["params"]["rotations"], 0.5)
+        self.assertIsNone(sanitize_command({
+            "type": "run_tool",
+            "tool": "shell",
+            "params": {},
+        })[0])
+        self.assertIsNone(sanitize_command({
+            "type": "run_tool",
+            "tool": "imu_test",
+            "params": {"speed": 0.2},
+        })[0])
+        self.assertEqual(
+            sanitize_command({"type": "save_map", "name": "map_1"})[0]["name"],
+            "map_1",
+        )
+        self.assertEqual(sanitize_command({"type": "save_map", "name": ""})[0]["name"], "")
+        self.assertIsNone(sanitize_command({"type": "save_map", "name": "../etc"})[0])
+        zone = sanitize_command({
+            "type": "blacklist",
+            "x": 1,
+            "y": 2,
+            "radius": 9,
+            "duration": -5,
+        })
+        self.assertEqual(zone[0]["radius"], 5.0)
+        self.assertEqual(zone[0]["duration"], 0.0)
+        self.assertEqual(
+            sanitize_command({"type": "blacklist", "action": "clear"})[0]["action"],
+            "clear",
+        )
+
+    def test_service_key_detector_and_token_compare(self):
+        self.assertTrue(looks_like_service_key("sb_secret_example"))
+        self.assertFalse(looks_like_service_key("sb_publishable_example"))
+        self.assertFalse(looks_like_service_key(""))
+        self.assertTrue(looks_like_service_key(_jwt("service_role")))
+        self.assertFalse(looks_like_service_key(_jwt("anon")))
+        gate, _ = self._arm(token="AbC")
+        self.assertTrue(gate.verify(
+            self._envelope(token="abc"),
+            source="cmd", now_s=NOW, now_mono=0.0,
+        ).ok)
+        self.assertEqual(
+            gate.verify(
+                self._envelope(token="abcd", seq=2),
+                source="cmd", now_s=NOW, now_mono=0.1,
+            ).reason,
+            "token",
+        )
+
+    def test_rejected_command_does_not_refresh_contact(self):
+        gate, _ = self._arm(now_mono=0.0)
+        rejected = gate.verify(
+            self._envelope(token="nope"),
+            source="cmd", now_s=NOW, now_mono=4.9,
+        )
+        self.assertFalse(rejected.ok)
+        self.assertEqual(gate.tick(NOW, 5.0), ["supabase_unreachable"])
+        fresh, _ = self._arm(now_mono=0.0)
+        self.assertTrue(fresh.verify(
+            self._envelope(), source="cmd", now_s=NOW, now_mono=4.9,
+        ).ok)
+        self.assertEqual(fresh.tick(NOW, 5.0), [])
+
+
+def _jwt(role: str) -> str:
+    import base64
+    import json
+    header = base64.urlsafe_b64encode(b'{"alg":"none"}').decode().rstrip("=")
+    payload = base64.urlsafe_b64encode(
+        json.dumps({"role": role}).encode()
+    ).decode().rstrip("=")
+    return f"{header}.{payload}.sig"
+
+
+class MotionGuardTests(unittest.TestCase):
+    def test_soft_zero_is_cancelled_by_new_motion_and_hard_is_not(self):
+        guard = MotionGuard()
+        gen = guard.arm(hard=False)
+        self.assertTrue(guard.still_owed(gen))
+        guard.release_for_motion()
+        self.assertFalse(guard.still_owed(gen))
+        self.assertFalse(guard.owed)
+
+        gen = guard.arm(hard=True)
+        guard.release_for_motion()
+        self.assertTrue(guard.hard)
+        self.assertTrue(guard.still_owed(gen))
+        guard.mark_zeroed(gen)
+        self.assertFalse(guard.owed)
+
 
 class BridgeSourceSafetyTests(unittest.TestCase):
     def test_velocity_stays_on_existing_http_path(self):
@@ -650,6 +902,13 @@ class BridgeSourceSafetyTests(unittest.TestCase):
         self.assertNotIn("create_publisher", src)
         self.assertNotIn('publish("/cmd_vel_safe"', src)
         self.assertNotIn("cmd_vel_topic", src)
+        self.assertIn("COMMAND_HTTP_TIMEOUT_S", src)
+        self.assertIn("MAX_SCHEDULED_COMMANDS", src)
+        self.assertIn('"/api/estop"', src)
+        control = (BRIDGE_ROOT / "amr_telemetry_bridge" / "control.py").read_text()
+        self.assertIn("hmac.compare_digest", control)
+        self.assertIn("sb_secret_", control)
+        self.assertIn("service_role", control)
 
     def test_private_auth_and_touch_logging(self):
         src = (BRIDGE_ROOT / "amr_telemetry_bridge" / "bridge.py").read_text()
@@ -658,7 +917,8 @@ class BridgeSourceSafetyTests(unittest.TestCase):
         self.assertIn("set_auth", src)
         self.assertIn("AMR_BRIDGE_EMAIL", src)
         self.assertIn("AMR_BRIDGE_PASSWORD", src)
-        self.assertIn("AMR_PUBLIC_CHANNEL", src)
+        self.assertIn('default=_env("AMR_PUBLIC_CHANNEL", "0")', src)
+        self.assertIn("looks_like_service_key", src)
         self.assertIn('{"config": {"private": True}}', src)
         self.assertIn("touch_amr_bot returned false", src)
         self.assertNotIn('or _env("AMR_SUPABASE_SERVICE_KEY")', src)
@@ -669,11 +929,219 @@ class BridgeSourceSafetyTests(unittest.TestCase):
         script = (ROOT / "scripts" / "setup_amr_bridge.sh").read_text()
         self.assertIn("AMR_BRIDGE_EMAIL=\n", script)
         self.assertIn("AMR_BRIDGE_PASSWORD=\n", script)
-        self.assertIn("AMR_PUBLIC_CHANNEL=1\n", script)
+        self.assertIn("AMR_PUBLIC_CHANNEL=0\n", script)
         self.assertIn("Do NOT ever add AMR_SUPABASE_SERVICE_KEY", script)
         readme = (ROOT / "scripts" / "README.md").read_text()
         self.assertIn("AMR_BRIDGE_EMAIL", readme)
         self.assertIn("AMR_BRIDGE_PASSWORD", readme)
+
+
+class _FakeResponse:
+    def raise_for_status(self):
+        return None
+
+
+class _FakeHttp:
+    def __init__(self, posts: list):
+        self.posts = posts
+
+    async def post(self, url, json=None, timeout=None):
+        self.posts.append(("http", url, json, timeout))
+        return _FakeResponse()
+
+
+class _FakeDash:
+    def __init__(self):
+        self.posts: list[tuple] = []
+        self.fail_zeros = 0
+        self.http = _FakeHttp(self.posts)
+
+    async def post(self, path, payload=None, timeout=None):
+        self.posts.append(("dash", path, payload, timeout))
+        if (
+            path == "/api/nudge"
+            and payload == {"lin": 0.0, "ang": 0.0}
+            and self.fail_zeros
+        ):
+            self.fail_zeros -= 1
+            raise RuntimeError("dashboard down")
+        return {"ok": True}
+
+
+class BridgeDispatchTests(unittest.TestCase):
+    def test_website_joy_arms_watchdog_and_zero_retries(self):
+        import asyncio
+
+        from amr_telemetry_bridge.bridge import COMMAND_HTTP_TIMEOUT_S, Bridge
+
+        async def run():
+            import time
+            bridge = Bridge(
+                bot_id="hardware-bot",
+                supabase_url="https://example.supabase.co",
+                api_key="sb_publishable_example",
+                bridge_token="tok",
+                dashboard_url="http://127.0.0.1:8080",
+                camera_url=None,
+                camera_jpeg_max_kb=24,
+                public_channel=False,
+                private_channel=False,
+            )
+            fake = _FakeDash()
+            original_http = bridge.dash._http
+            bridge.dash._http = fake.http
+            bridge.dash.post = fake.post
+            old_gamepad = os.environ.get("AMR_GAMEPAD_URL")
+            os.environ["AMR_GAMEPAD_URL"] = "http://127.0.0.1:8765"
+            try:
+                bridge._gate.apply_poll(
+                    {
+                        "bot_id": "hardware-bot",
+                        "controller": "user-1",
+                        "epoch": 3,
+                        "lease_expires_at": NOW + 30,
+                    },
+                    {"epoch": 3, "token": "tok-1"},
+                    10.0,
+                )
+                website = {"type": "joy", "a": [0.0, 0.8, 0, 0, 0, 0, 0, 0], "b": 0}
+                result = bridge._gate.verify(
+                    {
+                        "epoch": 3,
+                        "token": "tok-1",
+                        "seq": 1,
+                        "ts": int(NOW * 1000),
+                        "cmd": website,
+                    },
+                    source="cmd",
+                    now_s=NOW,
+                    now_mono=10.0,
+                )
+                self.assertTrue(result.ok, result.reason)
+                self.assertEqual(bridge._gate.tick(NOW, 10.49), [])
+                reasons = bridge._gate.tick(NOW, 10.5)
+                self.assertEqual(reasons, ["command_timeout"])
+
+                fake.fail_zeros = 1
+                await bridge._apply_watchdog(reasons)
+                self.assertTrue(bridge._guard.owed)
+                self.assertEqual(
+                    [item for item in fake.posts if item[1] == "/api/nudge"],
+                    [("dash", "/api/nudge", {"lin": 0.0, "ang": 0.0}, COMMAND_HTTP_TIMEOUT_S)],
+                )
+                await bridge._try_zero(bridge._guard.owed_gen, "retry")
+                self.assertFalse(bridge._guard.owed)
+                zeros = [item for item in fake.posts if item[1] == "/api/nudge"]
+                self.assertEqual(len(zeros), 2)
+
+                # Lease and contact must look live on the real clock, or the
+                # motion is treated as a hard fault and zeroed again.
+                bridge._gate.lease_expires_at = time.time() + 3600
+                bridge._gate._lease_was_valid = True
+                bridge._gate.note_contact(time.monotonic())
+                bridge._guard.set_hard(False)
+                await bridge._run_accepted(result.cmd)
+                driving = [
+                    item for item in fake.posts
+                    if item[0] == "http" and item[2]["a"][1] == 0.8
+                ]
+                self.assertEqual(len(driving), 1)
+                self.assertEqual(driving[0][1], "http://127.0.0.1:8765/api/joy")
+                self.assertEqual(driving[0][2]["b"], 0)
+                self.assertEqual(driving[0][3], COMMAND_HTTP_TIMEOUT_S)
+                # The new motion cancels the deadman zero.
+                self.assertEqual(
+                    len([item for item in fake.posts if item[1] == "/api/nudge"]),
+                    2,
+                )
+
+                bridge._guard.set_hard(True)
+                bridge._guard.arm(hard=True)
+                await bridge._dispatch_cmd(result.cmd)
+                driving = [
+                    item for item in fake.posts
+                    if item[0] == "http" and item[2]["a"][1] == 0.8
+                ]
+                self.assertEqual(len(driving), 2)
+                idx = max(
+                    i for i, item in enumerate(fake.posts)
+                    if item[0] == "http" and item[2]["a"][1] == 0.8
+                )
+                follow = fake.posts[idx + 1]
+                self.assertEqual(follow[1], "/api/nudge")
+                self.assertEqual(follow[2], {"lin": 0.0, "ang": 0.0})
+                self.assertFalse(bridge._guard.owed)
+            finally:
+                if old_gamepad is None:
+                    os.environ.pop("AMR_GAMEPAD_URL", None)
+                else:
+                    os.environ["AMR_GAMEPAD_URL"] = old_gamepad
+                bridge.dash._http = original_http
+                await bridge.dash.close()
+
+        asyncio.run(run())
+
+    def test_schedule_cap_closes_extra_coroutines(self):
+        import asyncio
+
+        from amr_telemetry_bridge.bridge import MAX_SCHEDULED_COMMANDS, Bridge
+
+        async def run():
+            bridge = Bridge(
+                bot_id="hardware-bot",
+                supabase_url="https://example.supabase.co",
+                api_key="sb_publishable_example",
+                bridge_token="tok",
+                dashboard_url="http://127.0.0.1:8080",
+                camera_url=None,
+                camera_jpeg_max_kb=24,
+                public_channel=False,
+                private_channel=False,
+            )
+            bridge._loop = asyncio.get_running_loop()
+            release = asyncio.Event()
+            started = 0
+
+            async def hang():
+                nonlocal started
+                started += 1
+                await release.wait()
+
+            try:
+                for _ in range(MAX_SCHEDULED_COMMANDS):
+                    bridge._schedule(hang())
+                await asyncio.sleep(0.05)
+                self.assertEqual(started, MAX_SCHEDULED_COMMANDS)
+
+                async def extra():
+                    nonlocal started
+                    started += 10
+
+                bridge._schedule(extra())
+                await asyncio.sleep(0.05)
+                self.assertEqual(started, MAX_SCHEDULED_COMMANDS)
+                self.assertEqual(bridge._scheduled, MAX_SCHEDULED_COMMANDS)
+                release.set()
+                await asyncio.sleep(0.05)
+                self.assertEqual(bridge._scheduled, 0)
+            finally:
+                release.set()
+                await bridge.dash.close()
+
+        asyncio.run(run())
+
+    def test_main_refuses_service_key_without_printing_it(self):
+        from amr_telemetry_bridge.bridge import main
+
+        secret = "sb_secret_example"
+        with self.assertRaises(SystemExit) as caught:
+            main([
+                "--supabase-url", "https://example.supabase.co",
+                "--api-key", secret,
+                "--bridge-token", "tok",
+            ])
+        self.assertIn("service key", str(caught.exception))
+        self.assertNotIn(secret, str(caught.exception))
 
 
 if __name__ == "__main__":

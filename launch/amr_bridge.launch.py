@@ -14,8 +14,9 @@ Precedence (launch arg wins over the env file when the arg is non-empty):
 File values override the process environment. AMR_SUPABASE_URL,
 AMR_SUPABASE_KEY (publishable), and AMR_BRIDGE_TOKEN are required.
 AMR_SUPABASE_SERVICE_KEY is never passed to the bridge. Private channels
-also need AMR_BRIDGE_EMAIL and AMR_BRIDGE_PASSWORD; without them the legacy
-public channel still runs when AMR_PUBLIC_CHANNEL is on (the default).
+also need AMR_BRIDGE_EMAIL and AMR_BRIDGE_PASSWORD; without them private
+channels stay off. The legacy public channel runs only when
+AMR_PUBLIC_CHANNEL is on (the default is off).
 """
 
 from __future__ import annotations

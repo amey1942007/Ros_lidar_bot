@@ -13,8 +13,8 @@ sudo nano /etc/amr-bridge.env   # set AMR_BOT_ID=hardware-bot (or amr4)
 
 Required: `AMR_SUPABASE_URL`, `AMR_SUPABASE_KEY` (publishable key), `AMR_BRIDGE_TOKEN`,
 `AMR_DASHBOARD_URL`. Private channels also need `AMR_BRIDGE_EMAIL` and
-`AMR_BRIDGE_PASSWORD`. `AMR_PUBLIC_CHANNEL=1` (default) keeps the legacy public
-channel until cut-over. Do not set `AMR_SUPABASE_SERVICE_KEY`.
+`AMR_BRIDGE_PASSWORD`. `AMR_PUBLIC_CHANNEL` defaults to `0` (legacy public
+channel off). Set it to `1` only during cut-over. Do not set `AMR_SUPABASE_SERVICE_KEY`.
 Recommended: `AMR_GAMEPAD_URL=http://127.0.0.1:8765`.
 
 ## 2. Bridge Python venv

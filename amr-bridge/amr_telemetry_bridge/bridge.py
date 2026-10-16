@@ -15,7 +15,7 @@ Env (see /etc/amr-bridge.env — also loaded by amr_bridge.launch.py):
   AMR_BRIDGE_TOKEN=…                  # shared secret → public.touch_amr_bot
   AMR_BRIDGE_EMAIL=…                  # bridge Auth user (private channels)
   AMR_BRIDGE_PASSWORD=…
-  AMR_PUBLIC_CHANNEL=1                # legacy amr-bot-<id> until cut-over
+  AMR_PUBLIC_CHANNEL=0                # 1 keeps legacy amr-bot-<id> during cut-over
   AMR_PRIVATE_CHANNEL=1               # bot:<id>:status|cmd|cmdq|ctl
   AMR_DASHBOARD_URL=http://127.0.0.1:8080
   AMR_CAMERA_URL=                     # optional public MJPEG (CF tunnel)
@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import signal
+import threading
 import time
 from typing import Any, Optional
 
@@ -41,8 +42,12 @@ import httpx
 from . import __version__
 from .control import (
     ControlTracker,
+    MotionGuard,
     clamp_poll_interval,
     flag_enabled,
+    looks_like_service_key,
+    motion_command,
+    sanitize_command,
 )
 from .protocol import (
     BOARD_RATE_HZ,
@@ -62,6 +67,12 @@ log = logging.getLogger("amr_bridge")
 AUTH_REFRESH_CHECK_S = 15.0
 # Refresh this long before expires_at, then re-apply Realtime auth.
 AUTH_REFRESH_SKEW_S = 90.0
+# Command and zero posts. Short so a hung dashboard cannot pin the stop latch.
+COMMAND_HTTP_TIMEOUT_S = 2.0
+# Realtime callbacks waiting on that HTTP. Extra ones are closed, not queued.
+MAX_SCHEDULED_COMMANDS = 4
+# How soon a failed zero is tried again.
+ZERO_RETRY_S = 0.25
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -77,8 +88,18 @@ class DashboardClient:
     async def close(self) -> None:
         await self._http.aclose()
 
-    async def post(self, path: str, payload: dict | None = None) -> dict:
-        r = await self._http.post(f"{self.base}{path}", json=payload or {})
+    async def post(
+        self,
+        path: str,
+        payload: dict | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> dict:
+        r = await self._http.post(
+            f"{self.base}{path}",
+            json=payload or {},
+            timeout=timeout,
+        )
         r.raise_for_status()
         try:
             return r.json()
@@ -503,7 +524,7 @@ class Bridge:
         *,
         bridge_email: str | None = None,
         bridge_password: str | None = None,
-        public_channel: bool = True,
+        public_channel: bool = False,
         private_channel: bool = True,
         control_poll_s: float = 2.0,
     ):
@@ -535,8 +556,13 @@ class Bridge:
         self._last_pub = 0.0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._gate = ControlTracker(bot_id)
+        self._guard = MotionGuard()
         self._poll_s = clamp_poll_interval(control_poll_s)
         self._poll_lock = asyncio.Lock()
+        self._io_lock = asyncio.Lock()
+        self._sched_lock = threading.Lock()
+        self._scheduled = 0
+        self._last_zero_mono = 0.0
 
     def _queue_public(self, env: dict) -> None:
         self._schedule(self._handle_public_command(env))
@@ -548,14 +574,36 @@ class Bridge:
         self._schedule(self._handle_control(env))
 
     def _queue_link(self, up: bool) -> None:
-        if up:
-            self._schedule(self._handle_link_up())
+        # Subscribe is not contact. note_contact runs after a poll or a command.
+        del up
 
     def _schedule(self, coro) -> None:
-        if self._loop and self._loop.is_running():
-            asyncio.run_coroutine_threadsafe(coro, self._loop)
-        else:
+        """Hop a Realtime callback onto the bridge loop, with a hard cap.
+
+        A hung HTTP call used to leave every later callback queued behind it.
+        Past the cap the coroutine is closed and dropped.
+        """
+        if not (self._loop and self._loop.is_running()):
             coro.close()
+            return
+        with self._sched_lock:
+            if self._scheduled >= MAX_SCHEDULED_COMMANDS:
+                coro.close()
+                log.warning(
+                    "dropping realtime callback; %s already scheduled",
+                    MAX_SCHEDULED_COMMANDS,
+                )
+                return
+            self._scheduled += 1
+
+        async def _bounded() -> None:
+            try:
+                await coro
+            finally:
+                with self._sched_lock:
+                    self._scheduled -= 1
+
+        asyncio.run_coroutine_threadsafe(_bounded(), self._loop)
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -585,13 +633,9 @@ class Bridge:
             tasks.append(self._auth_refresh_loop())
         await asyncio.gather(*tasks)
 
-    async def _handle_link_up(self) -> None:
-        self._gate.note_contact(time.monotonic())
-
     async def _handle_control(self, env: dict) -> None:
-        reasons = self._gate.apply_ctl(env, time.monotonic())
-        await self._apply_watchdog(reasons)
-        if reasons:
+        # :ctl carries no token and no lease. Poll is the only authority.
+        if self._gate.ctl_needs_poll(env):
             await self._poll_once()
 
     async def _handle_public_command(self, env: dict) -> None:
@@ -604,20 +648,27 @@ class Bridge:
         log.info("command %s from rank=%s", typ, rank)
         try:
             if typ == "set_rate":
-                self._apply_rate(cmd)
+                clean, reason = sanitize_command(cmd)
+                if clean is None:
+                    log.info("rejected public command type=%s: %s", typ, reason)
+                    return
+                self._apply_rate(clean)
                 return
             if rank < 1:
                 return
             if typ == "save_map" and rank < 2:
                 return
-            await self._dispatch_cmd(cmd)
+            clean, reason = sanitize_command(cmd)
+            if clean is None:
+                log.info("rejected public command type=%s: %s", typ, reason)
+                return
+            await self._run_accepted(clean)
         except Exception as exc:
             log.warning("command failed: %s", exc)
 
     async def _handle_private_command(self, env: dict, source: str) -> None:
         now_s = time.time()
         now_mono = time.monotonic()
-        self._gate.note_contact(now_mono)
         result = self._gate.verify(env, source=source, now_s=now_s, now_mono=now_mono)
         if not result.ok:
             log.info("rejected %s command type=%s: %s", source, result.cmd_type, result.reason)
@@ -628,9 +679,18 @@ class Bridge:
             if cmd.get("type") == "set_rate":
                 self._apply_rate(cmd)
                 return
-            await self._dispatch_cmd(cmd)
+            await self._run_accepted(cmd)
         except Exception as exc:
             log.warning("command failed: %s", exc)
+
+    async def _run_accepted(self, cmd: dict) -> None:
+        """Post one accepted command. A hard stop zeroes again after motion."""
+        if motion_command(cmd) and not self._gate.fault_active(time.time(), time.monotonic()):
+            # Contact just succeeded, or the lease is still open: this motion
+            # supersedes a deadman zero. A hard fault stays latched.
+            self._guard.set_hard(False)
+            self._guard.release_for_motion()
+        await self._dispatch_cmd(cmd)
 
     def _apply_rate(self, cmd: dict) -> None:
         mode = cmd.get("mode")
@@ -645,84 +705,121 @@ class Bridge:
         /cmd_vel_safe. Do not add a publisher here.
         """
         typ = cmd.get("type")
-        if typ == "estop":
-            await self.dash.post("/api/estop")
-        elif typ in ("nudge", "drive"):
-            await self.dash.post("/api/nudge", {
-                "lin": float(cmd.get("lin", 0)),
-                "ang": float(cmd.get("ang", 0)),
-            })
-        elif typ == "joy":
-            gamepad = os.environ.get("AMR_GAMEPAD_URL", "").rstrip("/")
-            axes = cmd.get("axes") or [0.0] * 8
-            buttons = int(cmd.get("buttons") or 0)
-            if gamepad:
-                await self.dash._http.post(
-                    f"{gamepad}/api/joy",
-                    json={"a": list(axes)[:8], "b": buttons},
-                )
-            else:
-                # Differential approx from left stick: axes[1]=fwd, axes[0]=yaw
-                ax = list(axes) + [0.0] * 8
-                lin = max(-0.4, min(0.4, -float(ax[1]) * 0.35))
-                ang = max(-1.0, min(1.0, -float(ax[0]) * 0.9))
-                if abs(lin) > 0.02 or abs(ang) > 0.02:
-                    await self.dash.post("/api/nudge", {"lin": lin, "ang": ang})
-        elif typ == "nav_goal":
-            await self.dash.post("/api/nav_goal", {
-                "x": float(cmd.get("x", 0)),
-                "y": float(cmd.get("y", 0)),
-            })
-        elif typ == "nav_cancel":
-            await self.dash.post("/api/nav_cancel")
-        elif typ == "vision":
-            await self.dash.post("/api/vision", {"on": bool(cmd.get("on"))})
-        elif typ == "save_map":
-            await self.dash.post("/api/save_map", {"name": cmd.get("name")})
-        elif typ == "run_tool":
-            await self.dash.post("/api/run", {
-                "tool": cmd.get("tool"),
-                "params": cmd.get("params") or {},
-            })
-        elif typ == "stop_tool":
-            await self.dash.post("/api/stop")
-        elif typ == "blacklist":
-            if cmd.get("action") == "clear":
-                await self.dash.post("/api/blacklist", {"action": "clear"})
-            else:
-                await self.dash.post("/api/blacklist", {
+        timeout = COMMAND_HTTP_TIMEOUT_S
+        async with self._io_lock:
+            if typ == "estop":
+                await self.dash.post("/api/estop", timeout=timeout)
+            elif typ in ("nudge", "drive"):
+                await self.dash.post("/api/nudge", {
+                    "lin": float(cmd.get("lin", 0)),
+                    "ang": float(cmd.get("ang", 0)),
+                }, timeout=timeout)
+            elif typ == "joy":
+                await self._post_joy(cmd, timeout)
+            elif typ == "nav_goal":
+                await self.dash.post("/api/nav_goal", {
                     "x": float(cmd.get("x", 0)),
                     "y": float(cmd.get("y", 0)),
-                    "radius": float(cmd.get("radius", 0.8)),
-                    "duration": float(cmd.get("duration", 300)),
-                })
+                }, timeout=timeout)
+            elif typ == "nav_cancel":
+                await self.dash.post("/api/nav_cancel", timeout=timeout)
+            elif typ == "vision":
+                await self.dash.post("/api/vision", {"on": bool(cmd.get("on"))}, timeout=timeout)
+            elif typ == "save_map":
+                await self.dash.post("/api/save_map", {"name": cmd.get("name")}, timeout=timeout)
+            elif typ == "run_tool":
+                await self.dash.post("/api/run", {
+                    "tool": cmd.get("tool"),
+                    "params": cmd.get("params") or {},
+                }, timeout=timeout)
+            elif typ == "stop_tool":
+                await self.dash.post("/api/stop", timeout=timeout)
+            elif typ == "blacklist":
+                if cmd.get("action") == "clear":
+                    await self.dash.post("/api/blacklist", {"action": "clear"}, timeout=timeout)
+                else:
+                    await self.dash.post("/api/blacklist", {
+                        "x": float(cmd.get("x", 0)),
+                        "y": float(cmd.get("y", 0)),
+                        "radius": float(cmd.get("radius", 0.8)),
+                        "duration": float(cmd.get("duration", 300)),
+                    }, timeout=timeout)
+            if motion_command(cmd) and (self._guard.hard or self._guard.owed):
+                log.warning("watchdog: zero motion (after command)")
+                owed = self._guard.owed_gen
+                if await self._post_zero():
+                    if owed is not None:
+                        self._guard.mark_zeroed(owed)
 
-    async def _zero_motion(self, reason: str) -> None:
-        """Stop motion through the same HTTP paths that publish /cmd_vel.
+    async def _post_joy(self, cmd: dict, timeout: float) -> None:
+        """Caller holds ``_io_lock``. ``a``/``b`` win over ``axes``/``buttons``."""
+        gamepad = os.environ.get("AMR_GAMEPAD_URL", "").rstrip("/")
+        if "a" in cmd and cmd.get("a") is not None:
+            axes = list(cmd["a"])
+        else:
+            axes = list(cmd.get("axes") or [])
+        if "b" in cmd and cmd.get("b") is not None:
+            buttons = int(cmd["b"])
+        else:
+            buttons = int(cmd["buttons"]) if cmd.get("buttons") is not None else 0
+        if gamepad:
+            response = await self.dash._http.post(
+                f"{gamepad}/api/joy",
+                json={"a": axes[:8], "b": buttons},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            return
+        # Differential approx from left stick: axes[1]=fwd, axes[0]=yaw.
+        ax = axes + [0.0] * 8
+        lin = max(-0.3, min(0.3, -float(ax[1]) * 0.35))
+        ang = max(-1.0, min(1.0, -float(ax[0]) * 0.9))
+        if abs(lin) > 0.02 or abs(ang) > 0.02:
+            await self.dash.post("/api/nudge", {"lin": lin, "ang": ang}, timeout=timeout)
+
+    async def _post_zero(self) -> bool:
+        """Caller holds ``_io_lock``. False means the watchdog must try again.
 
         A zero nudge streams Twist zeros on /cmd_vel. A zero joy packet makes
         joy_teleop publish one zero Twist and then yield. Neither path writes
         /cmd_vel_safe.
         """
-        log.warning("watchdog: zero motion (%s)", reason)
+        timeout = COMMAND_HTTP_TIMEOUT_S
         try:
-            await self.dash.post("/api/nudge", {"lin": 0.0, "ang": 0.0})
+            await self.dash.post("/api/nudge", {"lin": 0.0, "ang": 0.0}, timeout=timeout)
         except Exception as exc:
             log.warning("watchdog zero nudge failed: %s", exc)
+            return False
         gamepad = os.environ.get("AMR_GAMEPAD_URL", "").rstrip("/")
         if not gamepad:
-            return
+            return True
         try:
-            await self.dash._http.post(
+            response = await self.dash._http.post(
                 f"{gamepad}/api/joy",
                 json={"a": [0.0] * 8, "b": 0},
+                timeout=timeout,
             )
+            response.raise_for_status()
         except Exception as exc:
             log.warning("watchdog zero joy failed: %s", exc)
+            return False
+        return True
+
+    async def _try_zero(self, gen: int, reason: str) -> None:
+        async with self._io_lock:
+            if not self._guard.still_owed(gen):
+                return
+            log.warning("watchdog: zero motion (%s)", reason)
+            if await self._post_zero():
+                self._guard.mark_zeroed(gen)
 
     async def _apply_watchdog(self, reasons: list[str]) -> None:
-        if reasons:
-            await self._zero_motion(",".join(reasons))
+        if not reasons:
+            return
+        hard = any(reason in ("lease_expired", "supabase_unreachable") for reason in reasons)
+        gen = self._guard.arm(hard=hard)
+        self._last_zero_mono = time.monotonic()
+        await self._try_zero(gen, ",".join(reasons))
 
     async def _broadcast(self, event: str, payload: dict) -> None:
         if not self._hub:
@@ -860,8 +957,25 @@ class Bridge:
 
     async def _watchdog_loop(self) -> None:
         while not self._stop.is_set():
-            reasons = self._gate.tick(time.time(), time.monotonic())
-            await self._apply_watchdog(reasons)
+            now_s = time.time()
+            now_mono = time.monotonic()
+            reasons = self._gate.tick(now_s, now_mono)
+            self._guard.set_hard(self._gate.fault_active(now_s, now_mono))
+            gen: int | None = None
+            reason = ""
+            if reasons:
+                hard = self._guard.hard or any(
+                    item in ("lease_expired", "supabase_unreachable") for item in reasons
+                )
+                gen = self._guard.arm(hard=hard)
+                reason = ",".join(reasons)
+                self._last_zero_mono = 0.0
+            elif self._guard.owed and now_mono - self._last_zero_mono >= ZERO_RETRY_S:
+                gen = self._guard.owed_gen
+                reason = "retry"
+            if gen is not None:
+                self._last_zero_mono = now_mono
+                await self._try_zero(gen, reason)
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=0.05)
             except asyncio.TimeoutError:
@@ -884,7 +998,10 @@ class Bridge:
             except Exception as exc:
                 log.warning("control poll failed: %s", type(exc).__name__)
                 return
-            reasons = self._gate.apply_poll(control, token, time.monotonic())
+            # The query itself is contact, even when the row is empty or stale.
+            now_mono = time.monotonic()
+            self._gate.note_contact(now_mono)
+            reasons = self._gate.apply_poll(control, token, now_mono)
             await self._apply_watchdog(reasons)
 
     async def _auth_refresh_loop(self) -> None:
@@ -923,7 +1040,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--bridge-token", default=_env("AMR_BRIDGE_TOKEN"))
     p.add_argument("--bridge-email", default=_env("AMR_BRIDGE_EMAIL"))
     p.add_argument("--bridge-password", default=_env("AMR_BRIDGE_PASSWORD"))
-    p.add_argument("--public-channel", default=_env("AMR_PUBLIC_CHANNEL", "1"))
+    p.add_argument("--public-channel", default=_env("AMR_PUBLIC_CHANNEL", "0"))
     p.add_argument("--private-channel", default=_env("AMR_PRIVATE_CHANNEL", "1"))
     p.add_argument(
         "--control-poll-s",
@@ -937,6 +1054,12 @@ def main(argv: list[str] | None = None) -> None:
 
     if not args.supabase_url or not args.api_key:
         raise SystemExit("AMR_SUPABASE_URL and AMR_SUPABASE_KEY are required")
+    if looks_like_service_key(args.api_key):
+        raise SystemExit(
+            "Refusing to start: AMR_SUPABASE_KEY looks like a service key "
+            "(sb_secret_ prefix or a JWT with role service_role). "
+            "Use the publishable key only."
+        )
 
     bridge = Bridge(
         bot_id=args.bot_id,
@@ -948,7 +1071,7 @@ def main(argv: list[str] | None = None) -> None:
         camera_jpeg_max_kb=args.camera_jpeg_max_kb,
         bridge_email=args.bridge_email,
         bridge_password=args.bridge_password,
-        public_channel=flag_enabled(str(args.public_channel) if args.public_channel is not None else None, True),
+        public_channel=flag_enabled(str(args.public_channel) if args.public_channel is not None else None, False),
         private_channel=flag_enabled(str(args.private_channel) if args.private_channel is not None else None, True),
         control_poll_s=args.control_poll_s,
     )

@@ -85,11 +85,12 @@ AMR_SUPABASE_KEY=
 # Bridge token: the plaintext from the website owner's private amr-bridge/.env.pi
 AMR_BRIDGE_TOKEN=
 # Bridge Auth user for private Realtime channels. Leave blank until that user exists.
-# The legacy public channel still runs without these.
+# Private channels stay off until both are set. The public channel is off too
+# unless AMR_PUBLIC_CHANNEL is set to 1 below.
 AMR_BRIDGE_EMAIL=
 AMR_BRIDGE_PASSWORD=
-# 1 keeps the legacy public channel until cut-over is approved. 0 turns it off.
-AMR_PUBLIC_CHANNEL=1
+# 0 is the default. Set to 1 only to keep the legacy public channel during cut-over.
+AMR_PUBLIC_CHANNEL=0
 # Local robot services
 AMR_DASHBOARD_URL=http://127.0.0.1:8080
 # Joystick endpoint (leave this line out for a telemetry + nudge-only test)
@@ -121,7 +122,7 @@ for k in AMR_SUPABASE_KEY AMR_BRIDGE_TOKEN; do
   v="${v#\'}"; v="${v%\'}"
   [ -n "$v" ] || { echo "Missing $k in $ENV_FILE. Add it first (nano $ENV_FILE)."; exit 1; }
 done
-echo "SAFETY: AMR_PUBLIC_CHANNEL defaults on, so the legacy public channel can still drive the bot until cut-over."
+echo "SAFETY: AMR_PUBLIC_CHANNEL defaults off. Set it to 1 only to let the legacy public channel drive the bot."
 echo "Private control needs AMR_BRIDGE_EMAIL and AMR_BRIDGE_PASSWORD in $ENV_FILE (names only in git)."
 echo "Keep the wheels lifted / the bot supervised. To run WITHOUT the bridge: add  enable_amr_bridge:=false"
 read -r -p "Type 'yes' to continue: " a; [ "$a" = "yes" ] || exit 1

@@ -33,7 +33,7 @@ AMR_SUPABASE_KEY=…               # publishable key (not service_role)
 AMR_BRIDGE_TOKEN=…               # plaintext whose sha256 is in amr_bridge_config
 AMR_BRIDGE_EMAIL=…               # bridge Auth user for private channels
 AMR_BRIDGE_PASSWORD=…            # never commit this
-AMR_PUBLIC_CHANNEL=1             # 0 turns off the legacy public channel
+AMR_PUBLIC_CHANNEL=0             # 1 turns the legacy public channel back on
 AMR_DASHBOARD_URL=http://127.0.0.1:8080
 AMR_GAMEPAD_URL=http://127.0.0.1:8765
 ```
