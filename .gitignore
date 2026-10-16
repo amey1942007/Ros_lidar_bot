@@ -1,6 +1,7 @@
-build/
-install/
-log/
+# Colcon workspace output (repo root only)
+/build/
+/install/
+/log/
 .pytest_cache/
 __pycache__/
 *.pyc
@@ -12,3 +13,32 @@ amr-bridge/.env.pi
 **/amr-bridge.env
 
 .cursor/
+
+# Env files and copies of /etc-style env files. Templates stay tracked.
+.env
+.env.*
+!.env.example
+!.env.pi.example
+*.env
+amr-bridge.env
+
+# Keys, tokens, and credential files.
+# *secret* still ignores directories and non-doc files. The two exceptions
+# re-allow only a file whose own name ends in .md or .py (not a secrets/ folder).
+*token*.txt
+*secret*
+!*secret*.md
+!*secret*.py
+*.key
+*.pem
+*.p12
+credentials*.json
+service-account*.json
+
+# Supabase CLI local state
+supabase/.temp
+supabase/.branches
+
+# Local environments and editor junk
+.venv/
+.DS_Store
