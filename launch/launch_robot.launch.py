@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import glob
 import os
 
 from ament_index_python.packages import get_package_share_directory
@@ -368,11 +369,13 @@ def _launch_setup(context, *args, **kwargs):
         ekf_node,
     ])
     
-    # Dynamic auto-detection for /dev/input/js* port
-    import glob
+    # Dynamic auto-detection for /dev/input/js* port.
+    # web_gamepad publishes zeros on /joy when stale, so it is started only in
+    # the web-gamepad branch. A physical joy_node must not share /joy with it.
     use_joystick_mode = LaunchConfiguration("use_joystick").perform(context).lower()
     js_devices = glob.glob("/dev/input/js*")
-    js_detected = len(js_devices) > 0 or os.path.exists("/dev/input/js0")
+    js_detected = len(js_devices) > 0
+    web_gamepad_started = False
 
     if use_joystick_mode in ("1", "true", "yes"):
         # Explicit physical controller requested
@@ -387,6 +390,7 @@ def _launch_setup(context, *args, **kwargs):
         else:
             # Primary mode: Web Gamepad + joy_teleop (virtual Xbox controller on port 8765)
             actions.extend([web_gamepad, joy_teleop])
+            web_gamepad_started = True
 
     actions.extend([
         # ── Stage 2 (T=5s): SLAM ──────────────────────────────────────────────
@@ -406,7 +410,7 @@ def _launch_setup(context, *args, **kwargs):
                 "bot_id": amr_bot_id,
                 "env_file": amr_bridge_env,
                 "dashboard": "http://127.0.0.1:8080",
-                "gamepad": "http://127.0.0.1:8765",
+                "gamepad": "http://127.0.0.1:8765" if web_gamepad_started else "none",
                 "python": amr_bridge_python,
             }.items(),
         )
@@ -430,7 +434,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "use_joystick",
             default_value="auto",
-            description="Joystick teleop mode: auto (detects /dev/input/js0), true (force gamepad), or false (force keyboard teleop).",
+            description=(
+                "Joystick teleop: 1/true/yes = physical controller; "
+                "curses/keyboard/terminal = keyboard teleop_interface; "
+                "0/false/no = force web gamepad even if a js device exists; "
+                "anything else (including auto) = web gamepad unless /dev/input/js* is found."
+            ),
         ),
         DeclareLaunchArgument(
             "enable_amr_bridge",
@@ -449,8 +458,11 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "amr_bridge_python",
-            default_value="python3",
-            description="Python for the bridge (prefer amr-bridge/.venv/bin/python on the Pi).",
+            default_value="auto",
+            description=(
+                "auto = <repo>/amr-bridge/.venv/bin/python if present, else python3; "
+                "or give an explicit interpreter path"
+            ),
         ),
         OpaqueFunction(function=_launch_setup),
     ])

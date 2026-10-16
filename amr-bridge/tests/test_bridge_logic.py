@@ -24,12 +24,14 @@ from amr_telemetry_bridge.protocol import (  # noqa: E402
 
 
 def _load_env_file(path: Path) -> dict[str, str]:
-    """Mirror of launch/amr_bridge.launch.py::_load_env_file."""
+    """Mirror of launch/amr_bridge.launch.py::_load_env_file (values only)."""
     out: dict[str, str] = {}
     if not path.is_file():
         return out
-    for line in path.read_text().splitlines():
-        line = line.strip()
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line.startswith("export "):
+            line = line[len("export "):].strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, _, v = line.partition("=")
@@ -38,10 +40,17 @@ def _load_env_file(path: Path) -> dict[str, str]:
 
 
 def _missing_required(env: dict[str, str]) -> list[str]:
-    missing = [k for k in ("AMR_SUPABASE_URL", "AMR_SUPABASE_KEY", "AMR_BRIDGE_TOKEN") if not env.get(k)]
-    if missing and not env.get("AMR_SUPABASE_SERVICE_KEY"):
-        return missing
-    return []
+    """Mirror: URL always required; KEY+TOKEN or SERVICE_KEY."""
+    missing: list[str] = []
+    if not env.get("AMR_SUPABASE_URL"):
+        missing.append("AMR_SUPABASE_URL")
+    has_pair = bool(env.get("AMR_SUPABASE_KEY")) and bool(env.get("AMR_BRIDGE_TOKEN"))
+    if not has_pair and not env.get("AMR_SUPABASE_SERVICE_KEY"):
+        if not env.get("AMR_SUPABASE_KEY"):
+            missing.append("AMR_SUPABASE_KEY")
+        if not env.get("AMR_BRIDGE_TOKEN"):
+            missing.append("AMR_BRIDGE_TOKEN")
+    return missing
 
 
 class ProtocolTests(unittest.TestCase):
@@ -71,14 +80,15 @@ class EnvFileTests(unittest.TestCase):
                 "AMR_SUPABASE_URL='https://example.supabase.co'\n"
                 'AMR_SUPABASE_KEY="sb_publishable_x"\n'
                 "AMR_BRIDGE_TOKEN=tok123\n"
+                "export AMR_DASHBOARD_URL=http://127.0.0.1:8080\n"
                 "\n"
-                "AMR_DASHBOARD_URL=http://127.0.0.1:8080\n"
             )
             env = _load_env_file(p)
         self.assertEqual(env["AMR_BOT_ID"], "hardware-bot")
         self.assertEqual(env["AMR_SUPABASE_URL"], "https://example.supabase.co")
         self.assertEqual(env["AMR_SUPABASE_KEY"], "sb_publishable_x")
         self.assertEqual(env["AMR_BRIDGE_TOKEN"], "tok123")
+        self.assertEqual(env["AMR_DASHBOARD_URL"], "http://127.0.0.1:8080")
         self.assertEqual(_missing_required(env), [])
 
     def test_missing_required_skips_start(self):
@@ -87,8 +97,18 @@ class EnvFileTests(unittest.TestCase):
             ["AMR_SUPABASE_KEY", "AMR_BRIDGE_TOKEN"],
         )
 
-    def test_service_key_back_compat(self):
-        self.assertEqual(_missing_required({"AMR_SUPABASE_SERVICE_KEY": "svc"}), [])
+    def test_service_key_still_needs_url(self):
+        self.assertEqual(
+            _missing_required({"AMR_SUPABASE_SERVICE_KEY": "svc"}),
+            ["AMR_SUPABASE_URL"],
+        )
+        self.assertEqual(
+            _missing_required({
+                "AMR_SUPABASE_URL": "https://example.supabase.co",
+                "AMR_SUPABASE_SERVICE_KEY": "svc",
+            }),
+            [],
+        )
 
 
 class LaunchWiringTests(unittest.TestCase):
@@ -111,7 +131,9 @@ class LaunchWiringTests(unittest.TestCase):
         self.assertIn("_resolve_bridge_root", src)
         self.assertIn("PYTHONPATH", src)
         self.assertIn("amr_telemetry_bridge", src)
-        self.assertIn("missing env", src)
+        self.assertIn("[amr_bridge] SKIPPED:", src)
+        self.assertIn('default_value="auto"', src)
+        self.assertIn('"-u"', src)
         ast.parse(src)
 
     def test_vendored_package_importable(self):
