@@ -134,7 +134,8 @@ def _resolve_python(arg: str, bridge_root: Path | None) -> tuple[str, str | None
     return "python3", "[amr_bridge] no venv python found; using python3"
 
 
-# Process variables the bridge may need. Everything else (ROS PYTHONPATH,
+# Process variables the bridge may need: base locale/certs, outbound proxies,
+# and XDG_* (runtime dir, cert paths). Everything else (ROS PYTHONPATH,
 # PYTHONHOME, AMENT_*, secrets that are not AMR_*) stays out. ExecuteProcess
 # env= replaces the environment; additional_env= would merge and ignore pops.
 _PASSTHROUGH_ENV = (
@@ -152,6 +153,14 @@ _PASSTHROUGH_ENV = (
     "SSL_CERT_DIR",
     "REQUESTS_CA_BUNDLE",
     "CURL_CA_BUNDLE",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "all_proxy",
 )
 
 
@@ -162,7 +171,7 @@ def _isolated_base_env(file_env: dict[str, str]) -> dict[str, str]:
         if val:
             env[key] = val
     for key, val in os.environ.items():
-        if key.startswith("AMR_") or key.startswith("NEXT_PUBLIC_"):
+        if key.startswith(("AMR_", "NEXT_PUBLIC_", "XDG_")):
             env[key] = val
     env.update(file_env)
     env.pop("PYTHONHOME", None)
