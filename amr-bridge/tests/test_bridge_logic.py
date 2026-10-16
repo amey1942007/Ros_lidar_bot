@@ -979,7 +979,10 @@ class BridgeSourceSafetyTests(unittest.TestCase):
         self.assertIn("AMR_BRIDGE_PASSWORD", src)
         self.assertIn('default=_env("AMR_PUBLIC_CHANNEL", "0")', src)
         self.assertIn("looks_like_service_key", src)
-        self.assertIn('{"config": {"private": True}}', src)
+        self.assertIn("_PRIVATE_CHANNEL_PARAMS", src)
+        self.assertIn('"private": True', src)
+        self.assertIn('"ack": False', src)
+        self.assertIn('"self": False', src)
         self.assertIn("touch_amr_bot returned false", src)
         self.assertNotIn('or _env("AMR_SUPABASE_SERVICE_KEY")', src)
         for event in ("telemetry", "map", "log", "hb"):
@@ -1753,6 +1756,14 @@ class BridgeDispatchTests(unittest.TestCase):
         self.assertNotIn(secret, str(caught.exception))
 
 
+# Join payload the real client turns into Exception(json.dumps(payload)).
+_STATUS_JOIN_ERROR = Exception(
+    '{"message":"unauthorized","access_token":'
+    '"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payloadxxx.signature",'
+    '"token":"lease-secret-token","p_token":"bridge-token"}'
+)
+
+
 class _FakeChannel:
     def __init__(self, topic, params, client):
         self.topic = topic
@@ -1768,10 +1779,22 @@ class _FakeChannel:
         self.broadcast = callback
         return self
 
+    def _script(self) -> str:
+        script = self.client.script
+        if isinstance(script, dict):
+            topic = self.topic
+            if topic in script:
+                return script[topic]
+            for key, value in script.items():
+                if key != "*" and str(topic).endswith(key):
+                    return value
+            return script.get("*", "hold")
+        return script
+
     async def subscribe(self, callback=None):
         self.sub_cb = callback
         self.subscribed = True
-        script = self.client.script
+        script = self._script()
         if script == "subscribed":
             self.state = "joined"
             if callback:
@@ -1780,6 +1803,10 @@ class _FakeChannel:
             self.state = "closed"
             if callback:
                 callback("CLOSED", None)
+        elif script == "error":
+            self.state = "errored"
+            if callback:
+                callback("CHANNEL_ERROR", _STATUS_JOIN_ERROR)
         else:
             self.state = "joining"
         return self
@@ -1978,9 +2005,15 @@ class RealtimeClientTests(unittest.TestCase):
         try:
             hub.connect()
             import asyncio
-            asyncio.run(_wait_until(lambda: len(created) >= 2, timeout=1.5))
+            asyncio.run(_wait_until(
+                lambda: _topic_joins(created, "amr-bot-hardware-bot") >= 2,
+                timeout=1.5,
+            ))
             time.sleep(0.35)
-            self.assertLess(len(created), 15)
+            # The socket stays up. Only this topic is retried, with a cap.
+            self.assertEqual(len(created), 1)
+            self.assertGreaterEqual(_topic_joins(created, "amr-bot-hardware-bot"), 2)
+            self.assertLess(_topic_joins(created, "amr-bot-hardware-bot"), 15)
             self.assertFalse(hub._public_ready)
         finally:
             hub.close()
@@ -2029,8 +2062,10 @@ class RealtimeClientTests(unittest.TestCase):
                     "bot:hardware-bot:status",
                 ],
             )
+            from amr_telemetry_bridge.bridge import _PRIVATE_CHANNEL_PARAMS
+
             for event in private:
-                self.assertEqual(event[2], {"config": {"private": True}})
+                self.assertEqual(event[2], _PRIVATE_CHANNEL_PARAMS)
             asyncio.run(_wait_until(lambda: hub._private_ready, timeout=1.5))
             hub._expires_at = time.time() - 5
             self.assertTrue(hub.refresh_auth_if_due())
@@ -2060,6 +2095,147 @@ class RealtimeClientTests(unittest.TestCase):
             self.assertNotIn("service", sink["params"]["p_token"])
         finally:
             hub.close()
+
+    def test_status_error_retries_only_that_channel(self):
+        created = []
+        hub = _hub(
+            created=created,
+            script={":status": "error", "*": "subscribed"},
+            public_enabled=True,
+            private_enabled=True,
+            email="bridge@example.com",
+            password="secret",
+            reconnect_min_s=0.05,
+            reconnect_max_s=0.2,
+        )
+        hub._client = _FakeRest({})
+        try:
+            with self.assertLogs("amr_bridge", level="WARNING") as logs:
+                hub.connect()
+                import asyncio
+                asyncio.run(_wait_until(
+                    lambda: _topic_joins(created, ":status") >= 2
+                    and hub._public_ready,
+                    timeout=1.5,
+                ))
+                time.sleep(0.3)
+            self.assertEqual(len(created), 1)
+            self.assertEqual(_topic_joins(created, "amr-bot-hardware-bot"), 1)
+            self.assertEqual(_topic_joins(created, ":cmd"), 1)
+            self.assertEqual(_topic_joins(created, ":cmdq"), 1)
+            self.assertEqual(_topic_joins(created, ":ctl"), 1)
+            self.assertGreaterEqual(_topic_joins(created, ":status"), 2)
+            self.assertLess(_topic_joins(created, ":status"), 15)
+            self.assertTrue(hub._public_ready)
+            self.assertFalse(hub._private_ready)
+            text = "\n".join(logs.output)
+            self.assertIn("unauthorized", text)
+            self.assertIn("[redacted]", text)
+            self.assertNotIn("lease-secret-token", text)
+            self.assertNotIn("eyJ", text)
+            self.assertNotIn("bridge-token", text)
+            self.assertNotIn("realtime reconnect in", text)
+            public = next(
+                channel for channel in created[0].channels
+                if channel.topic == "amr-bot-hardware-bot"
+            )
+            self.assertTrue(hasattr(public, "broadcast"))
+            hub.send("telemetry", {"t": "telemetry", "botId": "hardware-bot"})
+            self.assertEqual(public.sent, [("telemetry", {"t": "telemetry", "botId": "hardware-bot"})])
+            for channel in created[0].channels:
+                if str(channel.topic).endswith(":status"):
+                    self.assertEqual(channel.sent, [])
+        finally:
+            hub.close()
+
+    def test_public_telemetry_when_private_status_is_down(self):
+        created = []
+        seen = []
+        hub = _hub(
+            created=created,
+            script={":status": "error", "*": "subscribed"},
+            public_enabled=False,
+            private_enabled=True,
+            email="bridge@example.com",
+            password="secret",
+            reconnect_min_s=0.05,
+            reconnect_max_s=0.2,
+            on_public_command=lambda env: seen.append(env),
+        )
+        hub._client = _FakeRest({})
+        try:
+            hub.connect()
+            import asyncio
+            asyncio.run(_wait_until(
+                lambda: hub._public_ready and _topic_joins(created, ":cmd") == 1,
+                timeout=1.5,
+            ))
+            public = next(
+                channel for channel in created[0].channels
+                if channel.topic == "amr-bot-hardware-bot"
+            )
+            self.assertFalse(hasattr(public, "broadcast"))
+            self.assertFalse(hub._private_ready)
+            hub.send("telemetry", {"t": "telemetry", "seq": 1})
+            self.assertEqual(public.sent, [("telemetry", {"t": "telemetry", "seq": 1})])
+            hub.send("cmd_ack", {"seq": 1})
+            self.assertEqual(len(public.sent), 1)
+            for channel in created[0].channels:
+                if str(channel.topic).endswith(":status"):
+                    self.assertEqual(channel.sent, [])
+            self.assertEqual(seen, [])
+            self.assertEqual(_topic_joins(created, ":cmd"), 1)
+            self.assertEqual(_topic_joins(created, ":ctl"), 1)
+        finally:
+            hub.close()
+
+    def test_channel_error_detail_redacts_secrets(self):
+        hub = _hub(created=[], public_enabled=False)
+        detail = hub._redact_detail(_STATUS_JOIN_ERROR)
+        self.assertIn("unauthorized", detail)
+        self.assertIn("[redacted]", detail)
+        self.assertNotIn("lease-secret-token", detail)
+        self.assertNotIn("eyJ", detail)
+        self.assertNotIn("bridge-token", detail)
+        self.assertNotIn(hub._api_key, detail)
+
+    def test_socket_death_still_reconnects_the_client(self):
+        created = []
+        hub = _hub(
+            created=created,
+            script="subscribed",
+            public_enabled=True,
+            reconnect_min_s=0.05,
+            reconnect_max_s=0.2,
+        )
+        try:
+            hub.connect()
+            import asyncio
+            asyncio.run(_wait_until(lambda: hub._public_ready, timeout=1.5))
+            self.assertEqual(len(created), 1)
+
+            async def _finished():
+                return None
+
+            done = asyncio.run_coroutine_threadsafe(_finished(), hub._loop)
+            done.result(timeout=1)
+            created[0]._listen_task = done
+            asyncio.run(_wait_until(lambda: len(created) >= 2, timeout=1.5))
+            self.assertLess(len(created), 8)
+        finally:
+            hub.close()
+
+
+def _topic_joins(created, suffix: str) -> int:
+    count = 0
+    for client in created:
+        for event in client.events:
+            if event[0] != "channel":
+                continue
+            topic = str(event[1])
+            if topic == suffix or topic.endswith(suffix):
+                count += 1
+    return count
 
 
 if __name__ == "__main__":

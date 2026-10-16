@@ -34,6 +34,7 @@ import json
 import logging
 import math
 import os
+import re
 import signal
 import threading
 import time
@@ -92,10 +93,28 @@ ESTOP_MOTION_HOLD_S = 1.0
 RPC_TIMEOUT_S = 8.0
 # Broadcasts are best-effort. Do not sit on a dead socket.
 REALTIME_SEND_TIMEOUT_S = 2.0
-# Channel CLOSED / CHANNEL_ERROR / TIMED_OUT, and a failed setup, wait this long.
+# Per-channel CLOSED / CHANNEL_ERROR / TIMED_OUT waits this long, then doubles.
+# A dead socket still reconnects every channel. One channel does not.
 RECONNECT_MIN_S = 1.0
 RECONNECT_MAX_S = 30.0
 _DOWN_STATES = ("CLOSED", "CHANNEL_ERROR", "TIMED_OUT")
+# Same private join for :cmd, :cmdq, :ctl, and :status. broadcast is explicit
+# so the payload is not "broadcast": null (omitted config replaces defaults).
+_PRIVATE_CHANNEL_PARAMS = {
+    "config": {
+        "broadcast": {"ack": False, "self": False},
+        "private": True,
+    },
+}
+_JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
+_SECRET_FIELD_RE = re.compile(
+    r"(?i)("
+    r'"?(?:access_token|refresh_token|lease_token|bridge_token|api_key|apikey|'
+    r'authorization|p_token|password|jwt|token)"?'
+    r"\s*[:=]\s*"
+    r")"
+    r'(?:"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|[^\s,}\]]+)'
+)
 
 
 def _public_rank(env: Any) -> int:
@@ -270,6 +289,11 @@ def _status_name(status: Any) -> str:
     return str(raw or "").upper()
 
 
+def _channel_state(channel: Any) -> str:
+    state = getattr(channel, "state", None)
+    return str(getattr(state, "value", state) or "").lower()
+
+
 def assert_realtime_api() -> None:
     """Fail loudly if this install cannot open an async Realtime channel.
 
@@ -288,10 +312,7 @@ def assert_realtime_api() -> None:
     )
     try:
         channel = client.channel("amr-realtime-smoke")
-        private = client.channel(
-            "bot:smoke:cmd",
-            {"config": {"private": True}},
-        )
+        private = client.channel("bot:smoke:cmd", _PRIVATE_CHANNEL_PARAMS)
     except NotImplementedError as exc:
         raise RuntimeError(
             "AsyncRealtimeClient.channel() raised NotImplementedError. "
@@ -404,6 +425,8 @@ class RealtimeHub:
         self._status_channel = None
         self._public_ready = False
         self._private_ready = False
+        self._retry_tasks: dict[str, asyncio.Task] = {}
+        self._retry_delay: dict[str, float] = {}
         self._signed_in = False
         self._access_token: str | None = None
         self._refresh_token: str | None = None
@@ -444,6 +467,8 @@ class RealtimeHub:
             )
 
     def send(self, event: str, payload: dict) -> None:
+        # Status events go out on the public topic whenever it is SUBSCRIBED,
+        # even if the private :status join is down. Only STATUS_EVENTS.
         if event not in STATUS_EVENTS:
             return
         if self._public_ready and self._public_channel is not None:
@@ -619,13 +644,16 @@ class RealtimeHub:
 
     async def _session_once(self) -> None:
         self._fail_latch.clear()
+        self._retry_delay.clear()
         self._bump("socket")
         self._socket_up = False
         if not self._public_enabled and not self._private_enabled:
             await self._stop.wait()
             return
         await self._ensure_client()
-        if self._public_enabled:
+        # Public topic carries telemetry even when AMR_PUBLIC_CHANNEL is off.
+        # The command listener is bound only when public commands are enabled.
+        if self._public_enabled or self._private_enabled:
             await self._subscribe_public()
         if self._private_enabled:
             self._private_task = asyncio.create_task(self._private_until_ready())
@@ -710,7 +738,9 @@ class RealtimeHub:
     async def _subscribe_public(self) -> None:
         topic = channel_name(self._bot_id)
         log.info("realtime joining (%s)", topic)
-        await self._subscribe_kind("public", topic, CMD_EVENT, self._public_cb, private=False)
+        event = CMD_EVENT if self._public_enabled else None
+        callback = self._public_cb if self._public_enabled else None
+        await self._subscribe_kind("public", topic, event, callback, private=False)
 
     async def _subscribe_private(self) -> None:
         if self._closed or "status" in self._slots:
@@ -772,7 +802,7 @@ class RealtimeHub:
         self._socket_up = True
 
     def _open_private_channel(self, topic: str):
-        params = {"config": {"private": True}}
+        params = _PRIVATE_CHANNEL_PARAMS
         client = self._rt
         if client is None:
             raise RuntimeError("realtime client is not running")
@@ -784,19 +814,21 @@ class RealtimeHub:
     def _status_cb_for(self, kind: str, gen: int):
         def _cb(*args) -> None:
             status = args[0] if args else ""
+            error = args[1] if len(args) > 1 else None
             try:
-                self._handle_status(kind, gen, status)
+                self._handle_status(kind, gen, status, error)
             except Exception:
                 log.exception("realtime status callback failed")
 
         return _cb
 
-    def _handle_status(self, kind: str, gen: int, status: Any) -> None:
+    def _handle_status(self, kind: str, gen: int, status: Any, error: Any = None) -> None:
         if self._gens.get(kind) != gen:
             return
         name = _status_name(status)
         if name == "SUBSCRIBED":
             self._fail_latch.discard(kind)
+            self._retry_delay[kind] = self._reconnect_min_s
             self._stable = True
             slot = self._slots.get(kind)
             if kind == "public":
@@ -815,13 +847,126 @@ class RealtimeHub:
             return
         self._fail_latch.add(kind)
         self._need_reauth = True
-        self._public_ready = False
-        self._private_ready = False
         label = "CHANNEL_ERROR" if name == "ERRORED" else name
-        log.warning("realtime %s channel %s", kind, label)
-        down = self._down
-        if down is not None:
-            down.set()
+        detail = self._redact_detail(error)
+        if kind == "socket":
+            self._public_ready = False
+            self._private_ready = False
+            if detail:
+                log.warning("realtime socket %s: %s", label, detail)
+            else:
+                log.warning("realtime socket %s", label)
+            down = self._down
+            if down is not None:
+                down.set()
+            return
+        # One channel's join error must not drop the others.
+        self._clear_ready(kind)
+        if detail:
+            log.warning("realtime %s channel %s: %s", kind, label, detail)
+        else:
+            log.warning("realtime %s channel %s", kind, label)
+        self._ensure_channel_retry(kind)
+
+    def _clear_ready(self, kind: str) -> None:
+        if kind == "public":
+            self._public_ready = False
+            self._public_channel = None
+        elif kind == "status":
+            self._private_ready = False
+            self._status_channel = None
+
+    def _kind_is_ready(self, kind: str) -> bool:
+        if kind == "public":
+            return self._public_ready
+        if kind == "status":
+            return self._private_ready
+        slot = self._slots.get(kind)
+        if slot is None or not slot.armed or slot.gen != self._gens.get(kind):
+            return False
+        return _channel_state(slot.channel) == "joined"
+
+    def _join_pending(self, kind: str) -> bool:
+        slot = self._slots.get(kind)
+        if slot is None or not slot.armed or slot.gen != self._gens.get(kind):
+            return False
+        return _channel_state(slot.channel) == "joining"
+
+    def _private_listener(self, kind: str):
+        if kind == "cmd":
+            return CMD_EVENT, self._cmd_cb
+        if kind == "cmdq":
+            return CMD_EVENT, self._cmdq_cb
+        if kind == "ctl":
+            return CTL_EVENT, self._ctl_cb
+        return None, None
+
+    def _ensure_channel_retry(self, kind: str) -> None:
+        if self._closed or kind == "socket" or self._down_is_set():
+            return
+        existing = self._retry_tasks.get(kind)
+        if existing is not None and not existing.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._retry_tasks[kind] = loop.create_task(self._retry_channel(kind))
+
+    async def _retry_channel(self, kind: str) -> None:
+        """Resubscribe one topic. Leave every other channel on the socket."""
+        try:
+            while not self._closed and not self._down_is_set():
+                delay = self._retry_delay.get(kind, self._reconnect_min_s)
+                if await self._sleep_or_stop(delay):
+                    return
+                if self._closed or self._down_is_set() or self._kind_is_ready(kind):
+                    self._retry_delay[kind] = self._reconnect_min_s
+                    return
+                # Drop the latch so this attempt's error is logged once.
+                self._fail_latch.discard(kind)
+                try:
+                    if kind != "public":
+                        await self._ensure_signed_in()
+                    lock = self._setup_lock
+                    if lock is None:
+                        await self._resubscribe_locked(kind)
+                    else:
+                        async with lock:
+                            await self._resubscribe_locked(kind)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    log.error(
+                        "realtime %s channel retry failed: %s",
+                        kind,
+                        self._redact(exc),
+                    )
+                if self._closed or self._down_is_set() or self._kind_is_ready(kind):
+                    self._retry_delay[kind] = self._reconnect_min_s
+                    return
+                # subscribe() returned while the join ack is still outstanding.
+                if self._join_pending(kind):
+                    return
+                current = self._retry_delay.get(kind, delay)
+                self._retry_delay[kind] = min(
+                    self._reconnect_max_s,
+                    max(current, self._reconnect_min_s) * 2,
+                )
+        finally:
+            task = self._retry_tasks.get(kind)
+            if task is not None and task is asyncio.current_task():
+                self._retry_tasks.pop(kind, None)
+
+    async def _resubscribe_locked(self, kind: str) -> None:
+        await self._drop_slot(kind)
+        if kind == "public":
+            await self._subscribe_public()
+            return
+        event, callback = self._private_listener(kind)
+        topic = private_topic(self._bot_id, kind)
+        log.info("realtime rejoining (%s)", topic)
+        await self._subscribe_kind(kind, topic, event, callback, private=True)
 
     def _poll_health(self) -> None:
         client = self._rt
@@ -839,8 +984,7 @@ class RealtimeHub:
         for slot in list(self._slots.values()):
             if not slot.armed:
                 continue
-            state = getattr(slot.channel, "state", None)
-            value = str(getattr(state, "value", state) or "").lower()
+            value = _channel_state(slot.channel)
             if value == "closed":
                 self._handle_status(slot.kind, slot.gen, "CLOSED")
             elif value == "errored":
@@ -990,6 +1134,9 @@ class RealtimeHub:
             self._down.set()
 
     async def _teardown_channels(self) -> None:
+        # Cancel retries before taking the lock. A retry waiting on the lock
+        # cannot finish if teardown holds it and then awaits that retry.
+        await self._cancel_retries()
         lock = self._setup_lock
         if lock is None:
             await self._drop_all_channels()
@@ -997,13 +1144,32 @@ class RealtimeHub:
         async with lock:
             await self._drop_all_channels()
 
+    async def _cancel_retries(self) -> None:
+        tasks = [task for task in self._retry_tasks.values() if task is not None]
+        self._retry_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        current = asyncio.current_task()
+        for task in tasks:
+            if task is current:
+                continue
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
     async def _drop_all_channels(self) -> None:
         self._socket_up = False
+        for kind in list(self._slots):
+            self._bump(kind)
+        self._bump("socket")
         channels = list(self._channels)
         self._channels.clear()
         self._slots.clear()
         self._public_channel = None
         self._status_channel = None
+        self._public_ready = False
+        self._private_ready = False
         client = self._rt
         self._rt = None
         for channel in channels:
@@ -1017,17 +1183,17 @@ class RealtimeHub:
                     pass
 
     async def _drop_slot(self, kind: str) -> None:
+        # Bump before unsubscribe so this channel's own CLOSED is ignored.
         slot = self._slots.pop(kind, None)
+        self._bump(kind)
+        self._clear_ready(kind)
         if slot is None:
             return
+        slot.armed = False
         try:
             self._channels.remove(slot.channel)
         except ValueError:
             pass
-        if kind == "public":
-            self._public_channel = None
-        if kind == "status":
-            self._status_channel = None
         await self._remove_channel(self._rt, slot.channel)
 
     async def _remove_channel(self, client, channel) -> None:
@@ -1045,13 +1211,29 @@ class RealtimeHub:
             pass
 
     def _redact(self, exc: BaseException) -> str:
-        text = f"{type(exc).__name__}: {exc}"
-        if self._password and self._password in text:
-            text = text.replace(self._password, "[redacted]")
-        if self._access_token and self._access_token in text:
-            text = text.replace(self._access_token, "[redacted]")
-        if self._api_key and self._api_key in text:
-            text = text.replace(self._api_key, "[redacted]")
+        return self._redact_text(f"{type(exc).__name__}: {exc}")
+
+    def _redact_detail(self, error: Any) -> str:
+        if error is None:
+            return ""
+        if isinstance(error, BaseException):
+            text = str(error) or type(error).__name__
+        else:
+            text = str(error)
+        return self._redact_text(text)
+
+    def _redact_text(self, text: str) -> str:
+        for secret in (
+            self._password,
+            self._access_token,
+            self._refresh_token,
+            self._api_key,
+            self._bridge_token,
+        ):
+            if secret and secret in text:
+                text = text.replace(secret, "[redacted]")
+        text = _JWT_RE.sub("[redacted]", text)
+        text = _SECRET_FIELD_RE.sub(r"\1[redacted]", text)
         return text[:400]
 
 
