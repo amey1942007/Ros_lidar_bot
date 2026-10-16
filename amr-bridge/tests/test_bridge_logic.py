@@ -970,6 +970,11 @@ class BridgeSourceSafetyTests(unittest.TestCase):
         self.assertIn("sign_in_with_password", src)
         self.assertIn("refresh_session", src)
         self.assertIn("set_auth", src)
+        self.assertIn("AsyncRealtimeClient", src)
+        self.assertIn("run_coroutine_threadsafe", src)
+        self.assertIn("auto_reconnect=False", src)
+        self.assertIn("postgrest_client_timeout=RPC_TIMEOUT_S", src)
+        self.assertNotIn("self._client.channel(", src)
         self.assertIn("AMR_BRIDGE_EMAIL", src)
         self.assertIn("AMR_BRIDGE_PASSWORD", src)
         self.assertIn('default=_env("AMR_PUBLIC_CHANNEL", "0")', src)
@@ -986,6 +991,8 @@ class BridgeSourceSafetyTests(unittest.TestCase):
         self.assertIn("AMR_BRIDGE_PASSWORD=\n", script)
         self.assertIn("AMR_PUBLIC_CHANNEL=0\n", script)
         self.assertIn("Do NOT ever add AMR_SUPABASE_SERVICE_KEY", script)
+        self.assertIn("assert_realtime_api", script)
+        self.assertIn("Realtime client API check failed", script)
         readme = (ROOT / "scripts" / "README.md").read_text()
         self.assertIn("AMR_BRIDGE_EMAIL", readme)
         self.assertIn("AMR_BRIDGE_PASSWORD", readme)
@@ -1744,6 +1751,315 @@ class BridgeDispatchTests(unittest.TestCase):
             ])
         self.assertIn("service key", str(caught.exception))
         self.assertNotIn(secret, str(caught.exception))
+
+
+class _FakeChannel:
+    def __init__(self, topic, params, client):
+        self.topic = topic
+        self.params = params
+        self.client = client
+        self.sub_cb = None
+        self.sent = []
+        self.state = "joining"
+        self.subscribed = False
+
+    def on_broadcast(self, event, callback):
+        self.broadcast_event = event
+        self.broadcast = callback
+        return self
+
+    async def subscribe(self, callback=None):
+        self.sub_cb = callback
+        self.subscribed = True
+        script = self.client.script
+        if script == "subscribed":
+            self.state = "joined"
+            if callback:
+                callback("SUBSCRIBED", None)
+        elif script == "closed":
+            self.state = "closed"
+            if callback:
+                callback("CLOSED", None)
+        else:
+            self.state = "joining"
+        return self
+
+    async def send_broadcast(self, event, data):
+        self.sent.append((event, data))
+
+    async def unsubscribe(self):
+        self.state = "closed"
+
+
+class _FakeRealtime:
+    def __init__(self, url, api_key, script):
+        self.url = url
+        self.api_key = api_key
+        self.script = script
+        self.channels = []
+        self.events = []
+        self.connected = False
+
+    def channel(self, topic, params=None):
+        self.events.append(("channel", topic, params))
+        channel = _FakeChannel(topic, params, self)
+        self.channels.append(channel)
+        return channel
+
+    async def connect(self):
+        self.connected = True
+
+    async def set_auth(self, token):
+        self.events.append(("set_auth", token))
+        self.auths = getattr(self, "auths", [])
+        self.auths.append(token)
+
+    async def remove_channel(self, channel):
+        await channel.unsubscribe()
+
+    async def close(self):
+        self.connected = False
+
+    @property
+    def is_connected(self):
+        return self.connected
+
+
+class _FakeSession:
+    def __init__(self, access, refresh, expires_at):
+        self.access_token = access
+        self.refresh_token = refresh
+        self.expires_at = expires_at
+
+
+class _FakeAuthResult:
+    def __init__(self, session):
+        self.session = session
+
+
+class _FakeAuth:
+    def __init__(self):
+        self.refreshed = []
+
+    def sign_in_with_password(self, creds):
+        if creds.get("password") == "fail":
+            raise RuntimeError("auth down")
+        return _FakeAuthResult(_FakeSession("user-access-token", "refresh-1", time.time() + 3600))
+
+    def refresh_session(self, token=None):
+        self.refreshed.append(token)
+        return _FakeAuthResult(_FakeSession("user-access-token-2", "refresh-2", time.time() + 3600))
+
+
+class _FakeRpc:
+    def __init__(self, sink):
+        self._sink = sink
+
+    def execute(self):
+        self._sink["called"] = True
+        return type("Res", (), {"data": True})()
+
+
+class _FakeRest:
+    def __init__(self, sink):
+        self.auth = _FakeAuth()
+        self._sink = sink
+
+    def rpc(self, name, params):
+        self._sink["rpc"] = name
+        self._sink["params"] = params
+        return _FakeRpc(self._sink)
+
+
+def _hub(**kwargs):
+    from amr_telemetry_bridge.bridge import RealtimeHub
+
+    created = kwargs.pop("created")
+    script = kwargs.pop("script", "hold")
+
+    def factory(url, api_key, *, reconnect_min_s):
+        if script == "explode":
+            raise RuntimeError("realtime down")
+        client = _FakeRealtime(url, api_key, script)
+        created.append(client)
+        return client
+
+    hub = RealtimeHub(
+        "https://example.supabase.co",
+        "sb_publishable_example",
+        "hardware-bot",
+        "bridge-token",
+        email=kwargs.get("email"),
+        password=kwargs.get("password"),
+        public_enabled=kwargs.get("public_enabled", False),
+        private_enabled=kwargs.get("private_enabled", False),
+        on_public_command=kwargs.get("on_public_command", lambda env: None),
+        on_private_command=kwargs.get("on_private_command", lambda env, source: None),
+        on_control=kwargs.get("on_control", lambda env: None),
+        on_link=kwargs.get("on_link", lambda up: None),
+        realtime_factory=factory,
+        reconnect_min_s=kwargs.get("reconnect_min_s", 0.05),
+        reconnect_max_s=kwargs.get("reconnect_max_s", 0.2),
+    )
+    return hub
+
+
+class RealtimeClientTests(unittest.TestCase):
+    def test_async_channel_api_without_network(self):
+        from amr_telemetry_bridge.bridge import assert_realtime_api
+
+        assert_realtime_api()
+
+    def test_sync_channel_is_not_implemented(self):
+        from realtime import SyncRealtimeClient
+        from supabase import create_client
+
+        sync = SyncRealtimeClient("https://example.supabase.co/realtime/v1", token="x")
+        with self.assertRaises(NotImplementedError):
+            sync.channel("amr-realtime-smoke")
+        client = create_client("https://example.supabase.co", "sb_publishable_example")
+        with self.assertRaises(NotImplementedError):
+            client.channel("amr-bot-hardware-bot")
+
+    def test_rest_client_bounds_rpc_timeout(self):
+        from amr_telemetry_bridge.bridge import RPC_TIMEOUT_S, _create_supabase
+
+        client = _create_supabase("https://example.supabase.co", "sb_publishable_example")
+        self.assertEqual(client.options.postgrest_client_timeout, RPC_TIMEOUT_S)
+        self.assertLessEqual(float(client.postgrest.timeout), RPC_TIMEOUT_S)
+        read = getattr(client.postgrest.session.timeout, "read", client.postgrest.session.timeout)
+        self.assertLessEqual(float(read), RPC_TIMEOUT_S)
+
+    def test_public_channel_is_ready_only_after_subscribed(self):
+        created = []
+        seen = []
+        hub = _hub(
+            created=created,
+            script="hold",
+            public_enabled=True,
+            on_public_command=lambda env: seen.append(env),
+        )
+        try:
+            hub.connect()
+
+            async def _wait_subscribed():
+                await _wait_until(lambda: created and created[0].channels and created[0].channels[0].subscribed)
+
+            import asyncio
+            asyncio.run(_wait_subscribed())
+            channel = created[0].channels[0]
+            self.assertFalse(hub._public_ready)
+            hub.send("hb", {"t": "hb"})
+            self.assertEqual(channel.sent, [])
+
+            hub._loop.call_soon_threadsafe(channel.sub_cb, "SUBSCRIBED", None)
+            import asyncio as _asyncio
+            _asyncio.run(_wait_until(lambda: hub._public_ready))
+            hub.send("hb", {"t": "hb", "botId": "hardware-bot"})
+            _asyncio.run(_wait_until(lambda: len(channel.sent) == 1))
+            self.assertEqual(channel.sent[0][0], "hb")
+            self.assertIn("/realtime/v1", created[0].url)
+            self.assertNotIn("service_role", created[0].url)
+            channel.broadcast({"event": "command", "payload": {"cmd": {"type": "estop"}}})
+            _asyncio.run(_wait_until(lambda: seen))
+            self.assertEqual(seen[0]["cmd"]["type"], "estop")
+        finally:
+            hub.close()
+
+    def test_closed_reconnects_with_backoff(self):
+        created = []
+        hub = _hub(
+            created=created,
+            script="closed",
+            public_enabled=True,
+            reconnect_min_s=0.05,
+            reconnect_max_s=0.2,
+        )
+        try:
+            hub.connect()
+            import asyncio
+            asyncio.run(_wait_until(lambda: len(created) >= 2, timeout=1.5))
+            time.sleep(0.35)
+            self.assertLess(len(created), 15)
+            self.assertFalse(hub._public_ready)
+        finally:
+            hub.close()
+
+    def test_private_set_auth_uses_user_jwt_before_subscribe(self):
+        created = []
+        hub = _hub(
+            created=created,
+            script="subscribed",
+            private_enabled=True,
+            email="bridge@example.com",
+            password="secret",
+        )
+        hub._client = _FakeRest({})
+        try:
+            hub.connect()
+            import asyncio
+            asyncio.run(_wait_until(
+                lambda: created and any(
+                    event[0] == "channel" and str(event[1]).endswith(":status")
+                    for event in created[-1].events
+                ),
+                timeout=1.5,
+            ))
+            events = []
+            for client in created:
+                events.extend(client.events)
+            auth_at = next(i for i, event in enumerate(events) if event[0] == "set_auth")
+            chan_at = next(
+                i for i, event in enumerate(events)
+                if event[0] == "channel" and str(event[1]).startswith("bot:")
+            )
+            self.assertLess(auth_at, chan_at)
+            self.assertEqual(events[auth_at][1], "user-access-token")
+            self.assertNotEqual(events[auth_at][1], "sb_publishable_example")
+            private = [
+                event for event in events
+                if event[0] == "channel" and str(event[1]).startswith("bot:")
+            ]
+            self.assertEqual(
+                [event[1] for event in private],
+                [
+                    "bot:hardware-bot:cmd",
+                    "bot:hardware-bot:cmdq",
+                    "bot:hardware-bot:ctl",
+                    "bot:hardware-bot:status",
+                ],
+            )
+            for event in private:
+                self.assertEqual(event[2], {"config": {"private": True}})
+            asyncio.run(_wait_until(lambda: hub._private_ready, timeout=1.5))
+            hub._expires_at = time.time() - 5
+            self.assertTrue(hub.refresh_auth_if_due())
+            asyncio.run(_wait_until(
+                lambda: any(
+                    event[0] == "set_auth" and event[1] == "user-access-token-2"
+                    for client in created
+                    for event in client.events
+                ),
+                timeout=1.5,
+            ))
+        finally:
+            hub.close()
+
+    def test_realtime_failure_keeps_touch_alive(self):
+        created = []
+        sink = {}
+        hub = _hub(created=created, script="explode", public_enabled=True, private_enabled=True)
+        hub._client = _FakeRest(sink)
+        try:
+            hub.connect()
+            self.assertFalse(hub._public_ready)
+            self.assertTrue(hub._thread.is_alive())
+            self.assertIs(hub.touch_bot_row("http://camera"), True)
+            self.assertEqual(sink["rpc"], "touch_amr_bot")
+            self.assertEqual(sink["params"]["p_token"], "bridge-token")
+            self.assertNotIn("service", sink["params"]["p_token"])
+        finally:
+            hub.close()
 
 
 if __name__ == "__main__":
