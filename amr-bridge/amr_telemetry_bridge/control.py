@@ -15,9 +15,9 @@ Checks the private path actually applies:
   after ``SEQ_RESET_GAP_S`` with no accepted command, then seq starts over.
   Replaying an old higher seq after that reset is not rejected — the site
   should use a time-based seq. E-stop does not consume seq.
-- E-stop is idempotent and skips seq and timestamp checks. It still requires
-  the bot, the current epoch, a live lease, and the token (``:cmd``) or
-  sender (``:cmdq``).
+- E-stop is idempotent and skips seq, timestamp, and lease checks. It still
+  requires the bot, the current epoch, and the token (``:cmd``) or sender
+  (``:cmdq``). A skewed clock cannot hide an e-stop behind an expired lease.
 - Timestamp freshness is not enforced. The Pi clock can be minutes off before
   NTP. A non-finite timestamp is still rejected, except on e-stop.
 - ``:ctl`` is not authority. The bridge treats it as a cue to poll. Epoch,
@@ -29,7 +29,9 @@ Checks the private path actually applies:
 - Control poll default is 2 s, clamped to the spec's 2–5 s range.
 - Joy accepts the website shape ``{type:'joy', a, b}`` and the older
   ``axes`` / ``buttons`` shape. Numbers must be finite. lin/ang and axes are
-  clamped to the dashboard limits.
+  clamped to the dashboard limits. Button bits above the first 16 are masked
+  off. Nav goals and blacklist points are clamped to ±1000 m, and a blacklist
+  duration is clamped to 0–24 h.
 """
 
 from __future__ import annotations
@@ -59,6 +61,12 @@ LIN_LIMIT = 0.3
 ANG_LIMIT = 1.0
 AXIS_LIMIT = 1.0
 JOY_AXES = 8
+# Xbox / the web gamepad use 16 button bits. Higher bits are not a command.
+BUTTON_MASK = 0xFFFF
+# Odom metres. Far enough for this robot, still rejects a runaway number.
+POSE_LIMIT_M = 1000.0
+# A no-go zone longer than a day is clamped. 0 stays "permanent" on the dashboard.
+BLACKLIST_DURATION_MAX_S = 24.0 * 60.0 * 60.0
 
 MOTION_TYPES = ("joy", "nudge", "drive")
 # Same set public.send_command allows, plus the bridge-local rate switch.
@@ -363,6 +371,18 @@ def _joy_buttons_raw(cmd: dict) -> Any:
     return cmd.get("buttons")
 
 
+def peek_command_type(message: Any) -> str | None:
+    """Best-effort type peek so e-stop can bypass the normal callback queue."""
+    env = normalize_message(message)
+    if not env:
+        return None
+    cmd = env.get("cmd")
+    if isinstance(cmd, dict) and isinstance(cmd.get("type"), str):
+        return cmd["type"]
+    typ = env.get("type")
+    return typ if isinstance(typ, str) else None
+
+
 def motion_command(cmd: dict) -> bool:
     """True when this command is asking the wheels to move."""
     typ = cmd.get("type")
@@ -429,6 +449,7 @@ def sanitize_command(cmd: dict) -> tuple[dict | None, str | None]:
         buttons = _as_int(raw_buttons)
         if buttons is None or buttons < 0:
             return None, "value"
+        buttons &= BUTTON_MASK
         return {
             "type": "joy",
             "a": axes,
@@ -442,7 +463,11 @@ def sanitize_command(cmd: dict) -> tuple[dict | None, str | None]:
         y = _finite_float(cmd.get("y"))
         if x is None or y is None:
             return None, "value"
-        return {"type": "nav_goal", "x": x, "y": y}, None
+        return {
+            "type": "nav_goal",
+            "x": _clamp(x, POSE_LIMIT_M),
+            "y": _clamp(y, POSE_LIMIT_M),
+        }, None
 
     if typ == "vision":
         on = cmd.get("on", False)
@@ -501,10 +526,10 @@ def sanitize_command(cmd: dict) -> tuple[dict | None, str | None]:
             return None, "value"
         return {
             "type": "blacklist",
-            "x": x,
-            "y": y,
+            "x": _clamp(x, POSE_LIMIT_M),
+            "y": _clamp(y, POSE_LIMIT_M),
             "radius": min(5.0, max(0.1, radius)),
-            "duration": max(0.0, duration),
+            "duration": min(BLACKLIST_DURATION_MAX_S, max(0.0, duration)),
         }, None
 
     if typ == "set_rate":
@@ -601,7 +626,11 @@ class ControlTracker:
         epoch = _as_int(_auth_field(env, cmd, "epoch"))
         if epoch is None or self.epoch is None or epoch != self.epoch:
             return VerifyResult(False, "epoch", cmd_type=typ, cmd=cmd)
-        if self.lease_expires_at is None or not (self.lease_expires_at > now_s):
+        # E-stop ignores the lease. A skewed Pi clock, or a lease the bridge
+        # has not learned yet, must not swallow a stop. Epoch and token stay.
+        if typ != "estop" and (
+            self.lease_expires_at is None or not (self.lease_expires_at > now_s)
+        ):
             return VerifyResult(False, "lease", cmd_type=typ, cmd=cmd)
 
         if source == "cmd":

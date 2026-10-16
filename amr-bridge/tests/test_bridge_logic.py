@@ -19,7 +19,10 @@ from amr_telemetry_bridge.control import (  # noqa: E402
     CONTROL_POLL_MAX_S,
     CONTROL_POLL_MIN_S,
     CONTROL_POLL_S,
+    BLACKLIST_DURATION_MAX_S,
+    BUTTON_MASK,
     MOTION_WATCHDOG_S,
+    POSE_LIMIT_M,
     SEQ_RESET_GAP_S,
     SUPABASE_UNREACHABLE_S,
     ControlTracker,
@@ -635,6 +638,7 @@ class ControlTrackerTests(unittest.TestCase):
             now_s=opened - 0.5,
             now_mono=0.0,
         ).ok)
+        # E-stop ignores the lease, including the exact expiry instant.
         closed = gate.verify(
             {
                 "epoch": 1,
@@ -647,7 +651,20 @@ class ControlTrackerTests(unittest.TestCase):
             now_s=opened,
             now_mono=0.1,
         )
-        self.assertEqual(closed.reason, "lease")
+        self.assertTrue(closed.ok, closed.reason)
+        held = gate.verify(
+            {
+                "epoch": 1,
+                "token": "tok-1",
+                "seq": 1,
+                "ts": int(opened * 1000),
+                "cmd": {"type": "nudge", "lin": 0.1, "ang": 0},
+            },
+            source="cmd",
+            now_s=opened,
+            now_mono=0.1,
+        )
+        self.assertEqual(held.reason, "lease")
 
     def test_website_joy_ab_arms_deadman_and_axes_still_work(self):
         self.assertEqual(SEQ_RESET_GAP_S, 0.5)
@@ -733,6 +750,29 @@ class ControlTrackerTests(unittest.TestCase):
             gate.verify(held, source="cmdq", now_s=NOW, now_mono=0.6).reason,
             "sender",
         )
+        # Expired or unknown lease does not block e-stop. A drive command still stops.
+        expired, _ = self._arm(lease_s=-5)
+        self.assertTrue(expired.verify(
+            self._envelope(cmd={"type": "estop"}),
+            source="cmd", now_s=NOW, now_mono=1.0,
+        ).ok)
+        self.assertEqual(
+            expired.verify(self._envelope(seq=1), source="cmd", now_s=NOW, now_mono=1.0).reason,
+            "lease",
+        )
+        expired.lease_expires_at = None
+        self.assertTrue(expired.verify(
+            self._envelope(cmd={"type": "estop"}),
+            source="cmd", now_s=NOW, now_mono=1.1,
+        ).ok)
+        fresh = ControlTracker("hardware-bot")
+        self.assertEqual(
+            fresh.verify(
+                self._envelope(cmd={"type": "estop"}),
+                source="cmd", now_s=NOW, now_mono=0.0,
+            ).reason,
+            "epoch",
+        )
 
     def test_lower_seq_after_gap_and_time_based_seq(self):
         gate, _ = self._arm()
@@ -794,6 +834,12 @@ class ControlTrackerTests(unittest.TestCase):
             "a": [0, float("inf"), 0, 0, 0, 0, 0, 0],
             "b": 1,
         })[0])
+        masked = sanitize_command({"type": "joy", "a": [0.0] * 8, "b": BUTTON_MASK + 2})
+        self.assertEqual(masked[0]["b"], 1)
+        self.assertEqual(masked[0]["buttons"], 1)
+        goal = sanitize_command({"type": "nav_goal", "x": 5000, "y": -5000})
+        self.assertEqual(goal[0]["x"], POSE_LIMIT_M)
+        self.assertEqual(goal[0]["y"], -POSE_LIMIT_M)
 
         tool = sanitize_command({
             "type": "run_tool",
@@ -827,6 +873,15 @@ class ControlTrackerTests(unittest.TestCase):
         })
         self.assertEqual(zone[0]["radius"], 5.0)
         self.assertEqual(zone[0]["duration"], 0.0)
+        far = sanitize_command({
+            "type": "blacklist",
+            "x": 9_000,
+            "y": -9_000,
+            "duration": 1e12,
+        })
+        self.assertEqual(far[0]["x"], POSE_LIMIT_M)
+        self.assertEqual(far[0]["y"], -POSE_LIMIT_M)
+        self.assertEqual(far[0]["duration"], BLACKLIST_DURATION_MAX_S)
         self.assertEqual(
             sanitize_command({"type": "blacklist", "action": "clear"})[0]["action"],
             "clear",
@@ -1126,6 +1181,208 @@ class BridgeDispatchTests(unittest.TestCase):
                 self.assertEqual(bridge._scheduled, 0)
             finally:
                 release.set()
+                await bridge.dash.close()
+
+        asyncio.run(run())
+
+    def test_stalled_joy_does_not_starve_estop(self):
+        import asyncio
+
+        from amr_telemetry_bridge.bridge import MAX_SCHEDULED_COMMANDS, Bridge
+
+        async def run():
+            bridge = Bridge(
+                bot_id="hardware-bot",
+                supabase_url="https://example.supabase.co",
+                api_key="sb_publishable_example",
+                bridge_token="tok",
+                dashboard_url="http://127.0.0.1:8080",
+                camera_url=None,
+                camera_jpeg_max_kb=24,
+                public_channel=False,
+                private_channel=False,
+            )
+            bridge._loop = asyncio.get_running_loop()
+            posts: list[tuple] = []
+            joy_entered = asyncio.Event()
+            release_joy = asyncio.Event()
+            estop_seen = asyncio.Event()
+
+            class _Resp:
+                def raise_for_status(self):
+                    return None
+
+            async def dash_post(path, payload=None, timeout=None):
+                posts.append(("dash", path, payload, timeout))
+                if path == "/api/estop":
+                    estop_seen.set()
+                return {"ok": True}
+
+            async def http_post(url, json=None, timeout=None):
+                axes = (json or {}).get("a") or [0.0]
+                moving = len(axes) > 1 and abs(float(axes[1])) > 0.02
+                if moving:
+                    joy_entered.set()
+                    await release_joy.wait()
+                posts.append(("http", url, json, timeout))
+                return _Resp()
+
+            original_http = bridge.dash._http
+            bridge.dash.post = dash_post
+
+            class _Http:
+                async def post(self, url, json=None, timeout=None):
+                    return await http_post(url, json=json, timeout=timeout)
+
+            bridge.dash._http = _Http()
+            old_gamepad = os.environ.get("AMR_GAMEPAD_URL")
+            os.environ["AMR_GAMEPAD_URL"] = "http://127.0.0.1:8765"
+            cap_release = asyncio.Event()
+
+            async def hang():
+                await cap_release.wait()
+
+            motion_task = asyncio.create_task(bridge._motion_slot_loop())
+            estop_task = asyncio.create_task(bridge._estop_loop())
+            try:
+                bridge._gate.apply_poll(
+                    {
+                        "bot_id": "hardware-bot",
+                        "controller": "user-1",
+                        "epoch": 3,
+                        "lease_expires_at": time.time() + 3600,
+                    },
+                    {"epoch": 3, "token": "tok-1"},
+                    time.monotonic(),
+                )
+                for _ in range(MAX_SCHEDULED_COMMANDS):
+                    bridge._schedule(hang())
+                await asyncio.sleep(0.05)
+                self.assertEqual(bridge._scheduled, MAX_SCHEDULED_COMMANDS)
+
+                bridge._queue_private(
+                    {
+                        "epoch": 3,
+                        "token": "tok-1",
+                        "seq": 1,
+                        "ts": int(time.time() * 1000),
+                        "cmd": {"type": "joy", "a": [0.0, 0.8, 0, 0, 0, 0, 0, 0], "b": 0},
+                    },
+                    "cmd",
+                )
+                await asyncio.wait_for(joy_entered.wait(), timeout=1.0)
+                # Lease is already dead. E-stop must still run, and must not
+                # wait for the joy post or for a free scheduler slot.
+                bridge._gate.lease_expires_at = time.time() - 10
+                bridge._queue_private(
+                    {
+                        "epoch": 3,
+                        "token": "tok-1",
+                        "seq": 1,
+                        "ts": float("nan"),
+                        "cmd": {"type": "estop"},
+                    },
+                    "cmd",
+                )
+                async def _estop_finished() -> None:
+                    while True:
+                        kinds = [item[1] for item in posts]
+                        zero_joy = any(
+                            item[0] == "http"
+                            and item[2]["a"] == [0.0] * 8
+                            and item[2]["b"] == 0
+                            for item in posts
+                        )
+                        if "/api/estop" in kinds and "/api/nudge" in kinds and zero_joy:
+                            return
+                        await asyncio.sleep(0.01)
+
+                await asyncio.wait_for(_estop_finished(), timeout=1.0)
+                self.assertFalse(release_joy.is_set())
+                kinds = [item[1] for item in posts]
+                self.assertFalse(any(
+                    item[0] == "http" and abs(item[2]["a"][1]) > 0.02
+                    for item in posts
+                ))
+            finally:
+                release_joy.set()
+                cap_release.set()
+                bridge._stop.set()
+                bridge._motion_wake.set()
+                bridge._estop_wake.set()
+                await asyncio.wait([motion_task, estop_task], timeout=1.0)
+                motion_task.cancel()
+                estop_task.cancel()
+                if old_gamepad is None:
+                    os.environ.pop("AMR_GAMEPAD_URL", None)
+                else:
+                    os.environ["AMR_GAMEPAD_URL"] = old_gamepad
+                bridge.dash._http = original_http
+                await bridge.dash.close()
+
+        asyncio.run(run())
+
+    def test_ctl_is_not_capped(self):
+        import asyncio
+
+        from amr_telemetry_bridge.bridge import MAX_SCHEDULED_COMMANDS, Bridge
+
+        async def run():
+            bridge = Bridge(
+                bot_id="hardware-bot",
+                supabase_url="https://example.supabase.co",
+                api_key="sb_publishable_example",
+                bridge_token="tok",
+                dashboard_url="http://127.0.0.1:8080",
+                camera_url=None,
+                camera_jpeg_max_kb=24,
+                public_channel=False,
+                private_channel=False,
+            )
+            bridge._loop = asyncio.get_running_loop()
+
+            class _Hub:
+                def __init__(self):
+                    self.calls = 0
+
+                def poll_control(self):
+                    self.calls += 1
+                    return (
+                        {
+                            "bot_id": "hardware-bot",
+                            "controller": "user-1",
+                            "epoch": 3,
+                            "lease_expires_at": time.time() + 30,
+                        },
+                        {"epoch": 3, "token": "tok-1"},
+                    )
+
+            hub = _Hub()
+            bridge._hub = hub
+            release = asyncio.Event()
+
+            async def hang():
+                await release.wait()
+
+            try:
+                for _ in range(MAX_SCHEDULED_COMMANDS):
+                    bridge._schedule(hang())
+                await asyncio.sleep(0.05)
+                self.assertEqual(bridge._scheduled, MAX_SCHEDULED_COMMANDS)
+                bridge._queue_control({
+                    "bot_id": "hardware-bot",
+                    "controller": "user-2",
+                    "epoch": 4,
+                })
+                for _ in range(20):
+                    if hub.calls:
+                        break
+                    await asyncio.sleep(0.05)
+                self.assertGreaterEqual(hub.calls, 1)
+                self.assertEqual(bridge._scheduled, MAX_SCHEDULED_COMMANDS)
+            finally:
+                release.set()
+                await asyncio.sleep(0.05)
                 await bridge.dash.close()
 
         asyncio.run(run())

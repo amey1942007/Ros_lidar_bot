@@ -49,9 +49,11 @@ Run one process per robot (`AMR_BOT_ID=amr4` or `hardware-bot`).
 
 The private path (`bot:<id>:cmd` / `:cmdq`) does not use ranks. A command is
 accepted only when the epoch, token, and lease check out and the seq is new
-(or a restart after a short gap). E-stop skips the seq and timestamp checks.
-The legacy public channel still applies the rank table below while
-`AMR_PUBLIC_CHANNEL=1`. That flag defaults to off.
+(or a restart after a short gap). E-stop skips the seq, timestamp, and lease
+checks. The legacy public channel still applies the rank table below while
+`AMR_PUBLIC_CHANNEL=1`. That flag defaults to off. Turning it on reopens the
+old topic: the rank in the message is whatever the sender writes, so it can
+be spoofed, and commands on that topic do not arm the 0.5 s deadman.
 
 | Rank | Label | Drive | Preempt |
 | --- | --- | --- | --- |

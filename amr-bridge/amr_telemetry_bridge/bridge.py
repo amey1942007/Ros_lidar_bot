@@ -15,7 +15,7 @@ Env (see /etc/amr-bridge.env — also loaded by amr_bridge.launch.py):
   AMR_BRIDGE_TOKEN=…                  # shared secret → public.touch_amr_bot
   AMR_BRIDGE_EMAIL=…                  # bridge Auth user (private channels)
   AMR_BRIDGE_PASSWORD=…
-  AMR_PUBLIC_CHANNEL=0                # 1 keeps legacy amr-bot-<id> during cut-over
+  AMR_PUBLIC_CHANNEL=0                # 1 reopens the legacy topic (spoofable rank, no deadman)
   AMR_PRIVATE_CHANNEL=1               # bot:<id>:status|cmd|cmdq|ctl
   AMR_DASHBOARD_URL=http://127.0.0.1:8080
   AMR_CAMERA_URL=                     # optional public MJPEG (CF tunnel)
@@ -35,6 +35,7 @@ import os
 import signal
 import threading
 import time
+from collections import deque
 from typing import Any, Optional
 
 import httpx
@@ -47,6 +48,7 @@ from .control import (
     flag_enabled,
     looks_like_service_key,
     motion_command,
+    peek_command_type,
     sanitize_command,
 )
 from .protocol import (
@@ -69,8 +71,10 @@ AUTH_REFRESH_CHECK_S = 15.0
 AUTH_REFRESH_SKEW_S = 90.0
 # Command and zero posts. Short so a hung dashboard cannot pin the stop latch.
 COMMAND_HTTP_TIMEOUT_S = 2.0
-# Realtime callbacks waiting on that HTTP. Extra ones are closed, not queued.
+# Realtime callbacks waiting on that HTTP. E-stop and :ctl are not counted.
+# Joy and nudge do not use this queue: they share one latest-wins slot.
 MAX_SCHEDULED_COMMANDS = 4
+_MOTION_SLOT_TYPES = ("joy", "nudge", "drive")
 # How soon a failed zero is tried again.
 ZERO_RETRY_S = 0.25
 
@@ -563,15 +567,100 @@ class Bridge:
         self._sched_lock = threading.Lock()
         self._scheduled = 0
         self._last_zero_mono = 0.0
+        # Latest joy / nudge / drive only. A newer stick replaces one not yet posted.
+        self._motion_lock = threading.Lock()
+        self._motion_pending: tuple[dict, str] | None = None
+        self._motion_gen = 0
+        self._motion_wake = asyncio.Event()
+        # E-stop is its own task. The queue is not the capped scheduler.
+        self._estop_lock = threading.Lock()
+        self._estop_q: deque[tuple[dict, str]] = deque()
+        self._estop_needed = False
+        self._estop_wake = asyncio.Event()
+        # :ctl is coalesced and is not subject to the callback cap.
+        self._ctl_lock = threading.Lock()
+        self._ctl_latest: dict | None = None
+        self._ctl_running = False
 
     def _queue_public(self, env: dict) -> None:
+        typ = peek_command_type(env)
+        if typ == "estop":
+            self._offer_estop(env, "public")
+            return
+        if typ in _MOTION_SLOT_TYPES:
+            self._offer_motion(env, "public")
+            return
         self._schedule(self._handle_public_command(env))
 
     def _queue_private(self, env: dict, source: str) -> None:
+        typ = peek_command_type(env)
+        if typ == "estop":
+            self._offer_estop(env, source)
+            return
+        if typ in _MOTION_SLOT_TYPES:
+            self._offer_motion(env, source)
+            return
         self._schedule(self._handle_private_command(env, source))
 
     def _queue_control(self, env: dict) -> None:
-        self._schedule(self._handle_control(env))
+        with self._ctl_lock:
+            self._ctl_latest = env
+            start = not self._ctl_running
+            if start:
+                self._ctl_running = True
+        if start:
+            self._spawn(self._ctl_drain())
+
+    def _offer_motion(self, env: dict, source: str) -> None:
+        with self._motion_lock:
+            self._motion_gen += 1
+            self._motion_pending = (env, source)
+        self._signal(self._motion_wake)
+
+    def _take_motion(self) -> tuple[tuple[dict, str] | None, int]:
+        with self._motion_lock:
+            item = self._motion_pending
+            gen = self._motion_gen
+            self._motion_pending = None
+            return item, gen
+
+    def _clear_motion(self) -> None:
+        """Drop a stick command that has not been posted yet."""
+        with self._motion_lock:
+            self._motion_gen += 1
+            self._motion_pending = None
+
+    def _motion_current(self, gen: int) -> bool:
+        with self._motion_lock:
+            return gen == self._motion_gen
+
+    def _offer_estop(self, env: dict, source: str) -> None:
+        with self._estop_lock:
+            self._estop_q.append((env, source))
+        self._signal(self._estop_wake)
+
+    def _drain_estop(self) -> list[tuple[dict, str]]:
+        with self._estop_lock:
+            items = list(self._estop_q)
+            self._estop_q.clear()
+            return items
+
+    def _signal(self, event: asyncio.Event) -> None:
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            try:
+                loop.call_soon_threadsafe(event.set)
+                return
+            except RuntimeError:
+                pass
+        event.set()
+
+    def _spawn(self, coro) -> None:
+        """Run a coroutine on the bridge loop with no in-flight cap."""
+        if not (self._loop and self._loop.is_running()):
+            coro.close()
+            return
+        asyncio.run_coroutine_threadsafe(coro, self._loop)
 
     def _queue_link(self, up: bool) -> None:
         # Subscribe is not contact. note_contact runs after a poll or a command.
@@ -627,11 +716,28 @@ class Bridge:
             self._heartbeat_loop(),
             self._presence_touch_loop(),
             self._watchdog_loop(),
+            self._motion_slot_loop(),
+            self._estop_loop(),
         ]
         if self.private_channel:
             tasks.append(self._control_poll_loop())
             tasks.append(self._auth_refresh_loop())
         await asyncio.gather(*tasks)
+
+    async def _ctl_drain(self) -> None:
+        while not self._stop.is_set():
+            with self._ctl_lock:
+                env = self._ctl_latest
+                self._ctl_latest = None
+                if env is None:
+                    self._ctl_running = False
+                    return
+            try:
+                await self._handle_control(env)
+            except Exception as exc:
+                # Keep the loop so a :ctl that arrived during the failure is
+                # still polled. Dropping it would wait for the next cue.
+                log.warning("control event failed: %s", exc)
 
     async def _handle_control(self, env: dict) -> None:
         # :ctl carries no token and no lease. Poll is the only authority.
@@ -692,6 +798,166 @@ class Bridge:
             self._guard.release_for_motion()
         await self._dispatch_cmd(cmd)
 
+    def _accept_motion(self, env: dict, source: str) -> dict | None:
+        if source == "public":
+            if env.get("botId") not in (self.bot_id, None):
+                return None
+            cmd = env.get("cmd") if isinstance(env.get("cmd"), dict) else {}
+            rank = int((env.get("from") or {}).get("rank") or 0)
+            if rank < 1:
+                return None
+            clean, reason = sanitize_command(cmd)
+            if clean is None or clean.get("type") not in _MOTION_SLOT_TYPES:
+                if reason:
+                    log.info("rejected public motion: %s", reason)
+                return None
+            # Public commands do not arm the private deadman.
+            return clean
+        result = self._gate.verify(
+            env, source=source, now_s=time.time(), now_mono=time.monotonic(),
+        )
+        if not result.ok:
+            log.info("rejected %s command type=%s: %s", source, result.cmd_type, result.reason)
+            return None
+        cmd = result.cmd or {}
+        if cmd.get("type") not in _MOTION_SLOT_TYPES:
+            return None
+        log.info("accepted %s command type=%s", source, cmd.get("type"))
+        if motion_command(cmd) and not self._gate.fault_active(time.time(), time.monotonic()):
+            self._guard.set_hard(False)
+            self._guard.release_for_motion()
+        return cmd
+
+    def _accept_estop(self, env: dict, source: str) -> bool:
+        if source == "public":
+            if env.get("botId") not in (self.bot_id, None):
+                return False
+            cmd = env.get("cmd") if isinstance(env.get("cmd"), dict) else {}
+            if cmd.get("type") != "estop":
+                return False
+            rank = int((env.get("from") or {}).get("rank") or 0)
+            if rank < 1:
+                log.info("rejected public e-stop: rank")
+                return False
+            log.warning("public e-stop accepted")
+            return True
+        result = self._gate.verify(
+            env, source=source, now_s=time.time(), now_mono=time.monotonic(),
+        )
+        if not result.ok or result.cmd_type != "estop":
+            log.info("rejected %s e-stop: %s", source, result.reason)
+            return False
+        log.warning("e-stop accepted on %s", source)
+        return True
+
+    async def _motion_slot_loop(self) -> None:
+        """Post at most one joy or nudge. A newer one replaces a pending one."""
+        while not self._stop.is_set():
+            item, gen = self._take_motion()
+            if item is None:
+                self._motion_wake.clear()
+                item, gen = self._take_motion()
+                if item is None:
+                    try:
+                        await asyncio.wait_for(self._motion_wake.wait(), timeout=0.5)
+                    except asyncio.TimeoutError:
+                        continue
+                    continue
+            if self._stop.is_set() or not self._motion_current(gen):
+                continue
+            cmd = self._accept_motion(item[0], item[1])
+            if cmd is None or not self._motion_current(gen):
+                continue
+            try:
+                await self._post_motion_cmd(cmd)
+            except Exception as exc:
+                log.warning("motion command failed: %s", exc)
+            if not self._motion_current(gen):
+                # E-stop, or a newer stick, won while this post was in flight.
+                await self._post_zero()
+                continue
+            if motion_command(cmd) and (self._guard.hard or self._guard.owed):
+                log.warning("watchdog: zero motion (after command)")
+                owed = self._guard.owed_gen
+                if await self._post_zero() and owed is not None:
+                    self._guard.mark_zeroed(owed)
+
+    async def _estop_loop(self) -> None:
+        """Verify e-stops and post the stop until the dashboard accepts it.
+
+        This task is not part of the capped callback queue and does not take
+        the motion lock, so a stuck joy post cannot delay it.
+        """
+        while not self._stop.is_set():
+            batch = self._drain_estop()
+            if not batch and not self._estop_needed:
+                self._estop_wake.clear()
+                batch = self._drain_estop()
+                if not batch:
+                    try:
+                        await asyncio.wait_for(self._estop_wake.wait(), timeout=0.5)
+                    except asyncio.TimeoutError:
+                        continue
+                    continue
+            if any(self._accept_estop(env, source) for env, source in batch):
+                self._estop_needed = True
+                self._clear_motion()
+            if not self._estop_needed:
+                continue
+            if await self._estop_once():
+                self._estop_needed = False
+            else:
+                self._estop_wake.clear()
+                try:
+                    await asyncio.wait_for(self._estop_wake.wait(), timeout=ZERO_RETRY_S)
+                except asyncio.TimeoutError:
+                    pass
+
+    async def _estop_until_success(self) -> None:
+        self._clear_motion()
+        while not self._stop.is_set():
+            if await self._estop_once():
+                return
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=ZERO_RETRY_S)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _estop_once(self) -> bool:
+        """Dashboard e-stop, zero nudge, and zero joy, all at once."""
+        timeout = COMMAND_HTTP_TIMEOUT_S
+
+        async def _stop_dashboard() -> None:
+            await self.dash.post("/api/estop", timeout=timeout)
+
+        async def _zero_nudge() -> None:
+            await self.dash.post(
+                "/api/nudge", {"lin": 0.0, "ang": 0.0}, timeout=timeout,
+            )
+
+        async def _zero_joy() -> None:
+            gamepad = os.environ.get("AMR_GAMEPAD_URL", "").rstrip("/")
+            if not gamepad:
+                return
+            response = await self.dash._http.post(
+                f"{gamepad}/api/joy",
+                json={"a": [0.0] * 8, "b": 0},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+
+        results = await asyncio.gather(
+            _stop_dashboard(), _zero_nudge(), _zero_joy(), return_exceptions=True,
+        )
+        ok = True
+        for item in results:
+            if isinstance(item, Exception):
+                log.warning("e-stop post failed: %s", item)
+                ok = False
+        if ok:
+            log.warning("e-stop posts accepted")
+        return ok
+
     def _apply_rate(self, cmd: dict) -> None:
         mode = cmd.get("mode")
         if mode in ("full", "board"):
@@ -706,17 +972,21 @@ class Bridge:
         """
         typ = cmd.get("type")
         timeout = COMMAND_HTTP_TIMEOUT_S
+        # E-stop and stick commands stay off this lock. A stalled post here
+        # must not sit in front of them.
+        if typ == "estop":
+            await self._estop_until_success()
+            return
+        if typ in _MOTION_SLOT_TYPES:
+            await self._post_motion_cmd(cmd)
+            if motion_command(cmd) and (self._guard.hard or self._guard.owed):
+                log.warning("watchdog: zero motion (after command)")
+                owed = self._guard.owed_gen
+                if await self._post_zero() and owed is not None:
+                    self._guard.mark_zeroed(owed)
+            return
         async with self._io_lock:
-            if typ == "estop":
-                await self.dash.post("/api/estop", timeout=timeout)
-            elif typ in ("nudge", "drive"):
-                await self.dash.post("/api/nudge", {
-                    "lin": float(cmd.get("lin", 0)),
-                    "ang": float(cmd.get("ang", 0)),
-                }, timeout=timeout)
-            elif typ == "joy":
-                await self._post_joy(cmd, timeout)
-            elif typ == "nav_goal":
+            if typ == "nav_goal":
                 await self.dash.post("/api/nav_goal", {
                     "x": float(cmd.get("x", 0)),
                     "y": float(cmd.get("y", 0)),
@@ -744,15 +1014,20 @@ class Bridge:
                         "radius": float(cmd.get("radius", 0.8)),
                         "duration": float(cmd.get("duration", 300)),
                     }, timeout=timeout)
-            if motion_command(cmd) and (self._guard.hard or self._guard.owed):
-                log.warning("watchdog: zero motion (after command)")
-                owed = self._guard.owed_gen
-                if await self._post_zero():
-                    if owed is not None:
-                        self._guard.mark_zeroed(owed)
+
+    async def _post_motion_cmd(self, cmd: dict) -> None:
+        timeout = COMMAND_HTTP_TIMEOUT_S
+        typ = cmd.get("type")
+        if typ in ("nudge", "drive"):
+            await self.dash.post("/api/nudge", {
+                "lin": float(cmd.get("lin", 0)),
+                "ang": float(cmd.get("ang", 0)),
+            }, timeout=timeout)
+            return
+        await self._post_joy(cmd, timeout)
 
     async def _post_joy(self, cmd: dict, timeout: float) -> None:
-        """Caller holds ``_io_lock``. ``a``/``b`` win over ``axes``/``buttons``."""
+        """``a``/``b`` win over ``axes``/``buttons``. Does not take ``_io_lock``."""
         gamepad = os.environ.get("AMR_GAMEPAD_URL", "").rstrip("/")
         if "a" in cmd and cmd.get("a") is not None:
             axes = list(cmd["a"])
@@ -778,7 +1053,7 @@ class Bridge:
             await self.dash.post("/api/nudge", {"lin": lin, "ang": ang}, timeout=timeout)
 
     async def _post_zero(self) -> bool:
-        """Caller holds ``_io_lock``. False means the watchdog must try again.
+        """False means the watchdog must try again. Does not take ``_io_lock``.
 
         A zero nudge streams Twist zeros on /cmd_vel. A zero joy packet makes
         joy_teleop publish one zero Twist and then yield. Neither path writes
@@ -806,12 +1081,11 @@ class Bridge:
         return True
 
     async def _try_zero(self, gen: int, reason: str) -> None:
-        async with self._io_lock:
-            if not self._guard.still_owed(gen):
-                return
-            log.warning("watchdog: zero motion (%s)", reason)
-            if await self._post_zero():
-                self._guard.mark_zeroed(gen)
+        if not self._guard.still_owed(gen):
+            return
+        log.warning("watchdog: zero motion (%s)", reason)
+        if await self._post_zero():
+            self._guard.mark_zeroed(gen)
 
     async def _apply_watchdog(self, reasons: list[str]) -> None:
         if not reasons:

@@ -259,10 +259,11 @@ Important state fields forwarded (subset): `pose`, `map_pose`, `vel`, `cmd`,
 ### Outbound (browser command → dashboard)
 
 Private-channel commands that pass epoch / token / lease / seq checks skip
-the rank gates. E-stop skips seq and timestamp. The public channel still
-applies the rank gates while `AMR_PUBLIC_CHANNEL=1` (default is off). Motion
-is posted to the dashboard or gamepad, which publish `/cmd_vel`. The bridge
-does not publish `/cmd_vel_safe`.
+the rank gates. E-stop skips seq, timestamp, and lease. The public channel
+still applies the rank gates while `AMR_PUBLIC_CHANNEL=1` (default is off).
+That setting reopens a spoofable rank (the client writes it) and those
+commands have no 0.5 s deadman. Motion is posted to the dashboard or gamepad,
+which publish `/cmd_vel`. The bridge does not publish `/cmd_vel_safe`.
 
 | Command `type` | Rank gate (public channel only) | Dashboard |
 | --- | --- | --- |

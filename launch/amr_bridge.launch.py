@@ -16,7 +16,8 @@ AMR_SUPABASE_KEY (publishable), and AMR_BRIDGE_TOKEN are required.
 AMR_SUPABASE_SERVICE_KEY is never passed to the bridge. Private channels
 also need AMR_BRIDGE_EMAIL and AMR_BRIDGE_PASSWORD; without them private
 channels stay off. The legacy public channel runs only when
-AMR_PUBLIC_CHANNEL is on (the default is off).
+AMR_PUBLIC_CHANNEL is on (the default is off). Turning it on trusts a
+client-supplied rank and that path has no deadman.
 """
 
 from __future__ import annotations

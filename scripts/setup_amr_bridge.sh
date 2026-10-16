@@ -89,7 +89,8 @@ AMR_BRIDGE_TOKEN=
 # unless AMR_PUBLIC_CHANNEL is set to 1 below.
 AMR_BRIDGE_EMAIL=
 AMR_BRIDGE_PASSWORD=
-# 0 is the default. Set to 1 only to keep the legacy public channel during cut-over.
+# 0 is the default. 1 reopens the legacy public channel during cut-over only.
+# Rank on that topic is whatever the client sends (spoofable), and it has no deadman.
 AMR_PUBLIC_CHANNEL=0
 # Local robot services
 AMR_DASHBOARD_URL=http://127.0.0.1:8080
@@ -123,6 +124,7 @@ for k in AMR_SUPABASE_KEY AMR_BRIDGE_TOKEN; do
   [ -n "$v" ] || { echo "Missing $k in $ENV_FILE. Add it first (nano $ENV_FILE)."; exit 1; }
 done
 echo "SAFETY: AMR_PUBLIC_CHANNEL defaults off. Set it to 1 only to let the legacy public channel drive the bot."
+echo "SAFETY: AMR_PUBLIC_CHANNEL=1 trusts the rank in the message (spoofable) and that path has no deadman."
 echo "Private control needs AMR_BRIDGE_EMAIL and AMR_BRIDGE_PASSWORD in $ENV_FILE (names only in git)."
 echo "Keep the wheels lifted / the bot supervised. To run WITHOUT the bridge: add  enable_amr_bridge:=false"
 read -r -p "Type 'yes' to continue: " a; [ "$a" = "yes" ] || exit 1
