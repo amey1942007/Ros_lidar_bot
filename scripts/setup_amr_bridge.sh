@@ -63,11 +63,13 @@ cd "$REPO/amr-bridge"
 [ -d "$VENV" ] || python3 -m venv "$VENV"
 "$VENV/bin/pip" install -U pip
 "$VENV/bin/pip" install -r requirements.txt
-"$VENV/bin/pip" freeze | grep -Ei '^(supabase|httpx|websockets|realtime|postgrest)' | tee "$HOME/amr_bridge_pip_versions.txt" || true
+"$VENV/bin/pip" freeze | grep -Ei '^(supabase|httpx|websockets|realtime|postgrest|supabase-auth|storage3|supabase-functions)' | tee "$HOME/amr_bridge_pip_versions.txt" || true
 # bridge.py imports httpx, and supabase (create_client) when the hub starts.
-# It does not import websockets or realtime itself.
+# Realtime channels are async-only. Sync Client.channel() raises NotImplementedError.
 "$VENV/bin/python" -c "import sys; sys.path.insert(0,'.'); import httpx; from supabase import create_client; import amr_telemetry_bridge.bridge; print('bridge import OK')" \
   || die "The bridge failed to import. See the error above."
+"$VENV/bin/python" -c "import sys; sys.path.insert(0,'.'); from amr_telemetry_bridge.bridge import assert_realtime_api; assert_realtime_api(); print('realtime client API OK')" \
+  || die "Realtime client API check failed. The installed supabase/realtime build cannot open an async channel (sync Client.channel() raises NotImplementedError). Keep the pins in amr-bridge/requirements.txt. See the error above."
 
 say "6/8 Creating the secrets file $ENV_FILE (owned by YOU, not root; never overwritten if it exists)"
 if [ -f "$ENV_FILE" ]; then
