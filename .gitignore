@@ -10,3 +10,5 @@ amr-bridge/.venv/
 amr-bridge/.env.pi
 .env.pi
 **/amr-bridge.env
+
+.cursor/
