@@ -18,6 +18,8 @@ Checks the private path actually applies:
 - E-stop is idempotent and skips seq, timestamp, and lease checks. It still
   requires the bot, the current epoch, and the token (``:cmd``) or sender
   (``:cmdq``). A skewed clock cannot hide an e-stop behind an expired lease.
+  The bridge, not this module, then ignores motion for about a second unless
+  that motion carries a newer seq than the e-stop.
 - Timestamp freshness is not enforced. The Pi clock can be minutes off before
   NTP. A non-finite timestamp is still rejected, except on e-stop.
 - ``:ctl`` is not authority. The bridge treats it as a cue to poll. Epoch,
@@ -381,6 +383,15 @@ def peek_command_type(message: Any) -> str | None:
         return cmd["type"]
     typ = env.get("type")
     return typ if isinstance(typ, str) else None
+
+
+def command_seq(message: Any) -> int | None:
+    """Seq on the envelope or the command, if it is an integer. E-stop may omit it."""
+    env = normalize_message(message)
+    if not env:
+        return None
+    cmd = env.get("cmd") if isinstance(env.get("cmd"), dict) else {}
+    return _as_int(_auth_field(env, cmd, "seq"))
 
 
 def motion_command(cmd: dict) -> bool:

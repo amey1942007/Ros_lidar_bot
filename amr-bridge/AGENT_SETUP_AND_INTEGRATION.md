@@ -259,7 +259,10 @@ Important state fields forwarded (subset): `pose`, `map_pose`, `vel`, `cmd`,
 ### Outbound (browser command → dashboard)
 
 Private-channel commands that pass epoch / token / lease / seq checks skip
-the rank gates. E-stop skips seq, timestamp, and lease. The public channel
+the rank gates. E-stop skips seq, timestamp, and lease. For 1 s after an
+accepted e-stop, joy, nudge, and drive are ignored unless their seq is newer
+than the e-stop's. `/api/estop` does not latch: the dashboard streams zeros
+for 1.5 s, cancels nav, and kills the tool. The public channel
 still applies the rank gates while `AMR_PUBLIC_CHANNEL=1` (default is off).
 That setting reopens a spoofable rank (the client writes it) and those
 commands have no 0.5 s deadman. Motion is posted to the dashboard or gamepad,

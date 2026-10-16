@@ -31,6 +31,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import os
 import signal
 import threading
@@ -46,6 +47,8 @@ from .control import (
     MotionGuard,
     clamp_poll_interval,
     flag_enabled,
+    MOTION_WATCHDOG_S,
+    command_seq,
     looks_like_service_key,
     motion_command,
     peek_command_type,
@@ -77,6 +80,40 @@ MAX_SCHEDULED_COMMANDS = 4
 _MOTION_SLOT_TYPES = ("joy", "nudge", "drive")
 # How soon a failed zero is tried again.
 ZERO_RETRY_S = 0.25
+# Bound the unverified e-stop queue. Older entries fall off the left.
+ESTOP_QUEUE_MAX = 16
+# /api/estop does not latch. The dashboard streams zeros for 1.5 s, cancels
+# nav, and kills the tool; the gamepad then keeps publishing the last axes
+# for 1.5 s. Ignore stick commands for this long after an accepted e-stop
+# unless their seq is newer than the e-stop's.
+ESTOP_MOTION_HOLD_S = 1.0
+
+
+def _public_rank(env: Any) -> int:
+    """Rank on a public envelope. A non-dict ``from`` or a non-numeric rank is 0."""
+    if not isinstance(env, dict):
+        return 0
+    sender = env.get("from")
+    if not isinstance(sender, dict):
+        return 0
+    raw = sender.get("rank")
+    if isinstance(raw, bool) or raw is None:
+        return 0
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        if not math.isfinite(raw) or not raw.is_integer():
+            return 0
+        return int(raw)
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return 0
+        try:
+            return int(text, 10)
+        except ValueError:
+            return 0
+    return 0
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -568,13 +605,18 @@ class Bridge:
         self._scheduled = 0
         self._last_zero_mono = 0.0
         # Latest joy / nudge / drive only. A newer stick replaces one not yet posted.
+        # _motion_gen tracks that replacement. _estop_gen changes only when an
+        # e-stop drops the slot, so a newer stick does not look like a stop.
         self._motion_lock = threading.Lock()
         self._motion_pending: tuple[dict, str] | None = None
         self._motion_gen = 0
+        self._estop_gen = 0
         self._motion_wake = asyncio.Event()
+        self._estop_seq: int | None = None
+        self._motion_hold_until = 0.0
         # E-stop is its own task. The queue is not the capped scheduler.
         self._estop_lock = threading.Lock()
-        self._estop_q: deque[tuple[dict, str]] = deque()
+        self._estop_q: deque[tuple[dict, str]] = deque(maxlen=ESTOP_QUEUE_MAX)
         self._estop_needed = False
         self._estop_wake = asyncio.Event()
         # :ctl is coalesced and is not subject to the callback cap.
@@ -617,22 +659,46 @@ class Bridge:
             self._motion_pending = (env, source)
         self._signal(self._motion_wake)
 
-    def _take_motion(self) -> tuple[tuple[dict, str] | None, int]:
+    def _take_motion(self) -> tuple[tuple[dict, str] | None, int, int]:
         with self._motion_lock:
             item = self._motion_pending
             gen = self._motion_gen
+            estop_gen = self._estop_gen
             self._motion_pending = None
-            return item, gen
+            return item, gen, estop_gen
 
     def _clear_motion(self) -> None:
-        """Drop a stick command that has not been posted yet."""
+        """Drop a stick that has not been posted. Does not bump the stick generation.
+
+        An in-flight post watches ``_estop_gen`` and zeroes only when this
+        runs. A newer stick must not take that path, or the robot stutters
+        whenever a post is slower than the stick rate.
+        """
         with self._motion_lock:
-            self._motion_gen += 1
+            self._estop_gen += 1
             self._motion_pending = None
 
     def _motion_current(self, gen: int) -> bool:
         with self._motion_lock:
             return gen == self._motion_gen
+
+    def _estop_current(self, gen: int) -> bool:
+        with self._motion_lock:
+            return gen == self._estop_gen
+
+    def _arm_estop_hold(self, env: dict) -> None:
+        """Ignore stick commands briefly, unless they are newer than this stop."""
+        self._estop_seq = command_seq(env)
+        self._motion_hold_until = time.monotonic() + ESTOP_MOTION_HOLD_S
+
+    def _motion_held(self, env: dict) -> bool:
+        if time.monotonic() >= self._motion_hold_until:
+            return False
+        seq = command_seq(env)
+        held = self._estop_seq
+        if held is not None and seq is not None and seq > held:
+            return False
+        return True
 
     def _offer_estop(self, env: dict, source: str) -> None:
         with self._estop_lock:
@@ -750,7 +816,7 @@ class Bridge:
             return
         cmd = env.get("cmd") or {}
         typ = cmd.get("type")
-        rank = int((env.get("from") or {}).get("rank") or 0)
+        rank = _public_rank(env)
         log.info("command %s from rank=%s", typ, rank)
         try:
             if typ == "set_rate":
@@ -800,10 +866,10 @@ class Bridge:
 
     def _accept_motion(self, env: dict, source: str) -> dict | None:
         if source == "public":
-            if env.get("botId") not in (self.bot_id, None):
+            if not isinstance(env, dict) or env.get("botId") not in (self.bot_id, None):
                 return None
             cmd = env.get("cmd") if isinstance(env.get("cmd"), dict) else {}
-            rank = int((env.get("from") or {}).get("rank") or 0)
+            rank = _public_rank(env)
             if rank < 1:
                 return None
             clean, reason = sanitize_command(cmd)
@@ -811,8 +877,16 @@ class Bridge:
                 if reason:
                     log.info("rejected public motion: %s", reason)
                 return None
+            if self._motion_held(env):
+                log.info("public motion ignored after e-stop")
+                return None
             # Public commands do not arm the private deadman.
             return clean
+        if not isinstance(env, dict):
+            return None
+        if self._motion_held(env):
+            log.info("motion ignored after e-stop")
+            return None
         result = self._gate.verify(
             env, source=source, now_s=time.time(), now_mono=time.monotonic(),
         )
@@ -830,17 +904,20 @@ class Bridge:
 
     def _accept_estop(self, env: dict, source: str) -> bool:
         if source == "public":
-            if env.get("botId") not in (self.bot_id, None):
+            if not isinstance(env, dict) or env.get("botId") not in (self.bot_id, None):
                 return False
             cmd = env.get("cmd") if isinstance(env.get("cmd"), dict) else {}
             if cmd.get("type") != "estop":
                 return False
-            rank = int((env.get("from") or {}).get("rank") or 0)
+            rank = _public_rank(env)
             if rank < 1:
                 log.info("rejected public e-stop: rank")
                 return False
             log.warning("public e-stop accepted")
+            self._arm_estop_hold(env)
             return True
+        if not isinstance(env, dict):
+            return False
         result = self._gate.verify(
             env, source=source, now_s=time.time(), now_mono=time.monotonic(),
         )
@@ -848,39 +925,53 @@ class Bridge:
             log.info("rejected %s e-stop: %s", source, result.reason)
             return False
         log.warning("e-stop accepted on %s", source)
+        self._arm_estop_hold(env)
         return True
 
     async def _motion_slot_loop(self) -> None:
         """Post at most one joy or nudge. A newer one replaces a pending one."""
         while not self._stop.is_set():
-            item, gen = self._take_motion()
-            if item is None:
-                self._motion_wake.clear()
-                item, gen = self._take_motion()
-                if item is None:
-                    try:
-                        await asyncio.wait_for(self._motion_wake.wait(), timeout=0.5)
-                    except asyncio.TimeoutError:
-                        continue
-                    continue
-            if self._stop.is_set() or not self._motion_current(gen):
-                continue
-            cmd = self._accept_motion(item[0], item[1])
-            if cmd is None or not self._motion_current(gen):
-                continue
             try:
-                await self._post_motion_cmd(cmd)
-            except Exception as exc:
-                log.warning("motion command failed: %s", exc)
-            if not self._motion_current(gen):
-                # E-stop, or a newer stick, won while this post was in flight.
-                await self._post_zero()
-                continue
-            if motion_command(cmd) and (self._guard.hard or self._guard.owed):
-                log.warning("watchdog: zero motion (after command)")
-                owed = self._guard.owed_gen
-                if await self._post_zero() and owed is not None:
-                    self._guard.mark_zeroed(owed)
+                await self._motion_slot_turn()
+            except Exception:
+                log.exception("motion slot failed")
+
+    async def _motion_slot_turn(self) -> None:
+        item, gen, estop_gen = self._take_motion()
+        if item is None:
+            self._motion_wake.clear()
+            item, gen, estop_gen = self._take_motion()
+            if item is None:
+                try:
+                    await asyncio.wait_for(self._motion_wake.wait(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    return
+                return
+        if self._stop.is_set() or not self._motion_current(gen) or not self._estop_current(estop_gen):
+            return
+        accepted_mono = time.monotonic()
+        cmd = self._accept_motion(item[0], item[1])
+        if cmd is None or not self._motion_current(gen) or not self._estop_current(estop_gen):
+            return
+        try:
+            await self._post_motion_cmd(cmd)
+        except Exception as exc:
+            log.warning("motion command failed: %s", exc)
+        late = time.monotonic() - accepted_mono >= MOTION_WATCHDOG_S
+        estop_won = not self._estop_current(estop_gen)
+        if late or estop_won:
+            # A newer stick is not a reason to zero. A stop, or a post that
+            # outlived the deadman, is. The guard may already have been cleared
+            # by the watchdog zero that this delivery just undid.
+            reason = "late command" if late else "e-stop"
+            log.warning("watchdog: zero motion (%s)", reason)
+            await self._post_zero()
+            return
+        if motion_command(cmd) and (self._guard.hard or self._guard.owed):
+            log.warning("watchdog: zero motion (after command)")
+            owed = self._guard.owed_gen
+            if await self._post_zero() and owed is not None:
+                self._guard.mark_zeroed(owed)
 
     async def _estop_loop(self) -> None:
         """Verify e-stops and post the stop until the dashboard accepts it.
@@ -889,37 +980,40 @@ class Bridge:
         the motion lock, so a stuck joy post cannot delay it.
         """
         while not self._stop.is_set():
-            batch = self._drain_estop()
-            if not batch and not self._estop_needed:
-                self._estop_wake.clear()
-                batch = self._drain_estop()
-                if not batch:
-                    try:
-                        await asyncio.wait_for(self._estop_wake.wait(), timeout=0.5)
-                    except asyncio.TimeoutError:
-                        continue
-                    continue
-            if any(self._accept_estop(env, source) for env, source in batch):
-                self._estop_needed = True
-                self._clear_motion()
-            if not self._estop_needed:
-                continue
-            if await self._estop_once():
-                self._estop_needed = False
-            else:
-                self._estop_wake.clear()
-                try:
-                    await asyncio.wait_for(self._estop_wake.wait(), timeout=ZERO_RETRY_S)
-                except asyncio.TimeoutError:
-                    pass
-
-    async def _estop_until_success(self) -> None:
-        self._clear_motion()
-        while not self._stop.is_set():
-            if await self._estop_once():
-                return
             try:
-                await asyncio.wait_for(self._stop.wait(), timeout=ZERO_RETRY_S)
+                await self._estop_turn()
+            except Exception:
+                log.exception("e-stop loop failed")
+
+    async def _estop_turn(self) -> None:
+        batch = self._drain_estop()
+        if not batch and not self._estop_needed:
+            self._estop_wake.clear()
+            batch = self._drain_estop()
+            if not batch:
+                try:
+                    await asyncio.wait_for(self._estop_wake.wait(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    return
+                return
+        accepted = False
+        for env, source in batch:
+            try:
+                if self._accept_estop(env, source):
+                    accepted = True
+            except Exception:
+                log.exception("e-stop accept failed")
+        if accepted:
+            self._estop_needed = True
+            self._clear_motion()
+        if not self._estop_needed:
+            return
+        if await self._estop_once():
+            self._estop_needed = False
+        else:
+            self._estop_wake.clear()
+            try:
+                await asyncio.wait_for(self._estop_wake.wait(), timeout=ZERO_RETRY_S)
             except asyncio.TimeoutError:
                 pass
 
@@ -972,11 +1066,7 @@ class Bridge:
         """
         typ = cmd.get("type")
         timeout = COMMAND_HTTP_TIMEOUT_S
-        # E-stop and stick commands stay off this lock. A stalled post here
-        # must not sit in front of them.
-        if typ == "estop":
-            await self._estop_until_success()
-            return
+        # Stick commands stay off this lock. E-stop is posted by its own loop.
         if typ in _MOTION_SLOT_TYPES:
             await self._post_motion_cmd(cmd)
             if motion_command(cmd) and (self._guard.hard or self._guard.owed):

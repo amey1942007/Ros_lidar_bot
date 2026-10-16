@@ -1023,6 +1023,105 @@ class _FakeDash:
         return {"ok": True}
 
 
+def _dispatch_bridge():
+    from amr_telemetry_bridge.bridge import Bridge
+
+    return Bridge(
+        bot_id="hardware-bot",
+        supabase_url="https://example.supabase.co",
+        api_key="sb_publishable_example",
+        bridge_token="tok",
+        dashboard_url="http://127.0.0.1:8080",
+        camera_url=None,
+        camera_jpeg_max_kb=24,
+        public_channel=False,
+        private_channel=False,
+    )
+
+
+def _stick(axis1: float) -> dict:
+    return {"type": "joy", "a": [0.0, axis1, 0, 0, 0, 0, 0, 0], "b": 0}
+
+
+def _cmd_env(seq: int, cmd: dict) -> dict:
+    return {
+        "epoch": 3,
+        "token": "tok-1",
+        "seq": seq,
+        "ts": int(time.time() * 1000),
+        "cmd": cmd,
+    }
+
+
+def _arm_gate(bridge) -> None:
+    bridge._gate.apply_poll(
+        {
+            "bot_id": "hardware-bot",
+            "controller": "user-1",
+            "epoch": 3,
+            "lease_expires_at": time.time() + 3600,
+        },
+        {"epoch": 3, "token": "tok-1"},
+        time.monotonic(),
+    )
+
+
+def _recording_dash(posts: list):
+    async def dash_post(path, payload=None, timeout=None):
+        posts.append(("dash", path, payload, timeout))
+        return {"ok": True}
+
+    return dash_post
+
+
+class _RecordingHttp:
+    def __init__(self, post):
+        self._post = post
+
+    async def post(self, url, json=None, timeout=None):
+        return await self._post(url, json=json, timeout=timeout)
+
+
+async def _wait_until(predicate, timeout: float = 1.0) -> None:
+    import asyncio
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("timed out")
+
+
+async def _stop_loops(bridge, motion_task, original_http, old_gamepad, estop_task=None) -> None:
+    import asyncio
+
+    bridge._stop.set()
+    bridge._motion_wake.set()
+    bridge._estop_wake.set()
+    tasks = [motion_task]
+    if estop_task is not None:
+        tasks.append(estop_task)
+    await asyncio.wait(tasks, timeout=1.0)
+    for task in tasks:
+        task.cancel()
+    if old_gamepad is None:
+        os.environ.pop("AMR_GAMEPAD_URL", None)
+    else:
+        os.environ["AMR_GAMEPAD_URL"] = old_gamepad
+    bridge.dash._http = original_http
+    await bridge.dash.close()
+
+
+def _close_bridge(bridge) -> None:
+    import asyncio
+
+    async def _close():
+        await bridge.dash.close()
+
+    asyncio.run(_close())
+
+
 class BridgeDispatchTests(unittest.TestCase):
     def test_website_joy_arms_watchdog_and_zero_retries(self):
         import asyncio
@@ -1386,6 +1485,252 @@ class BridgeDispatchTests(unittest.TestCase):
                 await bridge.dash.close()
 
         asyncio.run(run())
+
+    def test_slow_motion_post_is_zeroed_even_if_guard_is_clear(self):
+        import asyncio
+
+        from amr_telemetry_bridge.bridge import Bridge
+
+        async def run():
+            bridge = _dispatch_bridge()
+            bridge._loop = asyncio.get_running_loop()
+            posts: list[tuple] = []
+
+            class _Resp:
+                def raise_for_status(self):
+                    return None
+
+            async def http_post(url, json=None, timeout=None):
+                axes = (json or {}).get("a") or [0.0]
+                if len(axes) > 1 and abs(float(axes[1]) - 0.8) < 1e-6:
+                    await asyncio.sleep(MOTION_WATCHDOG_S + 0.15)
+                posts.append(("http", url, json, timeout))
+                return _Resp()
+
+            original_http = bridge.dash._http
+            bridge.dash.post = _recording_dash(posts)
+            bridge.dash._http = _RecordingHttp(http_post)
+            old_gamepad = os.environ.get("AMR_GAMEPAD_URL")
+            os.environ["AMR_GAMEPAD_URL"] = "http://127.0.0.1:8765"
+            task = asyncio.create_task(bridge._motion_slot_loop())
+            try:
+                _arm_gate(bridge)
+                self.assertFalse(bridge._guard.hard)
+                self.assertFalse(bridge._guard.owed)
+                bridge._queue_private(_cmd_env(1, _stick(0.4)), "cmd")
+                await _wait_until(
+                    lambda: any(
+                        item[0] == "http" and abs(item[2]["a"][1] - 0.4) < 1e-6
+                        for item in posts
+                    ),
+                )
+                self.assertFalse(any(item[1] == "/api/nudge" for item in posts))
+
+                bridge._queue_private(_cmd_env(2, _stick(0.8)), "cmd")
+                await _wait_until(
+                    lambda: any(item[1] == "/api/nudge" for item in posts),
+                    timeout=2.0,
+                )
+                joy_at = max(
+                    i for i, item in enumerate(posts)
+                    if item[0] == "http" and abs(item[2]["a"][1] - 0.8) < 1e-6
+                )
+                self.assertGreater(
+                    next(i for i, item in enumerate(posts) if item[1] == "/api/nudge"),
+                    joy_at,
+                )
+                self.assertFalse(bridge._guard.hard)
+                self.assertFalse(bridge._guard.owed)
+            finally:
+                await _stop_loops(bridge, task, original_http, old_gamepad)
+
+        asyncio.run(run())
+
+    def test_newer_stick_does_not_zero_between_posts(self):
+        import asyncio
+
+        import amr_telemetry_bridge.bridge as bridge_mod
+
+        async def run():
+            bridge = _dispatch_bridge()
+            bridge._loop = asyncio.get_running_loop()
+            posts: list[tuple] = []
+            entered = asyncio.Event()
+            release = asyncio.Event()
+            held = {"on": True}
+            # This case is about a newer stick, not a post that outlives the deadman.
+            bridge_mod.MOTION_WATCHDOG_S = 30.0
+
+            class _Resp:
+                def raise_for_status(self):
+                    return None
+
+            async def http_post(url, json=None, timeout=None):
+                axes = (json or {}).get("a") or [0.0]
+                moving = len(axes) > 1 and abs(float(axes[1])) > 0.02
+                if moving and held["on"]:
+                    held["on"] = False
+                    entered.set()
+                    await release.wait()
+                posts.append(("http", url, json, timeout))
+                return _Resp()
+
+            original_http = bridge.dash._http
+            bridge.dash.post = _recording_dash(posts)
+            bridge.dash._http = _RecordingHttp(http_post)
+            old_gamepad = os.environ.get("AMR_GAMEPAD_URL")
+            os.environ["AMR_GAMEPAD_URL"] = "http://127.0.0.1:8765"
+            task = asyncio.create_task(bridge._motion_slot_loop())
+            try:
+                _arm_gate(bridge)
+                bridge._queue_private(_cmd_env(1, _stick(0.8)), "cmd")
+                await asyncio.wait_for(entered.wait(), timeout=1.0)
+                bridge._queue_private(_cmd_env(2, _stick(0.4)), "cmd")
+                release.set()
+                await _wait_until(
+                    lambda: sum(
+                        1 for item in posts
+                        if item[0] == "http" and abs(item[2]["a"][1]) > 0.02
+                    ) >= 2,
+                )
+                self.assertFalse(any(item[1] == "/api/nudge" for item in posts))
+                axes = [
+                    item[2]["a"][1] for item in posts
+                    if item[0] == "http" and abs(item[2]["a"][1]) > 0.02
+                ]
+                self.assertEqual(axes, [0.8, 0.4])
+            finally:
+                release.set()
+                bridge_mod.MOTION_WATCHDOG_S = MOTION_WATCHDOG_S
+                await _stop_loops(bridge, task, original_http, old_gamepad)
+
+        asyncio.run(run())
+
+    def test_public_rank_and_loops_survive_bad_input(self):
+        import asyncio
+
+        from amr_telemetry_bridge.bridge import _public_rank
+
+        self.assertEqual(_public_rank({"from": "nope"}), 0)
+        self.assertEqual(_public_rank({"from": ["rank", 1]}), 0)
+        self.assertEqual(_public_rank({"from": {"rank": "high"}}), 0)
+        self.assertEqual(_public_rank({"from": {"rank": True}}), 0)
+        self.assertEqual(_public_rank({"from": {"rank": 1.5}}), 0)
+        self.assertEqual(_public_rank({"from": {"rank": "2"}}), 2)
+
+        async def run():
+            bridge = _dispatch_bridge()
+            bridge._loop = asyncio.get_running_loop()
+            posts: list[tuple] = []
+            self.assertIsNone(bridge._accept_motion(
+                {"botId": "hardware-bot", "from": "nope", "cmd": _stick(0.5)},
+                "public",
+            ))
+            self.assertFalse(bridge._accept_estop(
+                {"botId": "hardware-bot", "from": {"rank": "high"}, "cmd": {"type": "estop"}},
+                "public",
+            ))
+
+            motion_calls = {"n": 0}
+            estop_calls = {"n": 0}
+            original_motion = bridge._accept_motion
+            original_estop = bridge._accept_estop
+
+            def accept_motion(env, source):
+                motion_calls["n"] += 1
+                if motion_calls["n"] == 1:
+                    raise RuntimeError("bad from")
+                return original_motion(env, source)
+
+            def accept_estop(env, source):
+                estop_calls["n"] += 1
+                if estop_calls["n"] == 1:
+                    raise RuntimeError("bad from")
+                return original_estop(env, source)
+
+            bridge._accept_motion = accept_motion
+            bridge._accept_estop = accept_estop
+            original_http = bridge.dash._http
+            bridge.dash.post = _recording_dash(posts)
+
+            class _Resp:
+                def raise_for_status(self):
+                    return None
+
+            async def http_post(url, json=None, timeout=None):
+                posts.append(("http", url, json, timeout))
+                return _Resp()
+
+            bridge.dash._http = _RecordingHttp(http_post)
+            old_gamepad = os.environ.get("AMR_GAMEPAD_URL")
+            os.environ["AMR_GAMEPAD_URL"] = "http://127.0.0.1:8765"
+            _arm_gate(bridge)
+            estop = _cmd_env(1, {"type": "estop"})
+            bridge._offer_estop(estop, "cmd")
+            bridge._offer_estop(estop, "cmd")
+            motion_task = asyncio.create_task(bridge._motion_slot_loop())
+            estop_task = asyncio.create_task(bridge._estop_loop())
+            try:
+                await _wait_until(lambda: any(item[1] == "/api/estop" for item in posts))
+                self.assertGreaterEqual(estop_calls["n"], 2)
+                bridge._queue_private(_cmd_env(2, _stick(0.2)), "cmd")
+                for _ in range(50):
+                    if motion_calls["n"] >= 1:
+                        break
+                    await asyncio.sleep(0.02)
+                self.assertGreaterEqual(motion_calls["n"], 1)
+                bridge._queue_private(_cmd_env(3, _stick(0.6)), "cmd")
+                await _wait_until(
+                    lambda: any(
+                        item[0] == "http" and abs(item[2]["a"][1] - 0.6) < 1e-6
+                        for item in posts
+                    ),
+                )
+                self.assertFalse(motion_task.done())
+                self.assertFalse(estop_task.done())
+            finally:
+                await _stop_loops(
+                    bridge, motion_task, original_http, old_gamepad, estop_task,
+                )
+
+        asyncio.run(run())
+
+    def test_estop_hold_ignores_motion_unless_seq_is_newer(self):
+        bridge = _dispatch_bridge()
+        try:
+            _arm_gate(bridge)
+            estop = _cmd_env(10, {"type": "estop"})
+            self.assertTrue(bridge._accept_estop(estop, "cmd"))
+            self.assertIsNone(bridge._accept_motion(_cmd_env(10, _stick(0.4)), "cmd"))
+            self.assertIsNone(bridge._accept_motion(_cmd_env(9, _stick(0.4)), "cmd"))
+            resumed = bridge._accept_motion(_cmd_env(11, _stick(0.4)), "cmd")
+            self.assertIsNotNone(resumed)
+            self.assertEqual(resumed["type"], "joy")
+            bridge._motion_hold_until = 0.0
+            after = bridge._accept_motion(_cmd_env(12, _stick(0.3)), "cmd")
+            self.assertIsNotNone(after)
+
+            self.assertTrue(bridge._accept_estop(
+                _cmd_env(1, {"type": "estop"}),
+                "cmd",
+            ))
+            # This e-stop carries seq 1, so a later seq is a resume.
+            bridge._estop_seq = None
+            bridge._motion_hold_until = time.monotonic() + 5
+            self.assertIsNone(bridge._accept_motion(_cmd_env(50, _stick(0.4)), "cmd"))
+        finally:
+            _close_bridge(bridge)
+
+    def test_estop_queue_drops_oldest_past_16(self):
+        bridge = _dispatch_bridge()
+        try:
+            for i in range(20):
+                bridge._offer_estop({"cmd": {"type": "estop"}, "n": i}, "cmd")
+            self.assertEqual(len(bridge._estop_q), 16)
+            self.assertEqual(bridge._estop_q[0][0]["n"], 4)
+            self.assertEqual(bridge._estop_q[-1][0]["n"], 19)
+        finally:
+            _close_bridge(bridge)
 
     def test_main_refuses_service_key_without_printing_it(self):
         from amr_telemetry_bridge.bridge import main
