@@ -125,12 +125,20 @@ sudo install -m 600 amr-bridge/.env.pi /etc/amr-bridge.env
 Required keys:
 
 ```bash
-AMR_BOT_ID=amr4                    # or hardware-bot — must match site bot picker
+AMR_BOT_ID=hardware-bot            # must match the site bot picker
 AMR_SUPABASE_URL=https://….supabase.co
-AMR_SUPABASE_KEY=sb_publishable_…  # publishable/anon — NOT service_role
+AMR_SUPABASE_KEY=sb_publishable_…  # publishable key — NOT service_role
 AMR_BRIDGE_TOKEN=…                 # must match sha256 in public.amr_bridge_config
+AMR_BRIDGE_EMAIL=…                 # bridge Auth user (private channels)
+AMR_BRIDGE_PASSWORD=…              # never commit; env file only
+AMR_PUBLIC_CHANNEL=0               # 1 enables the legacy public channel
 AMR_DASHBOARD_URL=http://127.0.0.1:8080
 ```
+
+`AMR_BRIDGE_EMAIL` / `AMR_BRIDGE_PASSWORD` sign the bridge in so it can join
+`bot:<id>:status|cmd|cmdq|ctl`. Without them, private channels stay off.
+`AMR_PUBLIC_CHANNEL` defaults to off, so the legacy public channel stays off
+too unless it is set to `1`. Do not set `AMR_SUPABASE_SERVICE_KEY`.
 
 Optional:
 
@@ -138,11 +146,13 @@ Optional:
 AMR_CAMERA_URL=https://…/camera.mjpg   # public MJPEG if browser can't scrape Pi
 AMR_CAMERA_JPEG_MAX_KB=24              # inline JPEG budget when scraping /camera.mjpg
 AMR_GAMEPAD_URL=http://127.0.0.1:8765  # web_gamepad_node — full Xbox /joy
+AMR_PRIVATE_CHANNEL=1                  # 0 disables private topics
+AMR_CONTROL_POLL_S=2                   # bot_control poll, clamped to 2–5 seconds
 ```
 
 **Agent rules for secrets**
 
-- Never print `AMR_BRIDGE_TOKEN` or keys into chat logs, PRs, or commits.
+- Never print `AMR_BRIDGE_TOKEN`, `AMR_BRIDGE_PASSWORD`, or keys into chat logs, PRs, or commits.
 - Never put bridge token / service role into `NEXT_PUBLIC_*`.
 - If token is lost: regenerate, store new plaintext only on Pi, update
   `public.amr_bridge_config.token_sha256` in Supabase (sha256 of token).
@@ -248,7 +258,17 @@ Important state fields forwarded (subset): `pose`, `map_pose`, `vel`, `cmd`,
 
 ### Outbound (browser command → dashboard)
 
-| Command `type` | Rank gate | Dashboard |
+Private-channel commands that pass epoch / token / lease / seq checks skip
+the rank gates. E-stop skips seq, timestamp, and lease. For 1 s after an
+accepted e-stop, joy, nudge, and drive are ignored unless their seq is newer
+than the e-stop's. `/api/estop` does not latch: the dashboard streams zeros
+for 1.5 s, cancels nav, and kills the tool. The public channel
+still applies the rank gates while `AMR_PUBLIC_CHANNEL=1` (default is off).
+That setting reopens a spoofable rank (the client writes it) and those
+commands have no 0.5 s deadman. Motion is posted to the dashboard or gamepad,
+which publish `/cmd_vel`. The bridge does not publish `/cmd_vel_safe`.
+
+| Command `type` | Rank gate (public channel only) | Dashboard |
 | --- | --- | --- |
 | `estop` | ≥1 | `POST /api/estop` |
 | `nudge` / `drive` | ≥1 | `POST /api/nudge` `{lin,ang}` |

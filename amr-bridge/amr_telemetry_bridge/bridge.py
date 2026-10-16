@@ -3,21 +3,25 @@
 amr_telemetry_bridge — Pi → Supabase Realtime → https://amrslam.tech/control
 
 Runs on the robot (RPi5) beside robot_dashboard_node.py. Reads the local SSE
-feed and POSTs commands back to the dashboard HTTP API.
-
-Network path (preferred):
-  Pi ── Tailscale ── laptop/ops   (management)
-  Pi ── Cloudflare Tunnel / Supabase Realtime ── browsers on /control
+feed and POSTs commands back to the dashboard HTTP API. Motion always goes
+through that API (or the gamepad HTTP API). Both publish /cmd_vel, so
+safety_stop stays in front of the motors. This process never publishes
+/cmd_vel_safe.
 
 Env (see /etc/amr-bridge.env — also loaded by amr_bridge.launch.py):
-  AMR_BOT_ID=amr4|hardware-bot
+  AMR_BOT_ID=hardware-bot
   AMR_SUPABASE_URL=https://….supabase.co
-  AMR_SUPABASE_KEY=…                  # publishable/anon key (Realtime + touch RPC)
+  AMR_SUPABASE_KEY=…                  # publishable key only
   AMR_BRIDGE_TOKEN=…                  # shared secret → public.touch_amr_bot
-  AMR_SUPABASE_SERVICE_KEY=…          # optional legacy; not required
+  AMR_BRIDGE_EMAIL=…                  # bridge Auth user (private channels)
+  AMR_BRIDGE_PASSWORD=…
+  AMR_PUBLIC_CHANNEL=0                # 1 reopens the legacy topic (spoofable rank, no deadman)
+  AMR_PRIVATE_CHANNEL=1               # bot:<id>:status|cmd|cmdq|ctl
   AMR_DASHBOARD_URL=http://127.0.0.1:8080
   AMR_CAMERA_URL=                     # optional public MJPEG (CF tunnel)
   AMR_CAMERA_JPEG_MAX_KB=24           # inline JPEG budget when scraping /camera.mjpg
+
+AMR_SUPABASE_SERVICE_KEY is ignored. Do not set it on the robot.
 """
 
 from __future__ import annotations
@@ -27,18 +31,89 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import os
 import signal
 import threading
 import time
+from collections import deque
 from typing import Any, Optional
 
 import httpx
 
 from . import __version__
-from .protocol import BOARD_RATE_HZ, BOT_IDS, BRIDGE_VERSION, FULL_RATE_HZ, channel_name
+from .control import (
+    ControlTracker,
+    MotionGuard,
+    clamp_poll_interval,
+    flag_enabled,
+    MOTION_WATCHDOG_S,
+    command_seq,
+    looks_like_service_key,
+    motion_command,
+    peek_command_type,
+    sanitize_command,
+)
+from .protocol import (
+    BOARD_RATE_HZ,
+    BOT_IDS,
+    BRIDGE_VERSION,
+    CMD_EVENT,
+    CTL_EVENT,
+    FULL_RATE_HZ,
+    STATUS_EVENTS,
+    channel_name,
+    private_topic,
+)
 
 log = logging.getLogger("amr_bridge")
+
+# How often to check whether the bridge JWT should be refreshed.
+AUTH_REFRESH_CHECK_S = 15.0
+# Refresh this long before expires_at, then re-apply Realtime auth.
+AUTH_REFRESH_SKEW_S = 90.0
+# Command and zero posts. Short so a hung dashboard cannot pin the stop latch.
+COMMAND_HTTP_TIMEOUT_S = 2.0
+# Realtime callbacks waiting on that HTTP. E-stop and :ctl are not counted.
+# Joy and nudge do not use this queue: they share one latest-wins slot.
+MAX_SCHEDULED_COMMANDS = 4
+_MOTION_SLOT_TYPES = ("joy", "nudge", "drive")
+# How soon a failed zero is tried again.
+ZERO_RETRY_S = 0.25
+# Bound the unverified e-stop queue. Older entries fall off the left.
+ESTOP_QUEUE_MAX = 16
+# /api/estop does not latch. The dashboard streams zeros for 1.5 s, cancels
+# nav, and kills the tool; the gamepad then keeps publishing the last axes
+# for 1.5 s. Ignore stick commands for this long after an accepted e-stop
+# unless their seq is newer than the e-stop's.
+ESTOP_MOTION_HOLD_S = 1.0
+
+
+def _public_rank(env: Any) -> int:
+    """Rank on a public envelope. A non-dict ``from`` or a non-numeric rank is 0."""
+    if not isinstance(env, dict):
+        return 0
+    sender = env.get("from")
+    if not isinstance(sender, dict):
+        return 0
+    raw = sender.get("rank")
+    if isinstance(raw, bool) or raw is None:
+        return 0
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        if not math.isfinite(raw) or not raw.is_integer():
+            return 0
+        return int(raw)
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return 0
+        try:
+            return int(text, 10)
+        except ValueError:
+            return 0
+    return 0
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -54,8 +129,18 @@ class DashboardClient:
     async def close(self) -> None:
         await self._http.aclose()
 
-    async def post(self, path: str, payload: dict | None = None) -> dict:
-        r = await self._http.post(f"{self.base}{path}", json=payload or {})
+    async def post(
+        self,
+        path: str,
+        payload: dict | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> dict:
+        r = await self._http.post(
+            f"{self.base}{path}",
+            json=payload or {},
+            timeout=timeout,
+        )
         r.raise_for_status()
         try:
             return r.json()
@@ -86,69 +171,385 @@ class DashboardClient:
         return None
 
 
+def _create_supabase(url: str, key: str):
+    """Publishable key only. Session is not written to disk."""
+    from supabase import create_client
+
+    options = None
+    try:
+        from supabase import ClientOptions
+    except ImportError:
+        try:
+            from supabase.lib.client_options import ClientOptions  # type: ignore
+        except ImportError:
+            ClientOptions = None  # type: ignore
+    if ClientOptions is not None:
+        try:
+            options = ClientOptions(auto_refresh_token=False, persist_session=False)
+        except Exception:
+            options = None
+    if options is not None:
+        try:
+            return create_client(url, key, options=options)
+        except TypeError:
+            pass
+    return create_client(url, key)
+
+
+def _session_parts(res: Any) -> tuple[str, str | None, float | None]:
+    session = getattr(res, "session", None)
+    if session is None and isinstance(res, dict):
+        session = res.get("session")
+    if session is None:
+        raise RuntimeError("bridge sign-in returned no session")
+
+    def field(name: str) -> Any:
+        if isinstance(session, dict):
+            return session.get(name)
+        return getattr(session, name, None)
+
+    access = field("access_token")
+    refresh = field("refresh_token")
+    expires = field("expires_at")
+    if not access:
+        raise RuntimeError("bridge sign-in returned no access token")
+    exp = float(expires) if expires else None
+    return str(access), (str(refresh) if refresh else None), exp
+
+
 class RealtimeHub:
-    """Thin sync supabase-py wrapper used from the asyncio loop via to_thread."""
+    """Sync supabase-py wrapper. Call it from the asyncio loop via to_thread."""
 
-    def __init__(self, url: str, key: str, bot_id: str, on_command, bridge_token: str | None):
-        from supabase import create_client
-
+    def __init__(
+        self,
+        url: str,
+        key: str,
+        bot_id: str,
+        bridge_token: str | None,
+        *,
+        email: str | None,
+        password: str | None,
+        public_enabled: bool,
+        private_enabled: bool,
+        on_public_command,
+        on_private_command,
+        on_control,
+        on_link,
+    ):
         self._bot_id = bot_id
-        self._on_command = on_command
         self._bridge_token = bridge_token
-        self._client = create_client(url, key)
-        self._channel = self._client.channel(channel_name(bot_id))
-        self._ready = threading.Event()
+        self._email = email
+        self._password = password
+        self._public_enabled = public_enabled
+        self._private_enabled = private_enabled
+        self._on_public_command = on_public_command
+        self._on_private_command = on_private_command
+        self._on_control = on_control
+        self._on_link = on_link
+        self._client = _create_supabase(url, key)
+        self._channels: list[Any] = []
+        self._public_channel = None
+        self._status_channel = None
+        self._public_ready = False
+        self._private_ready = False
+        self._signed_in = False
+        self._access_token: str | None = None
+        self._refresh_token: str | None = None
+        self._expires_at = 0.0
+        self._need_reauth = False
+        self._closed = False
 
     def connect(self) -> None:
-        def _cb(message: dict) -> None:
-            payload = message.get("payload") if isinstance(message, dict) else message
-            if isinstance(payload, str):
-                try:
-                    payload = json.loads(payload)
-                except json.JSONDecodeError:
-                    return
-            if isinstance(payload, dict):
-                self._on_command(payload)
-
-        # supabase-py 2.x broadcast API
-        try:
-            self._channel.on_broadcast(event="command", callback=_cb)
-        except Exception:
-            self._channel.on("broadcast", {"event": "command"}, _cb)
-
-        self._channel.subscribe()
-        self._ready.set()
-        log.info("realtime subscribed (%s)", channel_name(self._bot_id))
+        if self._public_enabled:
+            self._subscribe_public()
+        if self._private_enabled:
+            try:
+                self._sign_in()
+                self._subscribe_private()
+            except Exception as exc:
+                log.error("private channel setup failed: %s", self._redact(exc))
 
     def send(self, event: str, payload: dict) -> None:
-        if not self._ready.is_set():
+        if event not in STATUS_EVENTS:
             return
-        try:
-            self._channel.send_broadcast(event, payload)
-        except Exception:
-            try:
-                self._channel.send({"type": "broadcast", "event": event, "payload": payload})
-            except Exception as exc:
-                log.debug("broadcast %s failed: %s", event, exc)
+        if self._public_ready and self._public_channel is not None:
+            self._send_one(self._public_channel, event, payload)
+        if self._private_ready and self._status_channel is not None:
+            self._send_one(self._status_channel, event, payload)
 
-    def touch_bot_row(self, camera_url: str | None) -> None:
+    def touch_bot_row(self, camera_url: str | None) -> bool | None:
+        """Heartbeat public.touch_amr_bot. Logs a false result. Never logs the token."""
         if not self._bridge_token:
-            return
+            log.warning("touch_amr_bot skipped: AMR_BRIDGE_TOKEN is unset")
+            return None
         try:
-            self._client.rpc("touch_amr_bot", {
+            res = self._client.rpc("touch_amr_bot", {
                 "p_bot_id": self._bot_id,
                 "p_token": self._bridge_token,
                 "p_bridge_version": BRIDGE_VERSION,
                 "p_camera_url": camera_url,
             }).execute()
         except Exception as exc:
-            log.debug("amr_bots touch skipped: %s", exc)
+            log.warning("touch_amr_bot failed: %s", type(exc).__name__)
+            return None
+        ok = res.data
+        if isinstance(ok, list):
+            ok = ok[0] if ok else None
+        if ok is False:
+            log.warning(
+                "touch_amr_bot returned false for bot %s "
+                "(bad token, or the server locked the RPC after 10 bad tokens this minute)",
+                self._bot_id,
+            )
+            return False
+        if ok is True:
+            return True
+        log.warning("touch_amr_bot returned an unexpected result")
+        return None
+
+    def poll_control(self) -> tuple[dict, dict | None]:
+        control = (
+            self._client.table("bot_control")
+            .select("bot_id,controller,epoch,lease_expires_at")
+            .eq("bot_id", self._bot_id)
+            .limit(1)
+            .execute()
+        )
+        token = (
+            self._client.table("bot_control_tokens")
+            .select("bot_id,epoch,token")
+            .eq("bot_id", self._bot_id)
+            .limit(1)
+            .execute()
+        )
+        rows = control.data or []
+        if not rows:
+            raise RuntimeError("bot_control returned no row")
+        token_rows = token.data or []
+        return rows[0], (token_rows[0] if token_rows else None)
+
+    def refresh_auth_if_due(self) -> bool:
+        """Refresh the bridge JWT when it is near expiry and re-apply Realtime auth.
+
+        Also retries sign-in after a failed startup. Returns True when a new
+        access token was applied.
+        """
+        if not self._private_enabled or self._closed:
+            return False
+        if not self._signed_in:
+            self._sign_in()
+        if not self._private_ready:
+            self._subscribe_private()
+            return True
+        now = time.time()
+        if self._expires_at and now < self._expires_at - AUTH_REFRESH_SKEW_S:
+            return False
+        if self._refresh_token:
+            res = self._client.auth.refresh_session(self._refresh_token)
+        else:
+            res = self._client.auth.refresh_session()
+        self._store_session(res)
+        self._apply_realtime_auth(self._access_token or "")
+        log.info("bridge auth refreshed; realtime auth re-applied")
+        return True
 
     def close(self) -> None:
+        self._closed = True
+        for channel in self._channels:
+            try:
+                self._client.remove_channel(channel)
+            except Exception:
+                pass
+        self._channels.clear()
+
+    def _subscribe_public(self) -> None:
+        topic = channel_name(self._bot_id)
+        channel = self._client.channel(topic)
+        self._bind_broadcast(channel, CMD_EVENT, self._public_cb)
+        channel.subscribe()
+        self._public_channel = channel
+        self._channels.append(channel)
+        self._public_ready = True
+        log.info("realtime subscribed (%s)", topic)
+
+    def _subscribe_private(self) -> None:
+        if self._private_ready or self._closed:
+            return
+        if not self._access_token:
+            raise RuntimeError("private subscribe without a bridge access token")
+        self._apply_realtime_auth(self._access_token)
+        specs = (
+            ("cmd", CMD_EVENT, self._cmd_cb),
+            ("cmdq", CMD_EVENT, self._cmdq_cb),
+            ("ctl", CTL_EVENT, self._ctl_cb),
+            ("status", None, None),
+        )
+        made = []
         try:
-            self._client.remove_channel(self._channel)
+            for kind, event, callback in specs:
+                topic = private_topic(self._bot_id, kind)
+                channel = self._open_private_channel(topic)
+                if event and callback:
+                    self._bind_broadcast(channel, event, callback)
+                try:
+                    channel.subscribe(self._status_cb)
+                except TypeError:
+                    channel.subscribe()
+                made.append(channel)
+                if kind == "status":
+                    self._status_channel = channel
         except Exception:
-            pass
+            for channel in made:
+                try:
+                    self._client.remove_channel(channel)
+                except Exception:
+                    pass
+            self._status_channel = None
+            raise
+        self._channels.extend(made)
+        self._private_ready = True
+        log.info(
+            "realtime subscribed private (%s)",
+            ", ".join(private_topic(self._bot_id, kind) for kind, _, _ in specs),
+        )
+
+    def _open_private_channel(self, topic: str):
+        params = {"config": {"private": True}}
+        try:
+            return self._client.channel(topic, params)
+        except TypeError:
+            return self._client.channel(topic, params=params)
+
+    def _bind_broadcast(self, channel, event: str, callback) -> None:
+        try:
+            channel.on_broadcast(event=event, callback=callback)
+        except Exception:
+            channel.on("broadcast", {"event": event}, callback)
+
+    def _public_cb(self, message) -> None:
+        payload = _unwrap_callback(message)
+        if isinstance(payload, dict):
+            self._on_public_command(payload)
+
+    def _cmd_cb(self, message) -> None:
+        payload = _unwrap_callback(message)
+        if isinstance(payload, dict):
+            self._on_private_command(payload, "cmd")
+
+    def _cmdq_cb(self, message) -> None:
+        payload = _unwrap_callback(message)
+        if isinstance(payload, dict):
+            self._on_private_command(payload, "cmdq")
+
+    def _ctl_cb(self, message) -> None:
+        payload = _unwrap_callback(message)
+        if isinstance(payload, dict):
+            self._on_control(payload)
+
+    def _status_cb(self, *args) -> None:
+        status = args[0] if args else ""
+        name = str(getattr(status, "value", status) or "")
+        if "SUBSCRIBED" in name:
+            self._reapply_if_needed()
+            if self._on_link:
+                self._on_link(True)
+            return
+        if any(token in name for token in ("CLOSED", "CHANNEL_ERROR", "TIMED_OUT")):
+            self._need_reauth = True
+            log.warning("realtime private channel %s", name)
+
+    def _reapply_if_needed(self) -> None:
+        if not self._need_reauth or not self._access_token:
+            return
+        self._need_reauth = False
+        try:
+            self._apply_realtime_auth(self._access_token)
+            log.info("realtime auth re-applied after reconnect")
+        except Exception as exc:
+            self._need_reauth = True
+            log.warning("realtime auth re-apply failed: %s", type(exc).__name__)
+
+    def _sign_in(self) -> None:
+        if not self._email or not self._password:
+            raise RuntimeError("AMR_BRIDGE_EMAIL and AMR_BRIDGE_PASSWORD are required")
+        res = self._client.auth.sign_in_with_password({
+            "email": self._email,
+            "password": self._password,
+        })
+        self._store_session(res)
+        self._apply_realtime_auth(self._access_token or "")
+        self._signed_in = True
+        log.info("bridge auth signed in")
+
+    def _store_session(self, res: Any) -> None:
+        access, refresh, expires = _session_parts(res)
+        self._access_token = access
+        if refresh:
+            self._refresh_token = refresh
+        self._expires_at = expires if expires else time.time() + 3600
+        self._signed_in = True
+
+    def _apply_realtime_auth(self, access_token: str) -> None:
+        if not access_token:
+            raise RuntimeError("missing bridge access token")
+        realtime = self._client.realtime
+        connect = getattr(realtime, "connect", None)
+        if callable(connect):
+            try:
+                connect()
+            except Exception as exc:
+                text = str(exc).lower()
+                if "already" not in text and "connected" not in text:
+                    log.debug("realtime connect before set_auth: %s", type(exc).__name__)
+        set_auth = getattr(realtime, "set_auth", None)
+        if not callable(set_auth):
+            raise RuntimeError("supabase realtime client has no set_auth")
+        try:
+            set_auth(access_token)
+        except Exception as exc:
+            text = str(exc).lower()
+            if callable(connect) and "connect" in text:
+                connect()
+                set_auth(access_token)
+                return
+            raise
+
+    def _send_one(self, channel, event: str, payload: dict) -> None:
+        try:
+            channel.send_broadcast(event, payload)
+        except Exception:
+            try:
+                channel.send({"type": "broadcast", "event": event, "payload": payload})
+            except Exception as exc:
+                log.debug("broadcast %s failed: %s", event, type(exc).__name__)
+
+    def _redact(self, exc: BaseException) -> str:
+        text = f"{type(exc).__name__}: {exc}"
+        if self._password and self._password in text:
+            text = text.replace(self._password, "[redacted]")
+        if self._access_token and self._access_token in text:
+            text = text.replace(self._access_token, "[redacted]")
+        return text[:400]
+
+
+def _unwrap_callback(message: Any) -> Any:
+    """Return the broadcast body. A missing payload keeps the message itself."""
+    if isinstance(message, str):
+        try:
+            message = json.loads(message)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(message, dict):
+        return message
+    payload = message.get("payload")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return None
+    if isinstance(payload, dict):
+        return payload
+    return message
 
 
 class Bridge:
@@ -161,6 +562,12 @@ class Bridge:
         dashboard_url: str,
         camera_url: str | None,
         camera_jpeg_max_kb: int,
+        *,
+        bridge_email: str | None = None,
+        bridge_password: str | None = None,
+        public_channel: bool = False,
+        private_channel: bool = True,
+        control_poll_s: float = 2.0,
     ):
         if bot_id not in BOT_IDS:
             raise SystemExit(f"AMR_BOT_ID must be one of {BOT_IDS}")
@@ -168,6 +575,17 @@ class Bridge:
         self.supabase_url = supabase_url.rstrip("/")
         self.api_key = api_key
         self.bridge_token = bridge_token
+        self.bridge_email = bridge_email
+        self._bridge_password = bridge_password
+        self.public_channel = public_channel
+        self.private_channel = private_channel and bool(bridge_email) and bool(bridge_password)
+        if private_channel and not self.private_channel:
+            log.warning(
+                "private channels skipped: set AMR_BRIDGE_EMAIL and AMR_BRIDGE_PASSWORD "
+                "to sign in as the bridge user"
+            )
+        if not self.public_channel and not self.private_channel:
+            log.warning("no Realtime channel is enabled; telemetry will not be published")
         self.dash = DashboardClient(dashboard_url)
         self.camera_url = camera_url
         self.camera_jpeg_max_kb = camera_jpeg_max_kb
@@ -178,99 +596,594 @@ class Bridge:
         self._cam_every = 0
         self._last_pub = 0.0
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._gate = ControlTracker(bot_id)
+        self._guard = MotionGuard()
+        self._poll_s = clamp_poll_interval(control_poll_s)
+        self._poll_lock = asyncio.Lock()
+        self._io_lock = asyncio.Lock()
+        self._sched_lock = threading.Lock()
+        self._scheduled = 0
+        self._last_zero_mono = 0.0
+        # Latest joy / nudge / drive only. A newer stick replaces one not yet posted.
+        # _motion_gen tracks that replacement. _estop_gen changes only when an
+        # e-stop drops the slot, so a newer stick does not look like a stop.
+        self._motion_lock = threading.Lock()
+        self._motion_pending: tuple[dict, str] | None = None
+        self._motion_gen = 0
+        self._estop_gen = 0
+        self._motion_wake = asyncio.Event()
+        self._estop_seq: int | None = None
+        self._motion_hold_until = 0.0
+        # E-stop is its own task. The queue is not the capped scheduler.
+        self._estop_lock = threading.Lock()
+        self._estop_q: deque[tuple[dict, str]] = deque(maxlen=ESTOP_QUEUE_MAX)
+        self._estop_needed = False
+        self._estop_wake = asyncio.Event()
+        # :ctl is coalesced and is not subject to the callback cap.
+        self._ctl_lock = threading.Lock()
+        self._ctl_latest: dict | None = None
+        self._ctl_running = False
 
-    def _queue_command(self, env: dict) -> None:
-        if self._loop and self._loop.is_running():
-            asyncio.run_coroutine_threadsafe(self._handle_command(env), self._loop)
+    def _queue_public(self, env: dict) -> None:
+        typ = peek_command_type(env)
+        if typ == "estop":
+            self._offer_estop(env, "public")
+            return
+        if typ in _MOTION_SLOT_TYPES:
+            self._offer_motion(env, "public")
+            return
+        self._schedule(self._handle_public_command(env))
+
+    def _queue_private(self, env: dict, source: str) -> None:
+        typ = peek_command_type(env)
+        if typ == "estop":
+            self._offer_estop(env, source)
+            return
+        if typ in _MOTION_SLOT_TYPES:
+            self._offer_motion(env, source)
+            return
+        self._schedule(self._handle_private_command(env, source))
+
+    def _queue_control(self, env: dict) -> None:
+        with self._ctl_lock:
+            self._ctl_latest = env
+            start = not self._ctl_running
+            if start:
+                self._ctl_running = True
+        if start:
+            self._spawn(self._ctl_drain())
+
+    def _offer_motion(self, env: dict, source: str) -> None:
+        with self._motion_lock:
+            self._motion_gen += 1
+            self._motion_pending = (env, source)
+        self._signal(self._motion_wake)
+
+    def _take_motion(self) -> tuple[tuple[dict, str] | None, int, int]:
+        with self._motion_lock:
+            item = self._motion_pending
+            gen = self._motion_gen
+            estop_gen = self._estop_gen
+            self._motion_pending = None
+            return item, gen, estop_gen
+
+    def _clear_motion(self) -> None:
+        """Drop a stick that has not been posted. Does not bump the stick generation.
+
+        An in-flight post watches ``_estop_gen`` and zeroes only when this
+        runs. A newer stick must not take that path, or the robot stutters
+        whenever a post is slower than the stick rate.
+        """
+        with self._motion_lock:
+            self._estop_gen += 1
+            self._motion_pending = None
+
+    def _motion_current(self, gen: int) -> bool:
+        with self._motion_lock:
+            return gen == self._motion_gen
+
+    def _estop_current(self, gen: int) -> bool:
+        with self._motion_lock:
+            return gen == self._estop_gen
+
+    def _arm_estop_hold(self, env: dict) -> None:
+        """Ignore stick commands briefly, unless they are newer than this stop."""
+        self._estop_seq = command_seq(env)
+        self._motion_hold_until = time.monotonic() + ESTOP_MOTION_HOLD_S
+
+    def _motion_held(self, env: dict) -> bool:
+        if time.monotonic() >= self._motion_hold_until:
+            return False
+        seq = command_seq(env)
+        held = self._estop_seq
+        if held is not None and seq is not None and seq > held:
+            return False
+        return True
+
+    def _offer_estop(self, env: dict, source: str) -> None:
+        with self._estop_lock:
+            self._estop_q.append((env, source))
+        self._signal(self._estop_wake)
+
+    def _drain_estop(self) -> list[tuple[dict, str]]:
+        with self._estop_lock:
+            items = list(self._estop_q)
+            self._estop_q.clear()
+            return items
+
+    def _signal(self, event: asyncio.Event) -> None:
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            try:
+                loop.call_soon_threadsafe(event.set)
+                return
+            except RuntimeError:
+                pass
+        event.set()
+
+    def _spawn(self, coro) -> None:
+        """Run a coroutine on the bridge loop with no in-flight cap."""
+        if not (self._loop and self._loop.is_running()):
+            coro.close()
+            return
+        asyncio.run_coroutine_threadsafe(coro, self._loop)
+
+    def _queue_link(self, up: bool) -> None:
+        # Subscribe is not contact. note_contact runs after a poll or a command.
+        del up
+
+    def _schedule(self, coro) -> None:
+        """Hop a Realtime callback onto the bridge loop, with a hard cap.
+
+        A hung HTTP call used to leave every later callback queued behind it.
+        Past the cap the coroutine is closed and dropped.
+        """
+        if not (self._loop and self._loop.is_running()):
+            coro.close()
+            return
+        with self._sched_lock:
+            if self._scheduled >= MAX_SCHEDULED_COMMANDS:
+                coro.close()
+                log.warning(
+                    "dropping realtime callback; %s already scheduled",
+                    MAX_SCHEDULED_COMMANDS,
+                )
+                return
+            self._scheduled += 1
+
+        async def _bounded() -> None:
+            try:
+                await coro
+            finally:
+                with self._sched_lock:
+                    self._scheduled -= 1
+
+        asyncio.run_coroutine_threadsafe(_bounded(), self._loop)
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._hub = RealtimeHub(
-            self.supabase_url, self.api_key, self.bot_id, self._queue_command, self.bridge_token,
+            self.supabase_url,
+            self.api_key,
+            self.bot_id,
+            self.bridge_token,
+            email=self.bridge_email,
+            password=self._bridge_password,
+            public_enabled=self.public_channel,
+            private_enabled=self.private_channel,
+            on_public_command=self._queue_public,
+            on_private_command=self._queue_private,
+            on_control=self._queue_control,
+            on_link=self._queue_link,
         )
         await asyncio.to_thread(self._hub.connect)
-        await asyncio.gather(
+        tasks = [
             self._sse_loop(),
             self._heartbeat_loop(),
             self._presence_touch_loop(),
-        )
+            self._watchdog_loop(),
+            self._motion_slot_loop(),
+            self._estop_loop(),
+        ]
+        if self.private_channel:
+            tasks.append(self._control_poll_loop())
+            tasks.append(self._auth_refresh_loop())
+        await asyncio.gather(*tasks)
 
-    async def _handle_command(self, env: dict) -> None:
+    async def _ctl_drain(self) -> None:
+        while not self._stop.is_set():
+            with self._ctl_lock:
+                env = self._ctl_latest
+                self._ctl_latest = None
+                if env is None:
+                    self._ctl_running = False
+                    return
+            try:
+                await self._handle_control(env)
+            except Exception as exc:
+                # Keep the loop so a :ctl that arrived during the failure is
+                # still polled. Dropping it would wait for the next cue.
+                log.warning("control event failed: %s", exc)
+
+    async def _handle_control(self, env: dict) -> None:
+        # :ctl carries no token and no lease. Poll is the only authority.
+        if self._gate.ctl_needs_poll(env):
+            await self._poll_once()
+
+    async def _handle_public_command(self, env: dict) -> None:
+        # Legacy public topic. Rank gates stay until cut-over turns this path off.
         if env.get("botId") not in (self.bot_id, None):
             return
         cmd = env.get("cmd") or {}
         typ = cmd.get("type")
-        rank = int((env.get("from") or {}).get("rank") or 0)
+        rank = _public_rank(env)
         log.info("command %s from rank=%s", typ, rank)
         try:
             if typ == "set_rate":
-                mode = cmd.get("mode")
-                if mode in ("full", "board"):
-                    self.mode = mode
-                    log.info("rate mode → %s", mode)
+                clean, reason = sanitize_command(cmd)
+                if clean is None:
+                    log.info("rejected public command type=%s: %s", typ, reason)
+                    return
+                self._apply_rate(clean)
                 return
-            if rank < 1 and typ != "set_rate":
+            if rank < 1:
                 return
-            if typ == "estop":
-                await self.dash.post("/api/estop")
-            elif typ in ("nudge", "drive"):
-                await self.dash.post("/api/nudge", {
-                    "lin": float(cmd.get("lin", 0)),
-                    "ang": float(cmd.get("ang", 0)),
-                })
-            elif typ == "joy":
-                # Prefer web_gamepad_node HTTP fallback when configured.
-                gamepad = os.environ.get("AMR_GAMEPAD_URL", "").rstrip("/")
-                axes = cmd.get("axes") or [0.0] * 8
-                buttons = int(cmd.get("buttons") or 0)
-                if gamepad:
-                    await self.dash._http.post(
-                        f"{gamepad}/api/joy",
-                        json={"a": list(axes)[:8], "b": buttons},
-                    )
-                else:
-                    # Differential approx from left stick: axes[1]=fwd, axes[0]=yaw
-                    ax = list(axes) + [0.0] * 8
-                    lin = max(-0.4, min(0.4, -float(ax[1]) * 0.35))
-                    ang = max(-1.0, min(1.0, -float(ax[0]) * 0.9))
-                    if abs(lin) > 0.02 or abs(ang) > 0.02:
-                        await self.dash.post("/api/nudge", {"lin": lin, "ang": ang})
-            elif typ == "nav_goal":
+            if typ == "save_map" and rank < 2:
+                return
+            clean, reason = sanitize_command(cmd)
+            if clean is None:
+                log.info("rejected public command type=%s: %s", typ, reason)
+                return
+            await self._run_accepted(clean)
+        except Exception as exc:
+            log.warning("command failed: %s", exc)
+
+    async def _handle_private_command(self, env: dict, source: str) -> None:
+        now_s = time.time()
+        now_mono = time.monotonic()
+        result = self._gate.verify(env, source=source, now_s=now_s, now_mono=now_mono)
+        if not result.ok:
+            log.info("rejected %s command type=%s: %s", source, result.cmd_type, result.reason)
+            return
+        log.info("accepted %s command type=%s", source, result.cmd_type)
+        cmd = result.cmd or {}
+        try:
+            if cmd.get("type") == "set_rate":
+                self._apply_rate(cmd)
+                return
+            await self._run_accepted(cmd)
+        except Exception as exc:
+            log.warning("command failed: %s", exc)
+
+    async def _run_accepted(self, cmd: dict) -> None:
+        """Post one accepted command. A hard stop zeroes again after motion."""
+        if motion_command(cmd) and not self._gate.fault_active(time.time(), time.monotonic()):
+            # Contact just succeeded, or the lease is still open: this motion
+            # supersedes a deadman zero. A hard fault stays latched.
+            self._guard.set_hard(False)
+            self._guard.release_for_motion()
+        await self._dispatch_cmd(cmd)
+
+    def _accept_motion(self, env: dict, source: str) -> dict | None:
+        if source == "public":
+            if not isinstance(env, dict) or env.get("botId") not in (self.bot_id, None):
+                return None
+            cmd = env.get("cmd") if isinstance(env.get("cmd"), dict) else {}
+            rank = _public_rank(env)
+            if rank < 1:
+                return None
+            clean, reason = sanitize_command(cmd)
+            if clean is None or clean.get("type") not in _MOTION_SLOT_TYPES:
+                if reason:
+                    log.info("rejected public motion: %s", reason)
+                return None
+            if self._motion_held(env):
+                log.info("public motion ignored after e-stop")
+                return None
+            # Public commands do not arm the private deadman.
+            return clean
+        if not isinstance(env, dict):
+            return None
+        if self._motion_held(env):
+            log.info("motion ignored after e-stop")
+            return None
+        result = self._gate.verify(
+            env, source=source, now_s=time.time(), now_mono=time.monotonic(),
+        )
+        if not result.ok:
+            log.info("rejected %s command type=%s: %s", source, result.cmd_type, result.reason)
+            return None
+        cmd = result.cmd or {}
+        if cmd.get("type") not in _MOTION_SLOT_TYPES:
+            return None
+        log.info("accepted %s command type=%s", source, cmd.get("type"))
+        if motion_command(cmd) and not self._gate.fault_active(time.time(), time.monotonic()):
+            self._guard.set_hard(False)
+            self._guard.release_for_motion()
+        return cmd
+
+    def _accept_estop(self, env: dict, source: str) -> bool:
+        if source == "public":
+            if not isinstance(env, dict) or env.get("botId") not in (self.bot_id, None):
+                return False
+            cmd = env.get("cmd") if isinstance(env.get("cmd"), dict) else {}
+            if cmd.get("type") != "estop":
+                return False
+            rank = _public_rank(env)
+            if rank < 1:
+                log.info("rejected public e-stop: rank")
+                return False
+            log.warning("public e-stop accepted")
+            self._arm_estop_hold(env)
+            return True
+        if not isinstance(env, dict):
+            return False
+        result = self._gate.verify(
+            env, source=source, now_s=time.time(), now_mono=time.monotonic(),
+        )
+        if not result.ok or result.cmd_type != "estop":
+            log.info("rejected %s e-stop: %s", source, result.reason)
+            return False
+        log.warning("e-stop accepted on %s", source)
+        self._arm_estop_hold(env)
+        return True
+
+    async def _motion_slot_loop(self) -> None:
+        """Post at most one joy or nudge. A newer one replaces a pending one."""
+        while not self._stop.is_set():
+            try:
+                await self._motion_slot_turn()
+            except Exception:
+                log.exception("motion slot failed")
+
+    async def _motion_slot_turn(self) -> None:
+        item, gen, estop_gen = self._take_motion()
+        if item is None:
+            self._motion_wake.clear()
+            item, gen, estop_gen = self._take_motion()
+            if item is None:
+                try:
+                    await asyncio.wait_for(self._motion_wake.wait(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    return
+                return
+        if self._stop.is_set() or not self._motion_current(gen) or not self._estop_current(estop_gen):
+            return
+        accepted_mono = time.monotonic()
+        cmd = self._accept_motion(item[0], item[1])
+        if cmd is None or not self._motion_current(gen) or not self._estop_current(estop_gen):
+            return
+        try:
+            await self._post_motion_cmd(cmd)
+        except Exception as exc:
+            log.warning("motion command failed: %s", exc)
+        late = time.monotonic() - accepted_mono >= MOTION_WATCHDOG_S
+        estop_won = not self._estop_current(estop_gen)
+        if late or estop_won:
+            # A newer stick is not a reason to zero. A stop, or a post that
+            # outlived the deadman, is. The guard may already have been cleared
+            # by the watchdog zero that this delivery just undid.
+            reason = "late command" if late else "e-stop"
+            log.warning("watchdog: zero motion (%s)", reason)
+            await self._post_zero()
+            return
+        if motion_command(cmd) and (self._guard.hard or self._guard.owed):
+            log.warning("watchdog: zero motion (after command)")
+            owed = self._guard.owed_gen
+            if await self._post_zero() and owed is not None:
+                self._guard.mark_zeroed(owed)
+
+    async def _estop_loop(self) -> None:
+        """Verify e-stops and post the stop until the dashboard accepts it.
+
+        This task is not part of the capped callback queue and does not take
+        the motion lock, so a stuck joy post cannot delay it.
+        """
+        while not self._stop.is_set():
+            try:
+                await self._estop_turn()
+            except Exception:
+                log.exception("e-stop loop failed")
+
+    async def _estop_turn(self) -> None:
+        batch = self._drain_estop()
+        if not batch and not self._estop_needed:
+            self._estop_wake.clear()
+            batch = self._drain_estop()
+            if not batch:
+                try:
+                    await asyncio.wait_for(self._estop_wake.wait(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    return
+                return
+        accepted = False
+        for env, source in batch:
+            try:
+                if self._accept_estop(env, source):
+                    accepted = True
+            except Exception:
+                log.exception("e-stop accept failed")
+        if accepted:
+            self._estop_needed = True
+            self._clear_motion()
+        if not self._estop_needed:
+            return
+        if await self._estop_once():
+            self._estop_needed = False
+        else:
+            self._estop_wake.clear()
+            try:
+                await asyncio.wait_for(self._estop_wake.wait(), timeout=ZERO_RETRY_S)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _estop_once(self) -> bool:
+        """Dashboard e-stop, zero nudge, and zero joy, all at once."""
+        timeout = COMMAND_HTTP_TIMEOUT_S
+
+        async def _stop_dashboard() -> None:
+            await self.dash.post("/api/estop", timeout=timeout)
+
+        async def _zero_nudge() -> None:
+            await self.dash.post(
+                "/api/nudge", {"lin": 0.0, "ang": 0.0}, timeout=timeout,
+            )
+
+        async def _zero_joy() -> None:
+            gamepad = os.environ.get("AMR_GAMEPAD_URL", "").rstrip("/")
+            if not gamepad:
+                return
+            response = await self.dash._http.post(
+                f"{gamepad}/api/joy",
+                json={"a": [0.0] * 8, "b": 0},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+
+        results = await asyncio.gather(
+            _stop_dashboard(), _zero_nudge(), _zero_joy(), return_exceptions=True,
+        )
+        ok = True
+        for item in results:
+            if isinstance(item, Exception):
+                log.warning("e-stop post failed: %s", item)
+                ok = False
+        if ok:
+            log.warning("e-stop posts accepted")
+        return ok
+
+    def _apply_rate(self, cmd: dict) -> None:
+        mode = cmd.get("mode")
+        if mode in ("full", "board"):
+            self.mode = mode
+            log.info("rate mode → %s", mode)
+
+    async def _dispatch_cmd(self, cmd: dict) -> None:
+        """Forward a command through the dashboard / gamepad HTTP APIs.
+
+        Those processes publish /cmd_vel. safety_stop is the only publisher of
+        /cmd_vel_safe. Do not add a publisher here.
+        """
+        typ = cmd.get("type")
+        timeout = COMMAND_HTTP_TIMEOUT_S
+        # Stick commands stay off this lock. E-stop is posted by its own loop.
+        if typ in _MOTION_SLOT_TYPES:
+            await self._post_motion_cmd(cmd)
+            if motion_command(cmd) and (self._guard.hard or self._guard.owed):
+                log.warning("watchdog: zero motion (after command)")
+                owed = self._guard.owed_gen
+                if await self._post_zero() and owed is not None:
+                    self._guard.mark_zeroed(owed)
+            return
+        async with self._io_lock:
+            if typ == "nav_goal":
                 await self.dash.post("/api/nav_goal", {
                     "x": float(cmd.get("x", 0)),
                     "y": float(cmd.get("y", 0)),
-                })
+                }, timeout=timeout)
             elif typ == "nav_cancel":
-                await self.dash.post("/api/nav_cancel")
+                await self.dash.post("/api/nav_cancel", timeout=timeout)
             elif typ == "vision":
-                await self.dash.post("/api/vision", {"on": bool(cmd.get("on"))})
+                await self.dash.post("/api/vision", {"on": bool(cmd.get("on"))}, timeout=timeout)
             elif typ == "save_map":
-                if rank < 2:
-                    return
-                await self.dash.post("/api/save_map", {"name": cmd.get("name")})
+                await self.dash.post("/api/save_map", {"name": cmd.get("name")}, timeout=timeout)
             elif typ == "run_tool":
-                if rank < 1:
-                    return
                 await self.dash.post("/api/run", {
                     "tool": cmd.get("tool"),
                     "params": cmd.get("params") or {},
-                })
+                }, timeout=timeout)
             elif typ == "stop_tool":
-                await self.dash.post("/api/stop")
+                await self.dash.post("/api/stop", timeout=timeout)
             elif typ == "blacklist":
-                if rank < 1:
-                    return
                 if cmd.get("action") == "clear":
-                    await self.dash.post("/api/blacklist", {"action": "clear"})
+                    await self.dash.post("/api/blacklist", {"action": "clear"}, timeout=timeout)
                 else:
                     await self.dash.post("/api/blacklist", {
                         "x": float(cmd.get("x", 0)),
                         "y": float(cmd.get("y", 0)),
                         "radius": float(cmd.get("radius", 0.8)),
                         "duration": float(cmd.get("duration", 300)),
-                    })
+                    }, timeout=timeout)
+
+    async def _post_motion_cmd(self, cmd: dict) -> None:
+        timeout = COMMAND_HTTP_TIMEOUT_S
+        typ = cmd.get("type")
+        if typ in ("nudge", "drive"):
+            await self.dash.post("/api/nudge", {
+                "lin": float(cmd.get("lin", 0)),
+                "ang": float(cmd.get("ang", 0)),
+            }, timeout=timeout)
+            return
+        await self._post_joy(cmd, timeout)
+
+    async def _post_joy(self, cmd: dict, timeout: float) -> None:
+        """``a``/``b`` win over ``axes``/``buttons``. Does not take ``_io_lock``."""
+        gamepad = os.environ.get("AMR_GAMEPAD_URL", "").rstrip("/")
+        if "a" in cmd and cmd.get("a") is not None:
+            axes = list(cmd["a"])
+        else:
+            axes = list(cmd.get("axes") or [])
+        if "b" in cmd and cmd.get("b") is not None:
+            buttons = int(cmd["b"])
+        else:
+            buttons = int(cmd["buttons"]) if cmd.get("buttons") is not None else 0
+        if gamepad:
+            response = await self.dash._http.post(
+                f"{gamepad}/api/joy",
+                json={"a": axes[:8], "b": buttons},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            return
+        # Differential approx from left stick: axes[1]=fwd, axes[0]=yaw.
+        ax = axes + [0.0] * 8
+        lin = max(-0.3, min(0.3, -float(ax[1]) * 0.35))
+        ang = max(-1.0, min(1.0, -float(ax[0]) * 0.9))
+        if abs(lin) > 0.02 or abs(ang) > 0.02:
+            await self.dash.post("/api/nudge", {"lin": lin, "ang": ang}, timeout=timeout)
+
+    async def _post_zero(self) -> bool:
+        """False means the watchdog must try again. Does not take ``_io_lock``.
+
+        A zero nudge streams Twist zeros on /cmd_vel. A zero joy packet makes
+        joy_teleop publish one zero Twist and then yield. Neither path writes
+        /cmd_vel_safe.
+        """
+        timeout = COMMAND_HTTP_TIMEOUT_S
+        try:
+            await self.dash.post("/api/nudge", {"lin": 0.0, "ang": 0.0}, timeout=timeout)
         except Exception as exc:
-            log.warning("command failed: %s", exc)
+            log.warning("watchdog zero nudge failed: %s", exc)
+            return False
+        gamepad = os.environ.get("AMR_GAMEPAD_URL", "").rstrip("/")
+        if not gamepad:
+            return True
+        try:
+            response = await self.dash._http.post(
+                f"{gamepad}/api/joy",
+                json={"a": [0.0] * 8, "b": 0},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            log.warning("watchdog zero joy failed: %s", exc)
+            return False
+        return True
+
+    async def _try_zero(self, gen: int, reason: str) -> None:
+        if not self._guard.still_owed(gen):
+            return
+        log.warning("watchdog: zero motion (%s)", reason)
+        if await self._post_zero():
+            self._guard.mark_zeroed(gen)
+
+    async def _apply_watchdog(self, reasons: list[str]) -> None:
+        if not reasons:
+            return
+        hard = any(reason in ("lease_expired", "supabase_unreachable") for reason in reasons)
+        gen = self._guard.arm(hard=hard)
+        self._last_zero_mono = time.monotonic()
+        await self._try_zero(gen, ",".join(reasons))
 
     async def _broadcast(self, event: str, payload: dict) -> None:
         if not self._hub:
@@ -406,6 +1319,67 @@ class Bridge:
             except asyncio.TimeoutError:
                 pass
 
+    async def _watchdog_loop(self) -> None:
+        while not self._stop.is_set():
+            now_s = time.time()
+            now_mono = time.monotonic()
+            reasons = self._gate.tick(now_s, now_mono)
+            self._guard.set_hard(self._gate.fault_active(now_s, now_mono))
+            gen: int | None = None
+            reason = ""
+            if reasons:
+                hard = self._guard.hard or any(
+                    item in ("lease_expired", "supabase_unreachable") for item in reasons
+                )
+                gen = self._guard.arm(hard=hard)
+                reason = ",".join(reasons)
+                self._last_zero_mono = 0.0
+            elif self._guard.owed and now_mono - self._last_zero_mono >= ZERO_RETRY_S:
+                gen = self._guard.owed_gen
+                reason = "retry"
+            if gen is not None:
+                self._last_zero_mono = now_mono
+                await self._try_zero(gen, reason)
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=0.05)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _control_poll_loop(self) -> None:
+        while not self._stop.is_set():
+            await self._poll_once()
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=self._poll_s)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _poll_once(self) -> None:
+        if not self._hub or self._stop.is_set():
+            return
+        async with self._poll_lock:
+            try:
+                control, token = await asyncio.to_thread(self._hub.poll_control)
+            except Exception as exc:
+                log.warning("control poll failed: %s", type(exc).__name__)
+                return
+            # The query itself is contact, even when the row is empty or stale.
+            now_mono = time.monotonic()
+            self._gate.note_contact(now_mono)
+            reasons = self._gate.apply_poll(control, token, now_mono)
+            await self._apply_watchdog(reasons)
+
+    async def _auth_refresh_loop(self) -> None:
+        while not self._stop.is_set():
+            if self._hub:
+                try:
+                    await asyncio.to_thread(self._hub.refresh_auth_if_due)
+                except Exception as exc:
+                    log.warning("bridge auth refresh failed: %s", type(exc).__name__)
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=AUTH_REFRESH_CHECK_S)
+            except asyncio.TimeoutError:
+                pass
+
     async def stop(self) -> None:
         self._stop.set()
         await self.dash.close()
@@ -415,16 +1389,28 @@ class Bridge:
 
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if _env("AMR_SUPABASE_SERVICE_KEY"):
+        log.warning(
+            "AMR_SUPABASE_SERVICE_KEY is set and is ignored. "
+            "Use AMR_SUPABASE_KEY (the publishable key) only."
+        )
     p = argparse.ArgumentParser(description="AMR cloud telemetry bridge")
-    p.add_argument("--bot-id", default=_env("AMR_BOT_ID", "amr4"))
+    p.add_argument("--bot-id", default=_env("AMR_BOT_ID", "hardware-bot"))
     p.add_argument("--supabase-url", default=_env("AMR_SUPABASE_URL") or _env("NEXT_PUBLIC_SUPABASE_URL"))
     p.add_argument(
         "--api-key",
-        default=_env("AMR_SUPABASE_KEY")
-        or _env("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY")
-        or _env("AMR_SUPABASE_SERVICE_KEY"),
+        default=_env("AMR_SUPABASE_KEY") or _env("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY"),
     )
     p.add_argument("--bridge-token", default=_env("AMR_BRIDGE_TOKEN"))
+    p.add_argument("--bridge-email", default=_env("AMR_BRIDGE_EMAIL"))
+    p.add_argument("--bridge-password", default=_env("AMR_BRIDGE_PASSWORD"))
+    p.add_argument("--public-channel", default=_env("AMR_PUBLIC_CHANNEL", "0"))
+    p.add_argument("--private-channel", default=_env("AMR_PRIVATE_CHANNEL", "1"))
+    p.add_argument(
+        "--control-poll-s",
+        type=float,
+        default=float(_env("AMR_CONTROL_POLL_S", "2") or 2),
+    )
     p.add_argument("--dashboard", default=_env("AMR_DASHBOARD_URL", "http://127.0.0.1:8080"))
     p.add_argument("--camera-url", default=_env("AMR_CAMERA_URL"))
     p.add_argument("--camera-jpeg-max-kb", type=int, default=int(_env("AMR_CAMERA_JPEG_MAX_KB", "24") or 24))
@@ -432,6 +1418,12 @@ def main(argv: list[str] | None = None) -> None:
 
     if not args.supabase_url or not args.api_key:
         raise SystemExit("AMR_SUPABASE_URL and AMR_SUPABASE_KEY are required")
+    if looks_like_service_key(args.api_key):
+        raise SystemExit(
+            "Refusing to start: AMR_SUPABASE_KEY looks like a service key "
+            "(sb_secret_ prefix or a JWT with role service_role). "
+            "Use the publishable key only."
+        )
 
     bridge = Bridge(
         bot_id=args.bot_id,
@@ -441,6 +1433,11 @@ def main(argv: list[str] | None = None) -> None:
         dashboard_url=args.dashboard,
         camera_url=args.camera_url,
         camera_jpeg_max_kb=args.camera_jpeg_max_kb,
+        bridge_email=args.bridge_email,
+        bridge_password=args.bridge_password,
+        public_channel=flag_enabled(str(args.public_channel) if args.public_channel is not None else None, False),
+        private_channel=flag_enabled(str(args.private_channel) if args.private_channel is not None else None, True),
+        control_poll_s=args.control_poll_s,
     )
 
     loop = asyncio.new_event_loop()
