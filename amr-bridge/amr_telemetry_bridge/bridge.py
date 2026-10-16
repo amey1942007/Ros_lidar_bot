@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import inspect
 import json
 import logging
 import math
@@ -87,6 +88,14 @@ ESTOP_QUEUE_MAX = 16
 # for 1.5 s. Ignore stick commands for this long after an accepted e-stop
 # unless their seq is newer than the e-stop's.
 ESTOP_MOTION_HOLD_S = 1.0
+# PostgREST default is 120s. A hung touch_amr_bot RPC must not stall the 5s loop.
+RPC_TIMEOUT_S = 8.0
+# Broadcasts are best-effort. Do not sit on a dead socket.
+REALTIME_SEND_TIMEOUT_S = 2.0
+# Channel CLOSED / CHANNEL_ERROR / TIMED_OUT, and a failed setup, wait this long.
+RECONNECT_MIN_S = 1.0
+RECONNECT_MAX_S = 30.0
+_DOWN_STATES = ("CLOSED", "CHANNEL_ERROR", "TIMED_OUT")
 
 
 def _public_rank(env: Any) -> int:
@@ -171,29 +180,153 @@ class DashboardClient:
         return None
 
 
-def _create_supabase(url: str, key: str):
-    """Publishable key only. Session is not written to disk."""
-    from supabase import create_client
-
-    options = None
+def _load_client_options():
     try:
         from supabase import ClientOptions
+        return ClientOptions
     except ImportError:
         try:
             from supabase.lib.client_options import ClientOptions  # type: ignore
+            return ClientOptions
         except ImportError:
-            ClientOptions = None  # type: ignore
+            return None
+
+
+def _create_supabase(url: str, key: str):
+    """Publishable key only. Session is not written to disk.
+
+    ``postgrest_client_timeout`` bounds ``rpc()`` and table reads. The sync
+    client's ``.channel()`` is not used: it raises ``NotImplementedError``.
+    """
+    from supabase import create_client
+
+    ClientOptions = _load_client_options()
+    options = None
     if ClientOptions is not None:
         try:
-            options = ClientOptions(auto_refresh_token=False, persist_session=False)
+            options = ClientOptions(
+                auto_refresh_token=False,
+                persist_session=False,
+                postgrest_client_timeout=RPC_TIMEOUT_S,
+            )
+        except TypeError:
+            try:
+                options = ClientOptions(auto_refresh_token=False, persist_session=False)
+            except Exception:
+                options = None
         except Exception:
             options = None
     if options is not None:
         try:
-            return create_client(url, key, options=options)
+            client = create_client(url, key, options=options)
         except TypeError:
-            pass
-    return create_client(url, key)
+            client = create_client(url, key)
+    else:
+        client = create_client(url, key)
+    # Build the REST client now so rpc()/table reads pick up RPC_TIMEOUT_S.
+    # postgrest-py warns that the timeout argument is deprecated; the httpx
+    # session still uses it, and that is what bounds touch_amr_bot.
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="The 'timeout' parameter is deprecated",
+            category=DeprecationWarning,
+        )
+        warnings.filterwarnings(
+            "ignore",
+            message="The 'verify' parameter is deprecated",
+            category=DeprecationWarning,
+        )
+        client.postgrest
+    return client
+
+
+def _realtime_http_url(supabase_url: str) -> str:
+    """Base URL AsyncRealtimeClient turns into ``.../realtime/v1/websocket``."""
+    return supabase_url.rstrip("/") + "/realtime/v1"
+
+
+def _default_realtime_factory(url: str, api_key: str, *, reconnect_min_s: float):
+    """Async Realtime socket. ``api_key`` is the publishable key, not a user JWT.
+
+    ``auto_reconnect`` stays off and ``max_retries`` is 1 so a dead socket
+    fails once. The bridge supervisor owns backoff and resubscribe.
+    """
+    from realtime import AsyncRealtimeClient
+
+    return AsyncRealtimeClient(
+        url,
+        token=api_key,
+        auto_reconnect=False,
+        max_retries=1,
+        initial_backoff=reconnect_min_s,
+    )
+
+
+def _status_name(status: Any) -> str:
+    raw = getattr(status, "value", status)
+    return str(raw or "").upper()
+
+
+def assert_realtime_api() -> None:
+    """Fail loudly if this install cannot open an async Realtime channel.
+
+    No network. ``channel()`` on the async client only builds the object.
+    ``subscribe()`` is intentionally not called: it opens the socket.
+    Sync ``channel()`` raises ``NotImplementedError`` in every realtime-py
+    release and is not a supported path.
+    """
+    from realtime import AsyncRealtimeChannel, AsyncRealtimeClient
+
+    client = AsyncRealtimeClient(
+        "https://example.supabase.co/realtime/v1",
+        token="sb_publishable_smoke",
+        auto_reconnect=False,
+        max_retries=1,
+    )
+    try:
+        channel = client.channel("amr-realtime-smoke")
+        private = client.channel(
+            "bot:smoke:cmd",
+            {"config": {"private": True}},
+        )
+    except NotImplementedError as exc:
+        raise RuntimeError(
+            "AsyncRealtimeClient.channel() raised NotImplementedError. "
+            "The bridge cannot subscribe to Realtime."
+        ) from exc
+    if client.is_connected:
+        raise RuntimeError("AsyncRealtimeClient.channel() opened a socket")
+    for label, obj in (("public", channel), ("private", private)):
+        if not isinstance(obj, AsyncRealtimeChannel):
+            raise RuntimeError(
+                f"{label} channel() returned {type(obj).__name__}, "
+                "expected AsyncRealtimeChannel"
+            )
+    for name in ("subscribe", "on_broadcast", "send_broadcast", "unsubscribe"):
+        method = getattr(channel, name, None)
+        if not callable(method):
+            raise RuntimeError(f"AsyncRealtimeChannel is missing {name}()")
+    if not inspect.iscoroutinefunction(channel.subscribe):
+        raise RuntimeError("AsyncRealtimeChannel.subscribe is not async")
+    if not inspect.iscoroutinefunction(channel.send_broadcast):
+        raise RuntimeError("AsyncRealtimeChannel.send_broadcast is not async")
+    if not inspect.iscoroutinefunction(client.set_auth):
+        raise RuntimeError(
+            "AsyncRealtimeClient.set_auth is not async "
+            "(the sync client's set_auth is a no-op)"
+        )
+
+
+class _RtSlot:
+    def __init__(self, kind: str, gen: int, channel: Any, topic: str):
+        self.kind = kind
+        self.gen = gen
+        self.channel = channel
+        self.topic = topic
+        self.armed = False
 
 
 def _session_parts(res: Any) -> tuple[str, str | None, float | None]:
@@ -218,7 +351,14 @@ def _session_parts(res: Any) -> tuple[str, str | None, float | None]:
 
 
 class RealtimeHub:
-    """Sync supabase-py wrapper. Call it from the asyncio loop via to_thread."""
+    """REST stays on the sync client. Realtime runs on one asyncio thread.
+
+    Call the sync methods from the bridge loop via ``to_thread``. They hand
+    channel work to that thread with ``run_coroutine_threadsafe``. Sync
+    ``Client.channel()`` raises ``NotImplementedError``; sync ``set_auth``
+    returns without sending the JWT. A failed socket never kills this process:
+    ``touch_amr_bot`` keeps running on the sync client.
+    """
 
     def __init__(
         self,
@@ -235,7 +375,12 @@ class RealtimeHub:
         on_private_command,
         on_control,
         on_link,
+        realtime_factory=None,
+        reconnect_min_s: float = RECONNECT_MIN_S,
+        reconnect_max_s: float = RECONNECT_MAX_S,
     ):
+        self._supabase_url = url
+        self._api_key = key
         self._bot_id = bot_id
         self._bridge_token = bridge_token
         self._email = email
@@ -246,8 +391,15 @@ class RealtimeHub:
         self._on_private_command = on_private_command
         self._on_control = on_control
         self._on_link = on_link
-        self._client = _create_supabase(url, key)
+        self._realtime_factory = realtime_factory or _default_realtime_factory
+        self._reconnect_min_s = reconnect_min_s
+        self._reconnect_max_s = reconnect_max_s
+        self._client = None
+        self._rt = None
         self._channels: list[Any] = []
+        self._slots: dict[str, _RtSlot] = {}
+        self._gens: dict[str, int] = {}
+        self._fail_latch: set[str] = set()
         self._public_channel = None
         self._status_channel = None
         self._public_ready = False
@@ -257,17 +409,39 @@ class RealtimeHub:
         self._refresh_token: str | None = None
         self._expires_at = 0.0
         self._need_reauth = False
+        self._stable = False
+        self._socket_up = False
         self._closed = False
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._ready = threading.Event()
+        self._stop: asyncio.Event | None = None
+        self._down: asyncio.Event | None = None
+        self._setup_lock: asyncio.Lock | None = None
+        self._private_task: asyncio.Task | None = None
 
     def connect(self) -> None:
-        if self._public_enabled:
-            self._subscribe_public()
-        if self._private_enabled:
-            try:
-                self._sign_in()
-                self._subscribe_private()
-            except Exception as exc:
-                log.error("private channel setup failed: %s", self._redact(exc))
+        """Start the Realtime thread. Never raises.
+
+        Subscribe runs on that thread. The 5 s touch loop does not wait for
+        the socket and does not die if the socket fails.
+        """
+        if self._thread is not None:
+            return
+        try:
+            self._thread = threading.Thread(
+                target=self._thread_main,
+                name="amr-realtime",
+                daemon=True,
+            )
+            self._thread.start()
+            if not self._ready.wait(timeout=5):
+                raise RuntimeError("realtime loop did not start")
+        except Exception as exc:
+            log.error(
+                "realtime setup failed: %s — touch loop continues without channels",
+                self._redact(exc),
+            )
 
     def send(self, event: str, payload: dict) -> None:
         if event not in STATUS_EVENTS:
@@ -283,7 +457,7 @@ class RealtimeHub:
             log.warning("touch_amr_bot skipped: AMR_BRIDGE_TOKEN is unset")
             return None
         try:
-            res = self._client.rpc("touch_amr_bot", {
+            res = self._rest().rpc("touch_amr_bot", {
                 "p_bot_id": self._bot_id,
                 "p_token": self._bridge_token,
                 "p_bridge_version": BRIDGE_VERSION,
@@ -309,14 +483,14 @@ class RealtimeHub:
 
     def poll_control(self) -> tuple[dict, dict | None]:
         control = (
-            self._client.table("bot_control")
+            self._rest().table("bot_control")
             .select("bot_id,controller,epoch,lease_expires_at")
             .eq("bot_id", self._bot_id)
             .limit(1)
             .execute()
         )
         token = (
-            self._client.table("bot_control_tokens")
+            self._rest().table("bot_control_tokens")
             .select("bot_id,epoch,token")
             .eq("bot_id", self._bot_id)
             .limit(1)
@@ -332,99 +506,366 @@ class RealtimeHub:
         """Refresh the bridge JWT when it is near expiry and re-apply Realtime auth.
 
         Also retries sign-in after a failed startup. Returns True when a new
-        access token was applied.
+        access token was applied. Channel subscribe stays on the Realtime
+        thread; this only pushes ``set_auth``.
         """
         if not self._private_enabled or self._closed:
             return False
         if not self._signed_in:
             self._sign_in()
-        if not self._private_ready:
-            self._subscribe_private()
+            self._push_auth()
             return True
         now = time.time()
         if self._expires_at and now < self._expires_at - AUTH_REFRESH_SKEW_S:
             return False
         if self._refresh_token:
-            res = self._client.auth.refresh_session(self._refresh_token)
+            res = self._rest().auth.refresh_session(self._refresh_token)
         else:
-            res = self._client.auth.refresh_session()
+            res = self._rest().auth.refresh_session()
         self._store_session(res)
-        self._apply_realtime_auth(self._access_token or "")
-        log.info("bridge auth refreshed; realtime auth re-applied")
+        applied = self._push_auth()
+        if applied:
+            log.info("bridge auth refreshed; realtime auth re-applied")
+        else:
+            log.info("bridge auth refreshed; realtime auth will apply on subscribe")
         return True
 
     def close(self) -> None:
         self._closed = True
-        for channel in self._channels:
+        loop = self._loop
+        if loop is not None and loop.is_running():
             try:
-                self._client.remove_channel(channel)
+                loop.call_soon_threadsafe(self._signal_stop)
+            except RuntimeError:
+                pass
+        thread = self._thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=5)
+
+    def _rest(self):
+        if self._client is None:
+            self._client = _create_supabase(self._supabase_url, self._api_key)
+        return self._client
+
+    def _thread_main(self) -> None:
+        loop = asyncio.new_event_loop()
+        self._loop = loop
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self._boot())
+        except Exception:
+            log.exception("realtime loop exited; touch loop continues")
+        finally:
+            try:
+                loop.close()
             except Exception:
                 pass
-        self._channels.clear()
+            self._loop = None
 
-    def _subscribe_public(self) -> None:
+    async def _boot(self) -> None:
+        self._stop = asyncio.Event()
+        self._down = asyncio.Event()
+        self._setup_lock = asyncio.Lock()
+        self._ready.set()
+        supervise = asyncio.create_task(self._supervise())
+        try:
+            await self._stop.wait()
+        finally:
+            self._closed = True
+            supervise.cancel()
+            try:
+                await supervise
+            except (asyncio.CancelledError, Exception):
+                pass
+            try:
+                await self._teardown_channels()
+            except Exception:
+                log.debug("realtime teardown failed", exc_info=True)
+
+    async def _supervise(self) -> None:
+        backoff = self._reconnect_min_s
+        while not self._closed:
+            self._signal_down_clear()
+            try:
+                await self._session_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.error(
+                    "realtime setup failed: %s — touch continues, retrying channels",
+                    self._redact(exc),
+                )
+            if self._closed:
+                break
+            self._public_ready = False
+            self._private_ready = False
+            try:
+                await self._teardown_channels()
+            except Exception as exc:
+                log.debug("realtime teardown failed: %s", type(exc).__name__)
+            log.warning("realtime reconnect in %.1fs", backoff)
+            if await self._sleep_or_stop(backoff):
+                break
+            if self._stable:
+                backoff = self._reconnect_min_s
+                self._stable = False
+            else:
+                backoff = min(self._reconnect_max_s, backoff * 2)
+
+    def _signal_down_clear(self) -> None:
+        down = self._down
+        if down is not None and down.is_set():
+            down.clear()
+
+    async def _session_once(self) -> None:
+        self._fail_latch.clear()
+        self._bump("socket")
+        self._socket_up = False
+        if not self._public_enabled and not self._private_enabled:
+            await self._stop.wait()
+            return
+        await self._ensure_client()
+        if self._public_enabled:
+            await self._subscribe_public()
+        if self._private_enabled:
+            self._private_task = asyncio.create_task(self._private_until_ready())
+        try:
+            await self._wait_until_down()
+        finally:
+            task = self._private_task
+            self._private_task = None
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+    async def _private_until_ready(self) -> None:
+        """Open :cmd, :cmdq, :ctl, and :status. Retry without dropping a live public channel."""
+        delay = self._reconnect_min_s
+        while not self._closed and not self._down_is_set():
+            if "status" in self._slots:
+                return
+            try:
+                await self._ensure_signed_in()
+                await self._subscribe_private()
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.error("private channel setup failed: %s", self._redact(exc))
+            if await self._sleep_or_stop(delay):
+                return
+            delay = min(self._reconnect_max_s, delay * 2)
+
+    async def _wait_until_down(self) -> None:
+        while not self._closed:
+            if self._down_is_set():
+                return
+            self._poll_health()
+            if self._down_is_set():
+                return
+            down = self._down
+            if down is None:
+                return
+            try:
+                await asyncio.wait_for(down.wait(), timeout=0.5)
+                return
+            except asyncio.TimeoutError:
+                continue
+
+    def _down_is_set(self) -> bool:
+        down = self._down
+        return down is not None and down.is_set()
+
+    async def _sleep_or_stop(self, delay: float) -> bool:
+        """True when the hub is closing."""
+        if self._closed:
+            return True
+        stop = self._stop
+        if stop is None:
+            await asyncio.sleep(delay)
+            return self._closed
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=delay)
+            return True
+        except asyncio.TimeoutError:
+            return self._closed
+
+    async def _ensure_client(self) -> None:
+        if self._rt is not None:
+            return
+        self._rt = self._realtime_factory(
+            _realtime_http_url(self._supabase_url),
+            self._api_key,
+            reconnect_min_s=self._reconnect_min_s,
+        )
+
+    async def _ensure_signed_in(self) -> None:
+        if not (self._signed_in and self._access_token):
+            await asyncio.to_thread(self._sign_in)
+        await self._apply_realtime_auth(self._access_token or "")
+
+    async def _subscribe_public(self) -> None:
         topic = channel_name(self._bot_id)
-        channel = self._client.channel(topic)
-        self._bind_broadcast(channel, CMD_EVENT, self._public_cb)
-        channel.subscribe()
-        self._public_channel = channel
-        self._channels.append(channel)
-        self._public_ready = True
-        log.info("realtime subscribed (%s)", topic)
+        log.info("realtime joining (%s)", topic)
+        await self._subscribe_kind("public", topic, CMD_EVENT, self._public_cb, private=False)
 
-    def _subscribe_private(self) -> None:
-        if self._private_ready or self._closed:
+    async def _subscribe_private(self) -> None:
+        if self._closed or "status" in self._slots:
             return
         if not self._access_token:
             raise RuntimeError("private subscribe without a bridge access token")
-        self._apply_realtime_auth(self._access_token)
+        await self._apply_realtime_auth(self._access_token)
         specs = (
             ("cmd", CMD_EVENT, self._cmd_cb),
             ("cmdq", CMD_EVENT, self._cmdq_cb),
             ("ctl", CTL_EVENT, self._ctl_cb),
             ("status", None, None),
         )
-        made = []
+        log.info(
+            "realtime joining private (%s)",
+            ", ".join(private_topic(self._bot_id, kind) for kind, _, _ in specs),
+        )
+        made: list[str] = []
         try:
             for kind, event, callback in specs:
                 topic = private_topic(self._bot_id, kind)
-                channel = self._open_private_channel(topic)
-                if event and callback:
-                    self._bind_broadcast(channel, event, callback)
-                try:
-                    channel.subscribe(self._status_cb)
-                except TypeError:
-                    channel.subscribe()
-                made.append(channel)
-                if kind == "status":
-                    self._status_channel = channel
+                await self._subscribe_kind(kind, topic, event, callback, private=True)
+                made.append(kind)
         except Exception:
-            for channel in made:
-                try:
-                    self._client.remove_channel(channel)
-                except Exception:
-                    pass
+            for kind in made:
+                await self._drop_slot(kind)
             self._status_channel = None
             raise
-        self._channels.extend(made)
-        self._private_ready = True
-        log.info(
-            "realtime subscribed private (%s)",
-            ", ".join(private_topic(self._bot_id, kind) for kind, _, _ in specs),
-        )
+
+    async def _subscribe_kind(
+        self,
+        kind: str,
+        topic: str,
+        event: str | None,
+        callback,
+        *,
+        private: bool,
+    ) -> None:
+        client = self._rt
+        if client is None:
+            raise RuntimeError("realtime client is not running")
+        gen = self._bump(kind)
+        if private:
+            channel = self._open_private_channel(topic)
+        else:
+            channel = client.channel(topic)
+        if event and callback:
+            self._bind_broadcast(channel, event, callback)
+        slot = _RtSlot(kind, gen, channel, topic)
+        self._slots[kind] = slot
+        self._channels.append(channel)
+        if kind == "public":
+            self._public_channel = channel
+        if kind == "status":
+            self._status_channel = channel
+        # Ready flips in the SUBSCRIBED callback, not when subscribe() returns.
+        await channel.subscribe(self._status_cb_for(kind, gen))
+        slot.armed = True
+        self._socket_up = True
 
     def _open_private_channel(self, topic: str):
         params = {"config": {"private": True}}
+        client = self._rt
+        if client is None:
+            raise RuntimeError("realtime client is not running")
         try:
-            return self._client.channel(topic, params)
+            return client.channel(topic, params)
         except TypeError:
-            return self._client.channel(topic, params=params)
+            return client.channel(topic, params=params)
+
+    def _status_cb_for(self, kind: str, gen: int):
+        def _cb(*args) -> None:
+            status = args[0] if args else ""
+            try:
+                self._handle_status(kind, gen, status)
+            except Exception:
+                log.exception("realtime status callback failed")
+
+        return _cb
+
+    def _handle_status(self, kind: str, gen: int, status: Any) -> None:
+        if self._gens.get(kind) != gen:
+            return
+        name = _status_name(status)
+        if name == "SUBSCRIBED":
+            self._fail_latch.discard(kind)
+            self._stable = True
+            slot = self._slots.get(kind)
+            if kind == "public":
+                self._public_ready = True
+            if kind == "status":
+                self._private_ready = True
+            topic = slot.topic if slot is not None else kind
+            log.info("realtime subscribed (%s)", topic)
+            self._reapply_if_needed()
+            if self._on_link and kind == "status":
+                self._on_link(True)
+            return
+        if name not in _DOWN_STATES and name not in ("CLOSED", "ERRORED"):
+            return
+        if kind in self._fail_latch:
+            return
+        self._fail_latch.add(kind)
+        self._need_reauth = True
+        self._public_ready = False
+        self._private_ready = False
+        label = "CHANNEL_ERROR" if name == "ERRORED" else name
+        log.warning("realtime %s channel %s", kind, label)
+        down = self._down
+        if down is not None:
+            down.set()
+
+    def _poll_health(self) -> None:
+        client = self._rt
+        if client is not None and self._socket_up:
+            dead = False
+            task = getattr(client, "_listen_task", None)
+            ws = getattr(client, "_ws_connection", None)
+            if task is not None and task.done():
+                dead = True
+            elif ws is not None and getattr(ws, "close_code", None) is not None:
+                dead = True
+            if dead:
+                self._handle_status("socket", self._gens.get("socket", 0), "CLOSED")
+                return
+        for slot in list(self._slots.values()):
+            if not slot.armed:
+                continue
+            state = getattr(slot.channel, "state", None)
+            value = str(getattr(state, "value", state) or "").lower()
+            if value == "closed":
+                self._handle_status(slot.kind, slot.gen, "CLOSED")
+            elif value == "errored":
+                self._handle_status(slot.kind, slot.gen, "CHANNEL_ERROR")
+
+    def _bump(self, kind: str) -> int:
+        gen = self._gens.get(kind, 0) + 1
+        self._gens[kind] = gen
+        return gen
 
     def _bind_broadcast(self, channel, event: str, callback) -> None:
+        wrapped = self._guard_cb(callback)
         try:
-            channel.on_broadcast(event=event, callback=callback)
+            channel.on_broadcast(event=event, callback=wrapped)
         except Exception:
-            channel.on("broadcast", {"event": event}, callback)
+            channel.on("broadcast", {"event": event}, wrapped)
+
+    def _guard_cb(self, callback):
+        def _wrapped(message) -> None:
+            try:
+                callback(message)
+            except Exception:
+                log.exception("realtime broadcast callback failed")
+
+        return _wrapped
 
     def _public_cb(self, message) -> None:
         payload = _unwrap_callback(message)
@@ -446,39 +887,35 @@ class RealtimeHub:
         if isinstance(payload, dict):
             self._on_control(payload)
 
-    def _status_cb(self, *args) -> None:
-        status = args[0] if args else ""
-        name = str(getattr(status, "value", status) or "")
-        if "SUBSCRIBED" in name:
-            self._reapply_if_needed()
-            if self._on_link:
-                self._on_link(True)
-            return
-        if any(token in name for token in ("CLOSED", "CHANNEL_ERROR", "TIMED_OUT")):
-            self._need_reauth = True
-            log.warning("realtime private channel %s", name)
-
     def _reapply_if_needed(self) -> None:
+        """On the Realtime thread. Re-push the user JWT after SUBSCRIBED."""
         if not self._need_reauth or not self._access_token:
             return
+        token = self._access_token
         self._need_reauth = False
+
+        async def _go() -> None:
+            try:
+                await self._apply_realtime_auth(token)
+                log.info("realtime auth re-applied after reconnect")
+            except Exception as exc:
+                self._need_reauth = True
+                log.warning("realtime auth re-apply failed: %s", type(exc).__name__)
+
         try:
-            self._apply_realtime_auth(self._access_token)
-            log.info("realtime auth re-applied after reconnect")
-        except Exception as exc:
-            self._need_reauth = True
-            log.warning("realtime auth re-apply failed: %s", type(exc).__name__)
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        asyncio.create_task(_go())
 
     def _sign_in(self) -> None:
         if not self._email or not self._password:
             raise RuntimeError("AMR_BRIDGE_EMAIL and AMR_BRIDGE_PASSWORD are required")
-        res = self._client.auth.sign_in_with_password({
+        res = self._rest().auth.sign_in_with_password({
             "email": self._email,
             "password": self._password,
         })
         self._store_session(res)
-        self._apply_realtime_auth(self._access_token or "")
-        self._signed_in = True
         log.info("bridge auth signed in")
 
     def _store_session(self, res: Any) -> None:
@@ -489,39 +926,123 @@ class RealtimeHub:
         self._expires_at = expires if expires else time.time() + 3600
         self._signed_in = True
 
-    def _apply_realtime_auth(self, access_token: str) -> None:
+    def _push_auth(self) -> bool:
+        """Hop ``set_auth`` onto the Realtime thread. False if that thread is down."""
+        token = self._access_token or ""
+        if not token:
+            raise RuntimeError("missing bridge access token")
+        self._need_reauth = True
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return False
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            return False
+        self._call(self._apply_realtime_auth(token), timeout=RPC_TIMEOUT_S)
+        return True
+
+    async def _apply_realtime_auth(self, access_token: str) -> None:
         if not access_token:
             raise RuntimeError("missing bridge access token")
-        realtime = self._client.realtime
-        connect = getattr(realtime, "connect", None)
-        if callable(connect):
-            try:
-                connect()
-            except Exception as exc:
-                text = str(exc).lower()
-                if "already" not in text and "connected" not in text:
-                    log.debug("realtime connect before set_auth: %s", type(exc).__name__)
-        set_auth = getattr(realtime, "set_auth", None)
-        if not callable(set_auth):
-            raise RuntimeError("supabase realtime client has no set_auth")
-        try:
-            set_auth(access_token)
-        except Exception as exc:
-            text = str(exc).lower()
-            if callable(connect) and "connect" in text:
-                connect()
-                set_auth(access_token)
-                return
-            raise
+        client = self._rt
+        if client is None:
+            raise RuntimeError("realtime client is not running")
+        await client.set_auth(access_token)
+        self._need_reauth = False
 
     def _send_one(self, channel, event: str, payload: dict) -> None:
+        """Schedule an async broadcast. Same signature ``send_status`` can call."""
+        if channel is None:
+            return
         try:
-            channel.send_broadcast(event, payload)
+            self._call(
+                self._send_async(channel, event, payload),
+                timeout=REALTIME_SEND_TIMEOUT_S,
+            )
+        except Exception as exc:
+            log.debug("broadcast %s failed: %s", event, type(exc).__name__)
+
+    async def _send_async(self, channel, event: str, payload: dict) -> None:
+        await channel.send_broadcast(event, payload)
+
+    def _call(self, coro, timeout: float):
+        loop = self._loop
+        if self._closed or loop is None or not loop.is_running():
+            coro.close()
+            raise RuntimeError("realtime loop is not running")
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            coro.close()
+            raise RuntimeError("cannot wait on the realtime loop from itself")
+        fut = asyncio.run_coroutine_threadsafe(coro, loop)
+        return fut.result(timeout)
+
+    def _signal_stop(self) -> None:
+        if self._stop is not None:
+            self._stop.set()
+        if self._down is not None:
+            self._down.set()
+
+    async def _teardown_channels(self) -> None:
+        lock = self._setup_lock
+        if lock is None:
+            await self._drop_all_channels()
+            return
+        async with lock:
+            await self._drop_all_channels()
+
+    async def _drop_all_channels(self) -> None:
+        self._socket_up = False
+        channels = list(self._channels)
+        self._channels.clear()
+        self._slots.clear()
+        self._public_channel = None
+        self._status_channel = None
+        client = self._rt
+        self._rt = None
+        for channel in channels:
+            await self._remove_channel(client, channel)
+        if client is not None:
+            close = getattr(client, "close", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception:
+                    pass
+
+    async def _drop_slot(self, kind: str) -> None:
+        slot = self._slots.pop(kind, None)
+        if slot is None:
+            return
+        try:
+            self._channels.remove(slot.channel)
+        except ValueError:
+            pass
+        if kind == "public":
+            self._public_channel = None
+        if kind == "status":
+            self._status_channel = None
+        await self._remove_channel(self._rt, slot.channel)
+
+    async def _remove_channel(self, client, channel) -> None:
+        if channel is None:
+            return
+        try:
+            remove = getattr(client, "remove_channel", None) if client is not None else None
+            if remove is not None:
+                await remove(channel)
+                return
+            unsub = getattr(channel, "unsubscribe", None)
+            if unsub is not None:
+                await unsub()
         except Exception:
-            try:
-                channel.send({"type": "broadcast", "event": event, "payload": payload})
-            except Exception as exc:
-                log.debug("broadcast %s failed: %s", event, type(exc).__name__)
+            pass
 
     def _redact(self, exc: BaseException) -> str:
         text = f"{type(exc).__name__}: {exc}"
@@ -529,6 +1050,8 @@ class RealtimeHub:
             text = text.replace(self._password, "[redacted]")
         if self._access_token and self._access_token in text:
             text = text.replace(self._access_token, "[redacted]")
+        if self._api_key and self._api_key in text:
+            text = text.replace(self._api_key, "[redacted]")
         return text[:400]
 
 

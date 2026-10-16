@@ -59,7 +59,7 @@ Optional: pre-install deps into that prep venv so first bringup is faster:
 ```bash
 source ~/amr-bridge-venv-prep/bin/activate
 pip install -U pip
-pip install 'supabase>=2.4.0' 'httpx>=0.27.0' 'websockets>=12.0'
+pip install 'supabase==2.33.0' 'realtime==2.33.0' 'supabase-auth==2.33.0' 'httpx==0.28.1' 'websockets==15.0.1'
 ```
 
 ## 4. Confirm local dashboard contract (current code)

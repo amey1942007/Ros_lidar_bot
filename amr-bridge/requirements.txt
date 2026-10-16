@@ -1,4 +1,12 @@
 # Pi-side bridge (no ROS deps — talks to local robot_dashboard_node HTTP).
-supabase>=2.4.0
-httpx>=0.27.0
-websockets>=12.0
+# Sync Client.channel() raises NotImplementedError in every realtime-py release
+# (verified on 2.33.0). Channels are async-only. These pins were installed
+# together; AsyncRealtimeClient.channel() was checked with no network.
+supabase==2.33.0
+realtime==2.33.0
+supabase-auth==2.33.0
+postgrest==2.33.0
+storage3==2.33.0
+supabase-functions==2.33.0
+httpx==0.28.1
+websockets==15.0.1
