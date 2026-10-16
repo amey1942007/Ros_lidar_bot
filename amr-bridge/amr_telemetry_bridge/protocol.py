@@ -12,8 +12,10 @@ BRIDGE_VERSION = "0.1.0"
 PRIVATE_TOPIC_KINDS = ("status", "cmd", "cmdq", "ctl")
 # Events the bridge sends on bot:<id>:status. :cmd / :cmdq use "command";
 # :ctl uses "control" (see send_command / take_control).
-STATUS_EVENTS = ("telemetry", "map", "log", "hb")
+# cmd_ack answers every command received on :cmd and :cmdq.
+STATUS_EVENTS = ("telemetry", "map", "log", "hb", "cmd_ack")
 CMD_EVENT = "command"
+CMD_ACK_EVENT = "cmd_ack"
 CTL_EVENT = "control"
 
 

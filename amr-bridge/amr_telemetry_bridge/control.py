@@ -20,6 +20,10 @@ Checks the private path actually applies:
   (``:cmdq``). A skewed clock cannot hide an e-stop behind an expired lease.
   The bridge, not this module, then ignores motion for about a second unless
   that motion carries a newer seq than the e-stop.
+- Rejection reasons from ``verify`` are mapped to short ack strings by
+  ``ControlTracker.ack_rejection_reason``. The bridge sends those on
+  ``cmd_ack`` and never puts the token in the payload. ``estop_hold`` and
+  ``rate_limited`` are bridge decisions, not verify results.
 - Timestamp freshness is not enforced. The Pi clock can be minutes off before
   NTP. A non-finite timestamp is still rejected, except on e-stop.
 - ``:ctl`` is not authority. The bridge treats it as a cue to poll. Epoch,
@@ -103,6 +107,21 @@ _TOOL_PARAMS: dict[str, dict[str, tuple[float, float, float]]] = {
 
 _MAP_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _STRIP_KEYS = ("from", "rank")
+
+# Machine-readable cmd_ack reasons. The bridge refuses any other string so a
+# token or a free-form exception cannot ride along in the payload.
+ACK_REJECTION_REASONS = frozenset({
+    "bad_token",
+    "stale_epoch",
+    "lower_seq",
+    "duplicate_seq",
+    "no_lease",
+    "invalid_payload",
+    "unknown_type",
+    "bad_sender",
+    "estop_hold",
+    "rate_limited",
+})
 
 
 @dataclass(frozen=True)
@@ -682,6 +701,34 @@ class ControlTracker:
             self._motion_latched = motion_command(clean)
         self.note_contact(now_mono)
         return VerifyResult(True, "ok", cmd_type=typ, cmd=clean)
+
+    def ack_rejection_reason(self, message: Any, result: VerifyResult) -> str:
+        """Map a failed ``verify`` onto a cmd_ack reason. Never returns the token."""
+        reason = result.reason
+        if reason == "token":
+            return "bad_token"
+        if reason == "epoch":
+            return "stale_epoch"
+        if reason == "lease":
+            return "no_lease"
+        if reason == "type":
+            return "unknown_type"
+        if reason == "sender":
+            return "bad_sender"
+        if reason == "seq":
+            return self._seq_ack_reason(message)
+        return "invalid_payload"
+
+    def _seq_ack_reason(self, message: Any) -> str:
+        seq = command_seq(message)
+        last = self._last_seq.get(self.epoch) if self.epoch is not None else None
+        if seq is None or last is None:
+            return "invalid_payload"
+        if seq < last:
+            return "lower_seq"
+        if seq == last:
+            return "duplicate_seq"
+        return "invalid_payload"
 
     def fault_active(self, now_s: float, now_mono: float) -> bool:
         """Lease already observed and now expired, or contact has gone stale."""
