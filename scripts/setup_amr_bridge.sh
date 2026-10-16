@@ -20,8 +20,8 @@ die()  { printf '\033[1;31mxx %s\033[0m\n' "$*"; exit 1; }
 [ -d "$REPO/.git" ] || die "Repo not found at $REPO"
 
 say "1/8 Checking the Pi can reach Supabase (IITD Wi-Fi can block things)"
-if curl -fsS -m 10 -o /dev/null "$SUPABASE_URL/auth/v1/health" -H "apikey: x" 2>/dev/null || \
-   [ "$(curl -s -m 10 -o /dev/null -w '%{http_code}' "$SUPABASE_URL/auth/v1/health")" != "000" ]; then
+code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' "$SUPABASE_URL/auth/v1/health" -H "apikey: x" || true)"
+if [ -n "$code" ] && [ "$code" != "000" ]; then
   echo "HTTPS to Supabase works."
 else
   warn "Cannot reach $SUPABASE_URL over HTTPS. Check Wi-Fi/firewall (try a phone hotspot). Continuing anyway."
@@ -29,8 +29,15 @@ fi
 
 say "2/8 Updating the repo to branch '$BRANCH' (saving a rollback commit first)"
 cd "$REPO"
-git rev-parse --short HEAD > "$HOME/amr_bridge_rollback_commit.txt"
-echo "Rollback commit saved: $(cat "$HOME/amr_bridge_rollback_commit.txt") (in ~/amr_bridge_rollback_commit.txt)"
+# First run only. A re-run is already on $BRANCH, so overwriting would lose the original commit and branch.
+if [ ! -f "$HOME/amr_bridge_rollback_commit.txt" ]; then
+  git rev-parse --short HEAD > "$HOME/amr_bridge_rollback_commit.txt"
+  git rev-parse --abbrev-ref HEAD > "$HOME/amr_bridge_rollback_branch.txt"
+fi
+echo "Rollback commit: $(cat "$HOME/amr_bridge_rollback_commit.txt") (in ~/amr_bridge_rollback_commit.txt)"
+if [ -f "$HOME/amr_bridge_rollback_branch.txt" ]; then
+  echo "Rollback branch: $(cat "$HOME/amr_bridge_rollback_branch.txt") (in ~/amr_bridge_rollback_branch.txt)"
+fi
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   die "You have uncommitted changes in $REPO. Commit or stash them first (git stash), then re-run. Nothing was changed."
 fi
@@ -99,7 +106,11 @@ set -euo pipefail
 ENV_FILE=/etc/amr-bridge.env
 REPO="$HOME/Desktop/ros2_ws/src/Ros_lidar_bot"
 for k in AMR_SUPABASE_KEY AMR_BRIDGE_TOKEN; do
-  v="$(grep -E "^$k=" "$ENV_FILE" | head -1 | cut -d= -f2-)"
+  # || true: a missing key makes grep exit 1, which would abort under set -e/pipefail.
+  v="$(grep -E "^$k=" "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
+  v="${v%$'\r'}"
+  v="${v#\"}"; v="${v%\"}"
+  v="${v#\'}"; v="${v%\'}"
   [ -n "$v" ] || { echo "Missing $k in $ENV_FILE. Add it first (nano $ENV_FILE)."; exit 1; }
 done
 echo "SAFETY: anyone with the public Supabase key can currently drive the bot via the bridge (review finding C1)."
@@ -120,5 +131,6 @@ Setup finished. Your only manual step:
 Then check: ps aux | grep amr_telemetry_bridge
             amrslam.tech/control -> pick "Hardware bot" -> online in ~3 s
 Rollback: ~/run_robot_with_bridge.sh enable_amr_bridge:=false   (bridge off)
-          git -C $REPO checkout \$(cat ~/amr_bridge_rollback_commit.txt)
+          git -C $REPO checkout "\$(cat ~/amr_bridge_rollback_branch.txt)"
+          git -C $REPO checkout "\$(cat ~/amr_bridge_rollback_commit.txt)"
 DONE
