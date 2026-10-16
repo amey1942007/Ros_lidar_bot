@@ -12,3 +12,36 @@ amr-bridge/.env.pi
 **/amr-bridge.env
 
 .cursor/
+
+# Env files and copies of /etc-style env files. Templates stay tracked.
+.env
+.env.*
+!.env.example
+!.env.pi.example
+*.env
+amr-bridge.env
+**/amr-bridge.env
+
+# Keys, tokens, and credential files
+*token*.txt
+*secret*
+*.key
+*.pem
+*.p12
+credentials*.json
+service-account*.json
+
+# Supabase CLI local state
+supabase/.temp
+supabase/.branches
+
+# Local environments, bytecode, editor junk, colcon output
+.venv/
+amr-bridge/.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.cursor/
+build/
+install/
+log/
