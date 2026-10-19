@@ -1,0 +1,689 @@
+diff --git a/src/app/fonts.ts b/src/app/fonts.ts
+index cdb1dc9..3f70ef5 100644
+--- a/src/app/fonts.ts
++++ b/src/app/fonts.ts
+@@ -1,12 +1,15 @@
+ import localFont from 'next/font/local';
+ 
+-// ui-spec R2: next/font/local over Fontsource woff2 → automatic preload + size-adjusted fallback.
++// Variable Fontsource woff2s break next/font size-adjust metrics ("Fallback font" errors).
++// Keep CSS fallback stacks; skip automatic size-adjust for Inter Tight / JetBrains.
+ export const unbounded = localFont({
+   src: '../../node_modules/@fontsource-variable/unbounded/files/unbounded-latin-wght-normal.woff2',
+   variable: '--font-unbounded',
+   weight: '200 900',
+   display: 'swap',
+   preload: true,
++  adjustFontFallback: 'Arial',
++  fallback: ['system-ui', 'sans-serif'],
+ });
+ export const interTight = localFont({
+   src: '../../node_modules/@fontsource-variable/inter-tight/files/inter-tight-latin-wght-normal.woff2',
+@@ -14,6 +17,8 @@ export const interTight = localFont({
+   weight: '100 900',
+   display: 'swap',
+   preload: false,
++  adjustFontFallback: false,
++  fallback: ['system-ui', 'Segoe UI', 'sans-serif'],
+ });
+ export const jetbrains = localFont({
+   src: '../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2',
+@@ -21,4 +26,6 @@ export const jetbrains = localFont({
+   weight: '100 800',
+   display: 'swap',
+   preload: false,
++  adjustFontFallback: false,
++  fallback: ['ui-monospace', 'Consolas', 'monospace'],
+ });
+diff --git a/src/components/auth/SignInForm.tsx b/src/components/auth/SignInForm.tsx
+index 5e77bc8..e54898a 100644
+--- a/src/components/auth/SignInForm.tsx
++++ b/src/components/auth/SignInForm.tsx
+@@ -25,6 +25,7 @@ export function SignInForm({ redirectTarget }: { redirectTarget: string; startFo
+   const [step, setStep] = useState<Step>('name');
+   const [name, setName] = useState('');
+   const [displayName, setDisplayName] = useState('');
++  const [resolvedEmail, setResolvedEmail] = useState('');
+   const [password, setPassword] = useState('');
+   const [confirm, setConfirm] = useState('');
+   const [show, setShow] = useState(false);
+@@ -89,6 +90,7 @@ export function SignInForm({ redirectTarget }: { redirectTarget: string; startFo
+     if (st.status !== 'ok') { setNameErr('That name isn\'t on the allowlist.'); return; }
+     setName(st.username);
+     setDisplayName(st.displayName || st.username);
++    setResolvedEmail(st.email ?? '');
+     setPassword('');
+     setConfirm('');
+     setStep(st.needsPassword ? 'set-password' : 'password');
+@@ -110,18 +112,26 @@ export function SignInForm({ redirectTarget }: { redirectTarget: string; startFo
+       return;
+     }
+     if (!cfg.supabaseUrl || !cfg.supabaseKey) { setBusy(false); setPassErr(COPY.network); return; }
+-    const resolved = await operatorEmail(cfg.supabaseUrl, cfg.supabaseKey, name);
+-    if (resolved.status !== 'ok') {
+-      setBusy(false);
+-      setPassErr(resolved.status === 'network' ? COPY.network : 'That name isn\'t on the allowlist.');
+-      return;
++    // Prefer email from the status step (one round-trip). Fall back to cache / email action.
++    let email = resolvedEmail;
++    let needsPassword = false;
++    if (!email) {
++      const resolved = await operatorEmail(cfg.supabaseUrl, cfg.supabaseKey, name);
++      if (resolved.status !== 'ok') {
++        setBusy(false);
++        setPassErr(resolved.status === 'network' ? COPY.network : 'That name isn\'t on the allowlist.');
++        return;
++      }
++      email = resolved.email;
++      needsPassword = resolved.needsPassword;
++      setResolvedEmail(email);
+     }
+-    if (resolved.needsPassword) {
++    if (needsPassword) {
+       setBusy(false);
+       setStep('set-password');
+       return;
+     }
+-    const res = await auth.signIn({ email: resolved.email, password });
++    const res = await auth.signIn({ email, password });
+     if (res.status === 'ok') {
+       if (!(await gateOperator())) { setBusy(false); return; }
+       goAfterSignIn();
+@@ -219,7 +229,7 @@ export function SignInForm({ redirectTarget }: { redirectTarget: string; startFo
+               <button className="btn full" type="submit" disabled={busy}>{busy ? 'Please wait…' : 'Sign in'}</button>
+             </div>
+             <p style={{ marginTop: 12 }}>
+-              <button type="button" className="link" onClick={() => { setStep('name'); setPassErr(''); setPassword(''); }}>Change name</button>
++              <button type="button" className="link" onClick={() => { setStep('name'); setPassErr(''); setPassword(''); setResolvedEmail(''); }}>Change name</button>
+             </p>
+           </form>
+         )}
+@@ -252,7 +262,7 @@ export function SignInForm({ redirectTarget }: { redirectTarget: string; startFo
+               <button className="btn full" type="submit" disabled={busy}>{busy ? 'Please wait…' : 'Save password & continue'}</button>
+             </div>
+             <p style={{ marginTop: 12 }}>
+-              <button type="button" className="link" onClick={() => { setStep('name'); setPassErr(''); setPassword(''); setConfirm(''); }}>Change name</button>
++              <button type="button" className="link" onClick={() => { setStep('name'); setPassErr(''); setPassword(''); setConfirm(''); setResolvedEmail(''); }}>Change name</button>
+             </p>
+           </form>
+         )}
+diff --git a/src/components/control/Dashboard.tsx b/src/components/control/Dashboard.tsx
+index 853e529..2a5cefd 100644
+--- a/src/components/control/Dashboard.tsx
++++ b/src/components/control/Dashboard.tsx
+@@ -15,6 +15,7 @@ import { persistBot, readStoredBot } from '@/lib/control/bot-persist';
+ import type { NormState } from '@/lib/telemetry/normalize';
+ import { WaveLines } from '@/components/effects/WaveLines';
+ import { LiveCanvas } from './LiveCanvas';
++import { LinkDot } from './LinkDot';
+ import { readPhysicalGamepad, type JoyReading } from './XboxController';
+ import '@/components/effects/effects.css';
+ import './dashboard.css';
+@@ -199,10 +200,13 @@ export function Dashboard() {
+     if (prevController.current === undefined) { prevController.current = id; return; }
+     if (prevController.current !== id) {
+       const name = id == null ? 'No one' : id === userId ? 'You' : (tel.controllerName || tel.names[id] || 'Someone');
+-      if (id != null) toast(COPY.nowDriving(name === 'You' ? (tel.names[id] || 'You') : name));
++      // Don't claim someone is "driving" while the robot is offline — that toast was a false positive.
++      if (id != null && tel.link.phase !== 'offline') {
++        toast(COPY.nowDriving(name === 'You' ? (tel.names[id] || 'You') : name));
++      }
+     }
+     prevController.current = id;
+-  }, [tel.controllerId, tel.controllerName, tel.names, userId, toast]);
++  }, [tel.controllerId, tel.controllerName, tel.names, tel.link.phase, userId, toast]);
+ 
+   useEffect(() => {
+     if (joined.current || tel.joining || !tel.role) return;
+@@ -470,22 +474,28 @@ export function Dashboard() {
+         <div className="op-layout">
+           <section className="card op-live" aria-label="Live view">
+             <h2>Live view · odom · wheel-zoom · click = nav goal</h2>
+-            {tel.link.phase === 'offline' && (
+-              <div className="offline">
+-                <p style={{ color: 'var(--tx)', fontWeight: 700 }}>
+-                  {tel.link.unreadable ? tel.link.label : `${bot.label} is offline`}
+-                </p>
+-                <p>
+-                  {tel.link.unreadable
+-                    ? tel.link.offlineDetail
+-                    : offlineMessage(tel.link.offlineDetail ?? '', tel.link.lastSeenAtMs, now)}
+-                </p>
+-              </div>
++            {!robotLive && tel.link.phase !== 'offline' && (
++              <p className="help">{tel.link.mapPlaceholder ?? 'Waiting for robot…'}</p>
+             )}
+-            {!robotLive && <p className="help">Waiting for robot…</p>}
+             <div className="op-live-stage">
+-              <LiveCanvas state={tel.frame} map={tel.map} scale={scale} onScale={setScale} canEdit={canEdit} mode={mode} showSlam={showSlam} lastAt={tel.lastTelemetryAt} placeholder={tel.link.mapPlaceholder} onNav={(x, y) => void send({ type: 'nav_goal', x, y })} onBlacklist={(x, y, radius) => void send({ type: 'blacklist', action: 'add', x, y, radius, duration })} />
+-              <CameraPip frame={tel.frame} phase={tel.link.phase} lastAt={tel.lastTelemetryAt} now={now} />
++              {tel.link.phase === 'offline' ? (
++                <div className="op-offline-empty" role="status">
++                  <p className="op-offline-title">
++                    {tel.link.unreadable ? tel.link.label : `${bot.label} is offline`}
++                  </p>
++                  <p className="op-offline-detail">
++                    {tel.link.unreadable
++                      ? tel.link.offlineDetail
++                      : offlineMessage(tel.link.offlineDetail ?? '', tel.link.lastSeenAtMs, now)}
++                  </p>
++                  <p className="op-offline-hint">Power the robot on and keep the bridge connected — this view fills in when telemetry arrives.</p>
++                </div>
++              ) : (
++                <>
++                  <LiveCanvas state={tel.frame} map={tel.map} scale={scale} onScale={setScale} canEdit={canEdit} mode={mode} showSlam={showSlam} lastAt={tel.lastTelemetryAt} placeholder={tel.link.mapPlaceholder} onNav={(x, y) => void send({ type: 'nav_goal', x, y })} onBlacklist={(x, y, radius) => void send({ type: 'blacklist', action: 'add', x, y, radius, duration })} />
++                  <CameraPip frame={tel.frame} phase={tel.link.phase} lastAt={tel.lastTelemetryAt} now={now} />
++                </>
++              )}
+             </div>
+             <div className="readouts">
+               <Tile k="x (odom)" v={fmt(tel.frame?.pose?.[0], 2)} />
+@@ -852,25 +862,6 @@ function CameraPip({ frame, phase, lastAt, now }: { frame: NormState | null; pha
+   );
+ }
+ 
+-/** Link state as a single color dot: green=live, yellow=connecting/idle, red=offline. */
+-function LinkDot({ phase, label, lagMs }: { phase: LinkPhase; label: string; lagMs: number | null }) {
+-  const tone = phase === 'live' ? 'ok' : phase === 'offline' ? 'err' : 'warn';
+-  const title = lagMs != null ? `${label} · lag ${Math.round(lagMs)} ms` : label;
+-  return (
+-    <span
+-      className={`op-link-dot ${tone}`}
+-      role="status"
+-      aria-live="polite"
+-      aria-atomic="true"
+-      aria-label={title}
+-      title={title}
+-    >
+-      <span className="op-link-dot-core" aria-hidden />
+-      <span className="sr-only">{title}</span>
+-    </span>
+-  );
+-}
+-
+ function Eye() {
+   return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></svg>;
+ }
+diff --git a/src/components/control/LinkDot.tsx b/src/components/control/LinkDot.tsx
+new file mode 100644
+index 0000000..168e2db
+--- /dev/null
++++ b/src/components/control/LinkDot.tsx
+@@ -0,0 +1,22 @@
++'use client';
++
++import type { LinkPhase } from '@/lib/telemetry/link-status';
++
++/** Link state as a single color dot: green=live, yellow=connecting/idle, red=offline. */
++export function LinkDot({ phase, label, lagMs }: { phase: LinkPhase; label: string; lagMs: number | null }) {
++  const tone = phase === 'live' ? 'ok' : phase === 'offline' ? 'err' : 'warn';
++  const title = lagMs != null ? `${label} · lag ${Math.round(lagMs)} ms` : label;
++  return (
++    <span
++      className={`op-link-dot ${tone}`}
++      role="status"
++      aria-live="polite"
++      aria-atomic="true"
++      aria-label={title}
++      title={title}
++    >
++      <span className="op-link-dot-core" aria-hidden />
++      <span className="sr-only">{title}</span>
++    </span>
++  );
++}
+diff --git a/src/components/control/PadPage.tsx b/src/components/control/PadPage.tsx
+index 98e92f9..ec15d5b 100644
+--- a/src/components/control/PadPage.tsx
++++ b/src/components/control/PadPage.tsx
+@@ -11,6 +11,7 @@ import { JOY_HZ } from '@/lib/telemetry/commands';
+ import { persistBot, readStoredBot, isBotId } from '@/lib/control/bot-persist';
+ import { useControlSession } from '@/lib/telemetry/useControlSession';
+ import { WaveLines } from '@/components/effects/WaveLines';
++import { LinkDot } from './LinkDot';
+ import { XboxController, readPhysicalGamepad, type JoyReading } from './XboxController';
+ import '@/components/effects/effects.css';
+ import './dashboard.css';
+@@ -114,14 +115,11 @@ export function PadPage() {
+           {controller && (
+             <button type="button" className="op-estop" onClick={fireEstop}>E-STOP</button>
+           )}
++          <LinkDot phase={tel.link.phase} label={tel.link.label} lagMs={tel.link.showLag ? tel.lagMs : null} />
+           <button type="button" className="btn ghost" onClick={() => { void signOut().then(() => window.location.replace(asset('/sign-in/'))); }}>Sign out</button>
+         </div>
+       </header>
+-      <p className="op-pad-note">
+-        {tel.link.phase === 'offline' ? `${bot.label} offline` : tel.link.label}
+-        {' · '}
+-        Mobile complete control — keep this window open while driving
+-      </p>
++      <p className="op-pad-note">Mobile complete control — keep this window open while driving</p>
+       <XboxController
+         open
+         variant="page"
+diff --git a/src/components/control/dashboard.css b/src/components/control/dashboard.css
+index b165019..84605fb 100644
+--- a/src/components/control/dashboard.css
++++ b/src/components/control/dashboard.css
+@@ -372,7 +372,14 @@
+ }
+ .op .btn:hover:not(:disabled) { background-position: 100% 0; }
+ .op .btn:active:not(:disabled) { transform: scale(0.97); }
+-.op .btn.stop { background: var(--warn); color: #2b1a00; }
++/* Stop / cancel: danger red — no mustard accents on action buttons. */
++.op .btn.stop {
++  background: rgba(255, 107, 139, 0.18);
++  color: var(--err);
++  border: 1px solid rgba(255, 107, 139, 0.55);
++  background-image: none;
++}
++.op .btn.stop:hover:not(:disabled) { background: rgba(255, 107, 139, 0.28); }
+ .op .btn:disabled, .op .btn[aria-disabled="true"] { opacity: .35; cursor: not-allowed; }
+ .op .btn.full { width: 100%; height: 40px; }
+ .op .btn.ghost { background: transparent; color: var(--tx); border: 1px solid var(--edge); }
+@@ -491,6 +498,18 @@
+ }
+ 
+ .op .offline { border: 1px solid var(--edge); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; color: var(--dim); font-size: 12px; }
++.op-offline-empty {
++  min-height: 280px;
++  display: flex; flex-direction: column; align-items: center; justify-content: center;
++  text-align: center; gap: 8px; padding: 28px 20px;
++  border: 1px dashed var(--edge); border-radius: 12px;
++  background:
++    radial-gradient(ellipse at 50% 0%, rgba(123, 47, 247, 0.12), transparent 55%),
++    rgba(8, 8, 14, 0.55);
++}
++.op-offline-title { margin: 0; font-size: 15px; font-weight: 700; color: var(--tx); font-family: var(--font-unbounded, system-ui), system-ui, sans-serif; }
++.op-offline-detail { margin: 0; max-width: 36ch; color: var(--dim); font-size: 13px; line-height: 1.45; }
++.op-offline-hint { margin: 4px 0 0; max-width: 40ch; color: var(--dim); font-size: 11px; opacity: 0.85; }
+ .op .err { color: var(--err); font-size: 12px; display: flex; gap: 6px; align-items: flex-start; }
+ .op .spin { width: 12px; height: 12px; border: 2px solid var(--edge); border-top-color: var(--warn); border-radius: 50%; animation: op-spin .8s linear infinite; display: inline-block; }
+ @keyframes op-spin { to { transform: rotate(360deg); } }
+diff --git a/src/components/journey/CloudDeck.tsx b/src/components/journey/CloudDeck.tsx
+index e4b88f2..465078e 100644
+--- a/src/components/journey/CloudDeck.tsx
++++ b/src/components/journey/CloudDeck.tsx
+@@ -79,7 +79,8 @@ export function CloudDeck({ count = 8, segments = 16, low = false }: { count?: n
+   }, [tex, count, segments, low]);
+   useEffect(() => () => { geo.dispose(); mat.dispose(); }, [geo, mat]);
+   useFrame(() => {
+-    mat.uniforms.uTime.value = clock.getElapsedTime();
++    // LOW shader already freezes drift; skip the time uniform so we don't dirty GPU state every frame.
++    if (!low) mat.uniforms.uTime.value = clock.getElapsedTime();
+     mat.uniforms.uOpacity.value = S.cloudOpacity;
+     mat.uniforms.uLightMix.value = S.cloudLight;
+     mat.uniforms.uDissolve.value = S.cloudDissolve * 1.05;
+diff --git a/src/components/journey/EnvironmentHDRI.tsx b/src/components/journey/EnvironmentHDRI.tsx
+index 50d62b4..e981573 100644
+--- a/src/components/journey/EnvironmentHDRI.tsx
++++ b/src/components/journey/EnvironmentHDRI.tsx
+@@ -7,10 +7,12 @@ import { S } from '@/lib/scene-state';
+ import { loadHdr, loadLogWebp } from './hdri';
+ 
+ /** 1K .hdr first (fast lighting), then the compressed 2K stream on high tier (locked decision / G13). */
+-export function EnvironmentHDRI({ tier }: { tier: 'high' | 'low' }) {
++export function EnvironmentHDRI({ tier, defer = false }: { tier: 'high' | 'low'; defer?: boolean }) {
+   const { gl, scene } = useThree();
+   useEffect(() => {
+     let alive = true;
++    let idleHandle: ReturnType<typeof setTimeout> | number | null = null;
++    let usedIdle = false;
+     const pm = new PMREMGenerator(gl);
+     const apply = (t: Texture) => {
+       if (!alive) return;
+@@ -20,16 +22,36 @@ export function EnvironmentHDRI({ tier }: { tier: 'high' | 'low' }) {
+       scene.environment = env;
+       old?.dispose();
+     };
+-    loadHdr(asset('/hdri/studio_small_09_1k.hdr'))
+-      .then(apply)
+-      .then(() => {
+-        if (tier !== 'high' || !alive) return;
+-        const go = () => loadLogWebp(asset('/hdri/studio_small_09_2k.webp')).then(apply).catch(() => {});
+-        if ('requestIdleCallback' in window) requestIdleCallback(go, { timeout: 1500 }); else setTimeout(go, 1500);
+-      })
+-      .catch((e) => process.env.NODE_ENV !== 'production' && console.warn('HDRI failed', e));
+-    return () => { alive = false; pm.dispose(); };
+-  }, [gl, scene, tier]);
++    const load1k = () => {
++      if (!alive) return;
++      loadHdr(asset('/hdri/studio_small_09_1k.hdr'))
++        .then(apply)
++        .then(() => {
++          if (tier !== 'high' || defer || !alive) return;
++          const go = () => loadLogWebp(asset('/hdri/studio_small_09_2k.webp')).then(apply).catch(() => {});
++          if ('requestIdleCallback' in window) requestIdleCallback(go, { timeout: 2500 }); else setTimeout(go, 2000);
++        })
++        .catch((e) => process.env.NODE_ENV !== 'production' && console.warn('HDRI failed', e));
++    };
++    // Mobile / low: don't compete with first paint + scroll — PMREM is expensive.
++    if (defer) {
++      if ('requestIdleCallback' in window) {
++        usedIdle = true;
++        idleHandle = requestIdleCallback(load1k, { timeout: 3200 });
++      } else {
++        idleHandle = setTimeout(load1k, 1200);
++      }
++    } else {
++      load1k();
++    }
++    return () => {
++      alive = false;
++      pm.dispose();
++      if (idleHandle == null) return;
++      if (usedIdle && 'cancelIdleCallback' in window) cancelIdleCallback(idleHandle as number);
++      else clearTimeout(idleHandle);
++    };
++  }, [gl, scene, tier, defer]);
+   useFrame(() => { scene.environmentIntensity = S.envIntensity; gl.toneMappingExposure = S.exposure; });
+   return null;
+ }
+diff --git a/src/components/journey/HeroRobot.tsx b/src/components/journey/HeroRobot.tsx
+index 5c1101c..79a437b 100644
+--- a/src/components/journey/HeroRobot.tsx
++++ b/src/components/journey/HeroRobot.tsx
+@@ -87,7 +87,19 @@ async function prep(o: Object3D) {
+     for (const v of victims) { v.removeFromParent(); v.geometry.dispose(); } // data was copied into the merge
+     o.add(merged);
+   }
+-  o.traverse((c) => { const m = c as Mesh; if (m.isMesh) { m.castShadow = false; m.receiveShadow = false; /* baked static map: robot grounded by blob + N8AO */ } });
++  o.traverse((c) => {
++    const m = c as Mesh;
++    if (!m.isMesh) return;
++    m.castShadow = false;
++    m.receiveShadow = false; /* baked static map: robot grounded by blob + N8AO */
++    // Pull washed-out chassis colours down so the bot reads against the pale floor/walls.
++    for (const mat of (Array.isArray(m.material) ? m.material : [m.material]) as Material[]) {
++      const any = mat as Material & { color?: { r: number; g: number; b: number; multiplyScalar: (s: number) => void }; roughness?: number; metalness?: number };
++      if (any.color && any.color.r > 0.5 && any.color.g > 0.5 && any.color.b > 0.5) any.color.multiplyScalar(0.52);
++      if (typeof any.roughness === 'number') any.roughness = Math.min(0.78, Math.max(0.22, any.roughness * 0.92));
++      if (typeof any.metalness === 'number') any.metalness = Math.min(0.9, any.metalness + 0.08);
++    }
++  });
+   return o;
+ }
+ function setOpacity(o: Object3D, a: number) {
+@@ -107,17 +119,19 @@ function Blob() {
+   const tex = useMemo(() => {
+     if (typeof document === 'undefined') return null;
+     const c = document.createElement('canvas'); c.width = c.height = 64;
+-    const g = c.getContext('2d')!, r = g.createRadialGradient(32, 32, 4, 32, 32, 32);
+-    r.addColorStop(0, 'rgba(0,0,0,0.55)'); r.addColorStop(1, 'rgba(0,0,0,0)');
++    const g = c.getContext('2d')!, r = g.createRadialGradient(32, 32, 3, 32, 32, 32);
++    r.addColorStop(0, 'rgba(0,0,0,0.78)');
++    r.addColorStop(0.45, 'rgba(0,0,0,0.38)');
++    r.addColorStop(1, 'rgba(0,0,0,0)');
+     g.fillStyle = r; g.fillRect(0, 0, 64, 64);
+     return new CanvasTexture(c);
+   }, []);
+   useEffect(() => () => tex?.dispose(), [tex]);
+   if (!tex) return null;
+   return (
+-    <mesh rotation-x={-Math.PI / 2} position-y={0.004} renderOrder={1}>
+-      <planeGeometry args={[0.9, 1.0]} />
+-      <meshBasicMaterial map={tex} transparent depthWrite={false} />
++    <mesh rotation-x={-Math.PI / 2} position-y={0.003} renderOrder={1}>
++      <planeGeometry args={[1.15, 1.25]} />
++      <meshBasicMaterial map={tex} transparent depthWrite={false} opacity={0.95} />
+     </mesh>
+   );
+ }
+diff --git a/src/components/journey/JourneyCanvas.tsx b/src/components/journey/JourneyCanvas.tsx
+index d959d9a..e0d2beb 100644
+--- a/src/components/journey/JourneyCanvas.tsx
++++ b/src/components/journey/JourneyCanvas.tsx
+@@ -27,7 +27,8 @@ silenceR3FClockWarning(); // must run before <Canvas> creates its store (R3F cal
+ export default function JourneyCanvas({ tier, mobile, saveData, onFail }: { tier: Tier; mobile: boolean; saveData: boolean; onFail: () => void }) {
+   const debug = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debug') === '1';
+   const high = tier === 'high';
+-  const maxDpr = typeof window === 'undefined' ? 1 : Math.min(window.devicePixelRatio || 1, high ? 2 : 1.25);
++  // Mobile / low: hard-cap DPR — fill rate from clouds + AgX was the main scroll hitch.
++  const maxDpr = typeof window === 'undefined' ? 1 : Math.min(window.devicePixelRatio || 1, high && !mobile ? 2 : mobile ? 1 : 1.25);
+   const [dpr, setDpr] = useState(maxDpr);
+   useEffect(() => { useScene.setState({ tier }); }, [tier]);
+   useEffect(() => {
+@@ -74,16 +75,22 @@ export default function JourneyCanvas({ tier, mobile, saveData, onFail }: { tier
+       <CameraRig parallax={!mobile} />
+       <Lights shadows={high} mapSize={2048} />
+       <FogCtl />
+-      <EnvironmentHDRI tier={tier} />
++      <EnvironmentHDRI tier={tier} defer={mobile || !high || saveData} />
+       <RoomShell grid={high} />
+       <Props high={high} />
+       <HeroRobot tier={tier} allowHi={high && !mobile && !saveData} />
+-      <LidarPulse rays={high ? 180 : 90} />
+-      <SkyDome stars={high ? 600 : 300} />
++      <LidarPulse rays={high && !mobile ? 180 : 90} />
++      <SkyDome stars={high && !mobile ? 600 : 240} />
+       <Suspense fallback={null}>
+-        {high && !mobile && <CloudVolume onReady={onVol} />}
+-        {/* Sprite fallback: low tier / mobile, and on high tier until the volume textures are ready (or if they fail). */}
+-        {!(high && !mobile && volOk) && <CloudDeck count={4} segments={mobile ? 8 : 10} low={!high || mobile} />}
++        {high && !mobile && !saveData && <CloudVolume onReady={onVol} />}
++        {/* Sprite fallback: low / mobile / save-data, and on high until the volume is ready (or fails). */}
++        {!(high && !mobile && !saveData && volOk) && (
++          <CloudDeck
++            count={mobile || saveData ? 2 : 4}
++            segments={mobile || saveData ? 4 : high ? 10 : 6}
++            low={!high || mobile || saveData}
++          />
++        )}
+       </Suspense>
+       {high && !(debug && new URLSearchParams(window.location.search).has('nopost')) && <Post />}
+     </Canvas>
+diff --git a/src/components/journey/SceneRig.tsx b/src/components/journey/SceneRig.tsx
+index b75be3f..8a87b0d 100644
+--- a/src/components/journey/SceneRig.tsx
++++ b/src/components/journey/SceneRig.tsx
+@@ -51,8 +51,10 @@ export function Lights({ shadows, mapSize }: { shadows: boolean; mapSize: number
+   return (
+     <>
+       <directionalLight ref={key} color="#F4F1FF" intensity={2.0} castShadow={shadows} shadow-mapSize={[mapSize, mapSize]} shadow-bias={-0.0004} shadow-normalBias={0.02} shadow-radius={6} shadow-blurSamples={12} />
+-      <pointLight position={[-3.4, 0.7, 0.4]} color="#E81CB0" intensity={0.9} distance={6} decay={1.5} />
+-      <hemisphereLight args={["#2B1A5E", "#0B0B10", 0.25]} />
++      {/* Cool rim from behind-left so the dark chassis reads against the pale floor. */}
++      <directionalLight position={[-2.8, 1.4, -3.2]} color="#C8B8FF" intensity={0.65} />
++      <pointLight position={[-3.4, 0.7, 0.4]} color="#E81CB0" intensity={1.05} distance={6} decay={1.5} />
++      <hemisphereLight args={["#2B1A5E", "#0B0B10", 0.32]} />
+     </>
+   );
+ }
+@@ -71,20 +73,32 @@ export function FogCtl() {
+   return null;
+ }
+ 
+-/** Pause per ui-spec §8: '#info' top < 0 or a dialog open → render on demand. Tab hidden is handled by rAF. */
++/** Pause per ui-spec §8: '#info' top < 0 or a dialog open → render on demand. Also stop when tab/canvas hidden. */
+ export function FrameloopCtl() {
+-  const { setFrameloop, invalidate } = useThree();
++  const { setFrameloop, invalidate, gl } = useThree();
+   useEffect(() => {
+     let mode: 'always' | 'demand' | 'never' = 'always';
++    let onScreen = true;
+     const tick = () => {
+       const info = document.getElementById('info');
+       // ui-spec §14.3: while the simulation video plays, render 0 frames ('never' ignores stray invalidate() calls).
+-      const stop = useScene.getState().renderPaused;
++      const stop = useScene.getState().renderPaused || document.hidden || !onScreen;
+       const paused = (info ? info.getBoundingClientRect().top < 0 : false) || useUI.getState().dialog !== null;
+       const next = stop ? 'never' : paused ? 'demand' : 'always';
+       if (next !== mode) { mode = next; setFrameloop(next); if (next === 'demand') invalidate(); }
+     };
+-    return addTick(tick);
+-  }, [setFrameloop, invalidate]);
++    const canvas = gl.domElement;
++    const io = typeof IntersectionObserver !== 'undefined'
++      ? new IntersectionObserver(([e]) => { onScreen = !!e?.isIntersecting; tick(); }, { root: null, threshold: 0.02 })
++      : null;
++    if (io && canvas) io.observe(canvas);
++    document.addEventListener('visibilitychange', tick);
++    const stopTick = addTick(tick);
++    return () => {
++      stopTick();
++      document.removeEventListener('visibilitychange', tick);
++      io?.disconnect();
++    };
++  }, [setFrameloop, invalidate, gl]);
+   return null;
+ }
+diff --git a/src/components/journey/StandInRobot.tsx b/src/components/journey/StandInRobot.tsx
+index 83fbffb..3998f99 100644
+--- a/src/components/journey/StandInRobot.tsx
++++ b/src/components/journey/StandInRobot.tsx
+@@ -23,32 +23,32 @@ export function StandInRobot() {
+   return (
+     <group name="amr_standin">
+       <RoundedBox name="chassis" args={[0.52, 0.12, 0.63]} radius={0.025} smoothness={4} position={[0, 0.1, 0]}>
+-        <meshPhysicalMaterial color="#1A1A22" metalness={0.6} roughness={0.35} clearcoat={0.3} />
++        <meshPhysicalMaterial color="#0C0C12" metalness={0.72} roughness={0.28} clearcoat={0.55} clearcoatRoughness={0.2} />
+       </RoundedBox>
+       <mesh name="accent_strip" position={[0, 0.1, 0.317]}>
+         <boxGeometry args={[0.4, 0.012, 0.004]} />
+-        <meshStandardMaterial color="#E81CB0" emissive="#E81CB0" emissiveIntensity={2} toneMapped={false} />
++        <meshStandardMaterial color="#E81CB0" emissive="#E81CB0" emissiveIntensity={2.4} toneMapped={false} />
+       </mesh>
+       {WHEELS.map(([n, x, z]) => (
+         <group key={n} name={n} position={[x, 0.05, z]}>
+           <mesh rotation-z={Math.PI / 2}>
+-            <cylinderGeometry args={[0.05, 0.05, 0.05, 32]} />
+-            <meshPhysicalMaterial map={stripes} roughness={0.85} sheen={0.2} />
++            <cylinderGeometry args={[0.05, 0.05, 0.05, 48]} />
++            <meshPhysicalMaterial map={stripes} color="#1a1a20" roughness={0.7} metalness={0.15} sheen={0.15} />
+           </mesh>
+         </group>
+       ))}
+       <mesh name="lidar_base" position={[0, 0.175, 0.12]}>
+         <cylinderGeometry args={[0.045, 0.045, 0.03, 32]} />
+-        <meshPhysicalMaterial color="#222" metalness={0.8} roughness={0.3} />
++        <meshPhysicalMaterial color="#1a1a22" metalness={0.85} roughness={0.22} />
+       </mesh>
+       <group name="lidar_top" position={[0, 0.21, 0.12]}>
+         <mesh>
+           <cylinderGeometry args={[0.04, 0.04, 0.04, 32]} />
+-          <meshPhysicalMaterial color="#151518" metalness={0.5} roughness={0.25} />
++          <meshPhysicalMaterial color="#101014" metalness={0.55} roughness={0.2} />
+         </mesh>
+         <mesh rotation-x={Math.PI / 2}>
+           <torusGeometry args={[0.041, 0.004, 12, 48]} />
+-          <meshStandardMaterial color="#E81CB0" emissive="#E81CB0" emissiveIntensity={1.5} toneMapped={false} />
++          <meshStandardMaterial color="#E81CB0" emissive="#E81CB0" emissiveIntensity={2} toneMapped={false} />
+         </mesh>
+       </group>
+     </group>
+diff --git a/src/lib/control/operator-auth.ts b/src/lib/control/operator-auth.ts
+index 9c607a6..b29b3c9 100644
+--- a/src/lib/control/operator-auth.ts
++++ b/src/lib/control/operator-auth.ts
+@@ -1,7 +1,7 @@
+ /** Client for the `operator-auth` edge function (username allowlist login). */
+ 
+ export type OperatorStatus =
+-  | { status: 'ok'; username: string; displayName?: string; needsPassword: boolean }
++  | { status: 'ok'; username: string; displayName?: string; needsPassword: boolean; email?: string }
+   | { status: 'invalid' | 'network' | 'unavailable' | 'forbidden' | 'disabled'; reason?: string };
+ 
+ export type OperatorEmail =
+@@ -12,6 +12,40 @@ export type OperatorClaim =
+   | { status: 'ok'; email: string }
+   | { status: 'invalid' | 'network' | 'unavailable'; reason?: string };
+ 
++type CachedOp = { email: string; needsPassword: boolean; displayName?: string; at: number };
++
++const CACHE_TTL_MS = 10 * 60_000;
++const memCache = new Map<string, CachedOp>();
++
++function cacheKey(supabaseUrl: string, username: string) {
++  return `${supabaseUrl.replace(/\/$/, '')}|${username}`;
++}
++
++function readCache(supabaseUrl: string, username: string): CachedOp | null {
++  const key = cacheKey(supabaseUrl, username);
++  const hit = memCache.get(key);
++  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit;
++  if (typeof sessionStorage === 'undefined') return null;
++  try {
++    const raw = sessionStorage.getItem(`amr-op:${key}`);
++    if (!raw) return null;
++    const parsed = JSON.parse(raw) as CachedOp;
++    if (!parsed?.email || Date.now() - parsed.at >= CACHE_TTL_MS) return null;
++    memCache.set(key, parsed);
++    return parsed;
++  } catch {
++    return null;
++  }
++}
++
++function writeCache(supabaseUrl: string, username: string, value: Omit<CachedOp, 'at'>) {
++  const entry: CachedOp = { ...value, at: Date.now() };
++  const key = cacheKey(supabaseUrl, username);
++  memCache.set(key, entry);
++  if (typeof sessionStorage === 'undefined') return;
++  try { sessionStorage.setItem(`amr-op:${key}`, JSON.stringify(entry)); } catch { /* quota */ }
++}
++
+ function fnUrl(supabaseUrl: string) {
+   return `${supabaseUrl.replace(/\/$/, '')}/functions/v1/operator-auth`;
+ }
+@@ -41,11 +75,16 @@ export async function operatorStatus(supabaseUrl: string, key: string, username:
+     const { data, http } = await post(supabaseUrl, key, { action: 'status', username });
+     if (http >= 500) return { status: 'network' };
+     if (data.status === 'ok') {
++      const email = typeof data.email === 'string' ? data.email : undefined;
++      const needsPassword = Boolean(data.needsPassword);
++      const displayName = typeof data.displayName === 'string' ? data.displayName : undefined;
++      if (email) writeCache(supabaseUrl, String(data.username ?? username), { email, needsPassword, displayName });
+       return {
+         status: 'ok',
+         username: String(data.username ?? username),
+-        displayName: typeof data.displayName === 'string' ? data.displayName : undefined,
+-        needsPassword: Boolean(data.needsPassword),
++        displayName,
++        needsPassword,
++        email,
+       };
+     }
+     if (data.status === 'unavailable') return { status: 'unavailable' };
+@@ -56,11 +95,15 @@ export async function operatorStatus(supabaseUrl: string, key: string, username:
+ }
+ 
+ export async function operatorEmail(supabaseUrl: string, key: string, username: string): Promise<OperatorEmail> {
++  const cached = readCache(supabaseUrl, username);
++  if (cached) return { status: 'ok', email: cached.email, needsPassword: cached.needsPassword };
+   try {
+     const { data, http } = await post(supabaseUrl, key, { action: 'email', username });
+     if (http >= 500) return { status: 'network' };
+     if (data.status === 'ok' && typeof data.email === 'string') {
+-      return { status: 'ok', email: data.email, needsPassword: Boolean(data.needsPassword) };
++      const needsPassword = Boolean(data.needsPassword);
++      writeCache(supabaseUrl, username, { email: data.email, needsPassword });
++      return { status: 'ok', email: data.email, needsPassword };
+     }
+     return { status: 'invalid' };
+   } catch {
+@@ -79,6 +122,7 @@ export async function operatorClaim(
+     const { data, http } = await post(supabaseUrl, key, { action: 'claim', username, password });
+     if (http >= 500) return { status: 'network' };
+     if (data.status === 'ok' && typeof data.email === 'string') {
++      writeCache(supabaseUrl, username, { email: data.email, needsPassword: false });
+       return { status: 'ok', email: data.email };
+     }
+     if (data.status === 'unavailable') return { status: 'unavailable' };
+diff --git a/supabase/functions/operator-auth/index.ts b/supabase/functions/operator-auth/index.ts
+index f8e2b29..202d721 100644
+--- a/supabase/functions/operator-auth/index.ts
++++ b/supabase/functions/operator-auth/index.ts
+@@ -104,11 +104,13 @@ Deno.serve(async (req) => {
+   if (!row || row.active === false) return json({ status: "invalid" });
+ 
+   if (action === "status") {
++    // Include email so the client can sign in without a second round-trip.
+     return json({
+       status: "ok",
+       username: row.username,
+       displayName: row.display_name ?? row.username,
+       needsPassword: !row.password_set,
++      email: row.auth_email,
+     });
+   }
+ 
