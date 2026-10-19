@@ -1,0 +1,1729 @@
+From a2119db28376a2a35487cbedb029994860eff00d Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 19 Oct 2026 11:58:23 +0000
+Subject: [PATCH] =?UTF-8?q?Control=20panel:=20liquid=20glass,=20vertical?=
+ =?UTF-8?q?=20layout,=20Xbox=20joy=20=E2=86=92=20web=5Fgamepad.?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Persist selected bot across refresh. Dense status-first scroll layout with
+site wave background and glass cards. On-screen Xbox controller streams the
+same a[]/b joy layout as web_gamepad_node /api/joy (and physical pads).
+---
+ src/components/auth/SetPasswordForm.tsx   |   3 +
+ src/components/auth/SignInForm.tsx        |   4 +
+ src/components/control/Dashboard.tsx      | 352 +++++++------
+ src/components/control/XboxController.tsx | 278 ++++++++++
+ src/components/control/dashboard.css      | 590 +++++++++++++++++-----
+ src/lib/control/bot-persist.ts            |  31 ++
+ src/lib/control/joy-axes.ts               |  38 ++
+ tests/bot-persist.test.ts                 |  11 +
+ tests/joy-axes.test.ts                    |  31 ++
+ 9 files changed, 1048 insertions(+), 290 deletions(-)
+ create mode 100644 src/components/control/XboxController.tsx
+ create mode 100644 src/lib/control/bot-persist.ts
+ create mode 100644 src/lib/control/joy-axes.ts
+ create mode 100644 tests/bot-persist.test.ts
+ create mode 100644 tests/joy-axes.test.ts
+
+diff --git a/src/components/auth/SetPasswordForm.tsx b/src/components/auth/SetPasswordForm.tsx
+index bde223c..abe558b 100644
+--- a/src/components/auth/SetPasswordForm.tsx
++++ b/src/components/auth/SetPasswordForm.tsx
+@@ -4,6 +4,8 @@ import { useMemo, useState, type FormEvent } from 'react';
+ import { useRouter } from 'next/navigation';
+ import { readConfig } from '@/lib/config';
+ import { COPY, isExpiredLinkMessage, isWeakPasswordMessage, passwordRules, strengthSegments } from '@/lib/control/access';
++import { WaveLines } from '@/components/effects/WaveLines';
++import '@/components/effects/effects.css';
+ import '@/components/control/dashboard.css';
+ 
+ type Step = 'continue' | 'choose' | 'done' | 'expired';
+@@ -52,6 +54,7 @@ export function SetPasswordForm({ tokenHash, type }: { tokenHash: string | null;
+ 
+   return (
+     <div className="op op-auth-page">
++      <div className="op-bg" aria-hidden><WaveLines lines={5} /></div>
+       <div className="op-auth">
+         <div className="op-brand">AMR</div>
+         {step === 'expired' && (
+diff --git a/src/components/auth/SignInForm.tsx b/src/components/auth/SignInForm.tsx
+index 467152d..98cfc82 100644
+--- a/src/components/auth/SignInForm.tsx
++++ b/src/components/auth/SignInForm.tsx
+@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
+ import { useServices } from '@/components/providers/ServicesProvider';
+ import { readConfig } from '@/lib/config';
+ import { COPY } from '@/lib/control/access';
++import { WaveLines } from '@/components/effects/WaveLines';
++import '@/components/effects/effects.css';
+ import '@/components/control/dashboard.css';
+ 
+ export function SignInForm({ redirectTarget, startForgot = false }: { redirectTarget: string; startForgot?: boolean }) {
+@@ -28,6 +30,7 @@ export function SignInForm({ redirectTarget, startForgot = false }: { redirectTa
+   if (!auth.isAvailable()) {
+     return (
+       <div className="op op-auth-page">
++        <div className="op-bg" aria-hidden><WaveLines lines={5} /></div>
+         <div className="op-auth">
+           <div className="op-brand">AMR</div>
+           <h1>Sign in</h1>
+@@ -88,6 +91,7 @@ export function SignInForm({ redirectTarget, startForgot = false }: { redirectTa
+ 
+   return (
+     <div className="op op-auth-page">
++      <div className="op-bg" aria-hidden><WaveLines lines={5} /></div>
+       <div className="op-auth">
+         <div className="op-brand">AMR</div>
+         <h1>{forgot ? 'Send reset link' : 'Sign in'}</h1>
+diff --git a/src/components/control/Dashboard.tsx b/src/components/control/Dashboard.tsx
+index f0ec206..73f689b 100644
+--- a/src/components/control/Dashboard.tsx
++++ b/src/components/control/Dashboard.tsx
+@@ -12,8 +12,12 @@ import { SIGN_DOWN, SIGN_ERROR, SIGN_NO_DATA, type StatusSignId } from '@/lib/te
+ import { useControlSession } from '@/lib/telemetry/useControlSession';
+ import { clampLinAng, clampToolParams, commandRejectText, estopLatchAllowed, mapNameError, JOY_HZ, NUDGE_REPEAT_MS, ESTOP_RETRY_MS } from '@/lib/telemetry/commands';
+ import { COPY, countdownFraction, formatCountdown, initialOf, secondsRemaining } from '@/lib/control/access';
++import { persistBot, readStoredBot } from '@/lib/control/bot-persist';
+ import type { NormState } from '@/lib/telemetry/normalize';
++import { WaveLines } from '@/components/effects/WaveLines';
+ import { LiveCanvas } from './LiveCanvas';
++import { XboxController, readPhysicalGamepad, type JoyReading } from './XboxController';
++import '@/components/effects/effects.css';
+ import './dashboard.css';
+ 
+ const NODES = [
+@@ -31,7 +35,7 @@ export function Dashboard() {
+   const cfg = readConfig();
+   const [client, setClient] = useState<SupabaseClient | null>(null);
+   const [broadcastClient, setBroadcastClient] = useState<SupabaseClient | null>(null);
+-  const [botId, setBotId] = useState<BotId>('amr4');
++  const [botId, setBotId] = useState<BotId>('hardware-bot');
+   const userId = session?.userId ?? null;
+   const tel = useControlSession(client, userId, botId, broadcastClient);
+ 
+@@ -49,6 +53,9 @@ export function Dashboard() {
+   const [account, setAccount] = useState(false);
+   const [help, setHelp] = useState(false);
+   const [padLabel, setPadLabel] = useState<'none' | 'connected' | 'idle'>('none');
++  const [padOpen, setPadOpen] = useState(false);
++  const [physicalPad, setPhysicalPad] = useState<JoyReading | null>(null);
++  const virtualPadRef = useRef<JoyReading | null>(null);
+   const [toasts, setToasts] = useState<{ id: number; text: string; until: number }[]>([]);
+   const [now, setNow] = useState(() => Date.now());
+   const [flash, setFlash] = useState<'granted' | 'denied' | 'timeout' | null>(null);
+@@ -58,6 +65,19 @@ export function Dashboard() {
+   const prevController = useRef<string | null | undefined>(undefined);
+   const prevMine = useRef<string | null>(null);
+   const joined = useRef(false);
++
++  useEffect(() => {
++    const stored = readStoredBot('hardware-bot');
++    setBotId(stored);
++    persistBot(stored);
++  }, []);
++
++  const selectBot = useCallback((id: BotId) => {
++    if (id === botId) return;
++    setBotId(id);
++    persistBot(id);
++    joined.current = false;
++  }, [botId]);
+   const estopTimer = useRef(0);
+   const holdTimer = useRef(0);
+   const helpRef = useRef(false);
+@@ -233,8 +253,12 @@ export function Dashboard() {
+     const tick = () => {
+       timer = window.setTimeout(tick, 1000 / JOY_HZ);
+       if (!alive) return;
+-      const reading = readGamepad();
+-      const next = !reading ? 'none' : (!controller || document.hidden ? 'idle' : 'connected');
++      const physical = readPhysicalGamepad();
++      setPhysicalPad(physical);
++      const reading = virtualPadRef.current ?? physical;
++      const next = !physical && !virtualPadRef.current
++        ? 'none'
++        : (!controller || document.hidden ? 'idle' : 'connected');
+       if (padRef.current !== next) { padRef.current = next; setPadLabel(next); }
+       if (!reading || !controller || document.hidden || !canEdit) return;
+       void sendRef.current({ type: 'joy', a: reading.a, b: reading.b });
+@@ -328,64 +352,83 @@ export function Dashboard() {
+ 
+   return (
+     <div className="op">
++      <div className="op-bg" aria-hidden>
++        <WaveLines lines={5} />
++      </div>
+       <div className="op-sticky">
+-      {(tel.heartbeatStale || tel.realtimeDown || tel.heartbeatError) && (
+-        <div className="op-reconnect" role="status">{tel.heartbeatError || 'Reconnecting…'}</div>
+-      )}
+-      <header className="op-header">
+-        <h1><span className="op-brand">AMR</span> <span style={{ fontWeight: 600, letterSpacing: '0.02em' }}>{bot.label}</span></h1>
+-        <div className="op-switch" role="group" aria-label="Bot">
+-          {BOTS.map((b) => (
+-            <button key={b.id} type="button" aria-pressed={b.id === botId} onClick={() => { if (b.id !== botId) { setBotId(b.id); joined.current = false; } }}>{b.label}</button>
+-          ))}
+-        </div>
+-        <LinkStatus phase={tel.link.phase} label={tel.link.label} highLag={highLag} />
+-        {tel.link.showLag && (
+-          <span className="mono" style={{ color: 'var(--warn)' }} aria-hidden="true">lag {Math.round(tel.lagMs)} ms</span>
++        {(tel.heartbeatStale || tel.realtimeDown || tel.heartbeatError) && (
++          <div className="op-reconnect" role="status">{tel.heartbeatError || 'Reconnecting…'}</div>
+         )}
+-        {robotLive && <span className={`pill ${allOk ? 'ok' : 'bad'}`}>{allOk ? 'ALL SYSTEMS GO' : 'DEGRADED'}</span>}
+-        {robotLive && tel.frame?.tool && <span className="pill run">⏳ {tel.frame.tool}</span>}
+-        {robotLive && tel.frame?.vision && <span className="pill vision">👁 VISION ON</span>}
+-        {robotLive && tel.frame?.saving && <span className="pill saving">💾 SAVING MAP…</span>}
+-        <div className="op-grow">
+-          {tel.joining ? <span className="skel" aria-hidden /> : (
+-            <span className="who" title="Currently driving">
+-              <span className={`av ${driverName && driverName !== 'No one is driving' ? 'driving' : ''}`}>{initialOf(driverName === 'You' ? (session?.email ?? 'You') : driverName)}</span>
+-              <span style={{ color: driverName ? 'var(--tx)' : 'var(--dim)' }}>{driverName ?? 'No one is driving'}</span>
+-            </span>
+-          )}
+-          {tel.joining ? <span className="skel" aria-hidden /> : controller ? (
+-            <span className="pill ok"><Wheel /> You&apos;re in control</span>
+-          ) : (
+-            <span className="pill viewer"><Eye /> View only</span>
++        <header className="op-header">
++          <h1>
++            <span className="op-brand">AMR</span>
++            <span className="op-bot-label">{bot.label}</span>
++          </h1>
++          <div className="op-switch" role="group" aria-label="Bot">
++            {BOTS.map((b) => (
++              <button key={b.id} type="button" aria-pressed={b.id === botId} onClick={() => selectBot(b.id)}>{b.label}</button>
++            ))}
++          </div>
++          <LinkStatus phase={tel.link.phase} label={tel.link.label} highLag={highLag} />
++          {tel.link.showLag && (
++            <span className="mono" style={{ color: 'var(--warn)' }} aria-hidden="true">lag {Math.round(tel.lagMs)} ms</span>
+           )}
+-          <span style={{ position: 'relative' }}>
+-            <button type="button" className="av" aria-label="Account" aria-expanded={account} onClick={() => setAccount((v) => !v)}>{initialOf(session?.email)}</button>
+-            {account && (
+-              <div className="menu" role="menu">
+-                <p>{session?.email}</p>
+-                <button type="button" className="btn" onClick={() => { void signOut().then(() => window.location.replace(asset('/sign-in/'))); }}>Sign out</button>
+-              </div>
++          <div className="op-grow">
++            {tel.joining ? <span className="skel" aria-hidden /> : (
++              <span className="who" title="Currently driving">
++                <span className={`av ${driverName && driverName !== 'No one is driving' ? 'driving' : ''}`}>{initialOf(driverName === 'You' ? (session?.email ?? 'You') : driverName)}</span>
++                <span style={{ color: driverName ? 'var(--tx)' : 'var(--dim)' }}>{driverName ?? 'No one is driving'}</span>
++              </span>
++            )}
++            {tel.joining ? <span className="skel" aria-hidden /> : controller ? (
++              <span className="pill ok"><Wheel /> In control</span>
++            ) : (
++              <span className="pill viewer"><Eye /> View only</span>
+             )}
+-          </span>
+-          {canEstop && (
+-            <button type="button" className={`op-estop ${estop !== 'ready' ? 'latched' : ''}`} title="Space or Esc" onClick={() => { if (estop === 'ready') fireEstop(); }} onPointerDown={() => { if (estop === 'latched') startRearm(); }} onPointerUp={cancelRearm} onPointerLeave={cancelRearm}>
+-              {estop === 'retrying' ? 'Retrying…' : estop === 'latched' ? 'STOPPED · Re-arm' : 'E-STOP'}
+-              {estop === 'latched' && <span className="hold" style={{ width: `${hold * 100}%` }} />}
++            <button
++              type="button"
++              className={`btn ghost xb-open ${padOpen ? 'on' : ''}`}
++              aria-pressed={padOpen}
++              onClick={() => setPadOpen((v) => !v)}
++              title="Open Xbox controller"
++            >
++              Controller
+             </button>
+-          )}
++            <span style={{ position: 'relative' }}>
++              <button type="button" className="av" aria-label="Account" aria-expanded={account} onClick={() => setAccount((v) => !v)}>{initialOf(session?.email)}</button>
++              {account && (
++                <div className="menu" role="menu">
++                  <p>{session?.email}</p>
++                  <button type="button" className="btn" onClick={() => { void signOut().then(() => window.location.replace(asset('/sign-in/'))); }}>Sign out</button>
++                </div>
++              )}
++            </span>
++            {canEstop && (
++              <button type="button" className={`op-estop ${estop !== 'ready' ? 'latched' : ''}`} title="Space or Esc" onClick={() => { if (estop === 'ready') fireEstop(); }} onPointerDown={() => { if (estop === 'latched') startRearm(); }} onPointerUp={cancelRearm} onPointerLeave={cancelRearm}>
++                {estop === 'retrying' ? 'Retrying…' : estop === 'latched' ? 'STOPPED · Re-arm' : 'E-STOP'}
++                {estop === 'latched' && <span className="hold" style={{ width: `${hold * 100}%` }} />}
++              </button>
++            )}
++          </div>
++        </header>
++        {controller && estop === 'latched' && <div className="op-estop-bar" role="status">Emergency stop active</div>}
++        <div className="op-status" aria-label="Status">
++          <div className="op-status-row">
++            <div className="op-signs">
++              <Sign id="nodata" on={tel.signs.active === 'nodata'} label={SIGN_NO_DATA} />
++              <Sign id="down" on={tel.signs.active === 'down'} label={SIGN_DOWN} />
++              <Sign id="error" on={tel.signs.active === 'error'} label={SIGN_ERROR} detail={tel.signs.errorReason} />
++            </div>
++            {robotLive && <span className={`pill ${allOk ? 'ok' : 'bad'}`}>{allOk ? 'Systems go' : 'Degraded'}</span>}
++            {robotLive && tel.frame?.tool && <span className="pill run">{tel.frame.tool}</span>}
++            {robotLive && tel.frame?.vision && <span className="pill vision">Vision</span>}
++            {robotLive && tel.frame?.saving && <span className="pill saving">Saving map</span>}
++            {tel.channelNote && <span className="op-note">{tel.channelNote}</span>}
++            <span className="op-telem mono" aria-label="Telemetry">
++              x {fmt(tel.frame?.pose?.[0], 2)} · y {fmt(tel.frame?.pose?.[1], 2)} · yaw {tel.frame?.pose ? (tel.frame.pose[2] * 57.2958).toFixed(1) : '–'}° · v {fmt(tel.frame?.vel[0], 2)}
++            </span>
++          </div>
+         </div>
+-      </header>
+-      {controller && estop === 'latched' && <div className="op-estop-bar" role="status">EMERGENCY STOP ACTIVE</div>}
+-      <div className="op-signs">
+-        <Sign id="nodata" on={tel.signs.active === 'nodata'} label={SIGN_NO_DATA} />
+-        <Sign id="down" on={tel.signs.active === 'down'} label={SIGN_DOWN} />
+-        <Sign id="error" on={tel.signs.active === 'error'} label={SIGN_ERROR} detail={tel.signs.errorReason} />
+-        {tel.channelNote && <span className="op-note">{tel.channelNote}</span>}
+-        <span className="op-telem mono" aria-label="Telemetry">
+-          x {fmt(tel.frame?.pose?.[0], 2)} · y {fmt(tel.frame?.pose?.[1], 2)} · yaw {tel.frame?.pose ? (tel.frame.pose[2] * 57.2958).toFixed(1) : '–'}° · v {fmt(tel.frame?.vel[0], 2)} m/s
+-        </span>
+-      </div>
+       </div>
+ 
+       {controller && requests.length > 0 && (
+@@ -418,9 +461,26 @@ export function Dashboard() {
+         </div>
+       )}
+ 
+-      <div className="op-grid">
++      <div className="op-main">
++        {!controller && (
++          <AccessBanner
++            flash={flash}
++            name={driverName}
++            waitingFor={tel.controllerName || driverName}
++            my={tel.myRequest}
++            now={now}
++            retryLeft={retryLeft}
++            pulse={pulse}
++            error={tel.requestError === 'network' || tel.requestError === 'join'}
++            offline={tel.link.phase === 'offline'}
++            onRequest={() => void tel.requestControl()}
++            onCancel={() => { if (tel.myRequest) void tel.cancelRequest(tel.myRequest.id); }}
++            onRetry={() => { if (tel.requestError) void tel.requestControl(); }}
++          />
++        )}
++
+         <section className="card" aria-label="Live view">
+-          <h2>Live view — odom frame · wheel-zoom · click = nav goal (when armed)</h2>
++          <h2>Live view · odom · wheel-zoom · click = nav goal</h2>
+           {tel.link.phase === 'offline' && (
+             <div className="offline">
+               <p style={{ color: 'var(--tx)', fontWeight: 700 }}>
+@@ -446,80 +506,70 @@ export function Dashboard() {
+             <Tile k="cmd ω" v={fmt(tel.frame?.cmd[1], 2)} />
+             <Tile k="map pose" v={tel.frame?.mapPose ? `${tel.frame.mapPose[0].toFixed(2)}, ${tel.frame.mapPose[1].toFixed(2)}` : '–'} />
+           </div>
+-          <div className={`navmode ${canEdit ? '' : 'locked'}`} aria-disabled={!canEdit}>
+-            <label><input type="checkbox" checked={mode === 'nav'} onChange={() => setExclusive('nav')} /> Nav-goal mode (click canvas to send goal)</label>
+-            <button type="button" className="btn stop" style={{ padding: '4px 12px' }} onClick={() => void send({ type: 'nav_cancel' })}>cancel goal</button>
+-            <label title="Waypoint sequences aren't available remotely yet."><input type="checkbox" disabled /> 📍 Seq-add mode (click = add waypoint)</label>
+-            <label><input type="checkbox" checked={mode === 'nogo'} onChange={() => setExclusive('nogo')} /> 🚫 No-go mode (drag a circle)</label>
+-            <select aria-label="No-go duration" value={duration} onChange={(e) => setDuration(Number(e.target.value))}>
+-              <option value={60}>1 min</option>
+-              <option value={300}>5 min</option>
+-              <option value={900}>15 min</option>
+-              <option value={0}>permanent</option>
+-            </select>
+-            <button type="button" className="btn stop" onClick={() => void send({ type: 'blacklist', action: 'clear' })}>clear zones</button>
+-            {tel.map && <label><input type="checkbox" checked={showSlam} onChange={(e) => setShowSlam(e.target.checked)} /> Show SLAM map</label>}
+-          </div>
+-          <div className="pad" aria-disabled={!canEdit}>
+-            <span />
+-            <PadButton label="Forward" glyph="▲" disabled={!canEdit} onDown={() => startNudge(0.15, 0)} onUp={stopNudge} />
+-            <span />
+-            <PadButton label="Rotate left" glyph="◀" disabled={!canEdit} onDown={() => startNudge(0, 0.6)} onUp={stopNudge} />
+-            <button type="button" aria-label="E-STOP" disabled={!canEstop} onClick={() => { if (estop === 'ready') fireEstop(); }}>■</button>
+-            <PadButton label="Rotate right" glyph="▶" disabled={!canEdit} onDown={() => startNudge(0, -0.6)} onUp={stopNudge} />
+-            <span />
+-            <PadButton label="Back" glyph="▼" disabled={!canEdit} onDown={() => startNudge(-0.15, 0)} onUp={stopNudge} />
+-            <span />
++          <div className="op-controls" style={{ marginTop: 10 }}>
++            <div className="pad" aria-disabled={!canEdit}>
++              <span />
++              <PadButton label="Forward" glyph="▲" disabled={!canEdit} onDown={() => startNudge(0.15, 0)} onUp={stopNudge} />
++              <span />
++              <PadButton label="Rotate left" glyph="◀" disabled={!canEdit} onDown={() => startNudge(0, 0.6)} onUp={stopNudge} />
++              <button type="button" aria-label="E-STOP" disabled={!canEstop} onClick={() => { if (estop === 'ready') fireEstop(); }}>■</button>
++              <PadButton label="Rotate right" glyph="▶" disabled={!canEdit} onDown={() => startNudge(0, -0.6)} onUp={stopNudge} />
++              <span />
++              <PadButton label="Back" glyph="▼" disabled={!canEdit} onDown={() => startNudge(-0.15, 0)} onUp={stopNudge} />
++              <span />
++            </div>
++            <div className={`navmode ${canEdit ? '' : 'locked'}`} aria-disabled={!canEdit}>
++              <label><input type="checkbox" checked={mode === 'nav'} onChange={() => setExclusive('nav')} /> Nav-goal</label>
++              <button type="button" className="btn stop" style={{ padding: '4px 12px' }} onClick={() => void send({ type: 'nav_cancel' })}>Cancel goal</button>
++              <label title="Waypoint sequences aren't available remotely yet."><input type="checkbox" disabled /> Seq-add</label>
++              <label><input type="checkbox" checked={mode === 'nogo'} onChange={() => setExclusive('nogo')} /> No-go</label>
++              <select aria-label="No-go duration" value={duration} onChange={(e) => setDuration(Number(e.target.value))}>
++                <option value={60}>1 min</option>
++                <option value={300}>5 min</option>
++                <option value={900}>15 min</option>
++                <option value={0}>permanent</option>
++              </select>
++              <button type="button" className="btn stop" onClick={() => void send({ type: 'blacklist', action: 'clear' })}>Clear zones</button>
++              {tel.map && <label><input type="checkbox" checked={showSlam} onChange={(e) => setShowSlam(e.target.checked)} /> SLAM map</label>}
++              {!controller && <p className="help">Only the driver can emergency-stop.</p>}
++            </div>
+           </div>
+-          {!controller && <p className="help">Only the driver can emergency-stop.</p>}
+         </section>
+ 
+-        <div className="right">
+-          {!controller && (
+-            <AccessBanner
+-              flash={flash}
+-              name={driverName}
+-              waitingFor={tel.controllerName || driverName}
+-              my={tel.myRequest}
+-              now={now}
+-              retryLeft={retryLeft}
+-              pulse={pulse}
+-              error={tel.requestError === 'network' || tel.requestError === 'join'}
+-              offline={tel.link.phase === 'offline'}
+-              onRequest={() => void tel.requestControl()}
+-              onCancel={() => { if (tel.myRequest) void tel.cancelRequest(tel.myRequest.id); }}
+-              onRetry={() => { if (tel.requestError) void tel.requestControl(); }}
+-            />
+-          )}
++        <div className="op-pair">
+           <SystemCard frame={tel.frame} canEdit={canEdit} mapName={mapName} setMapName={setMapName} onSave={() => { if (mapNameError(mapName)) return; void send({ type: 'save_map', name: mapName || undefined }); }} />
+           <StatusCard frame={tel.frame} />
+-          <ToolsCard
+-            frame={tel.frame}
+-            canEdit={canEdit}
+-            toolBusy={toolBusy}
+-            padLabel={padLabel}
+-            areaClear={areaClear}
+-            setAreaClear={setAreaClear}
+-            imu={imu}
+-            setImu={setImu}
+-            drive={drive}
+-            setDrive={setDrive}
+-            imuOk={imuOk}
+-            driveOk={driveOk}
+-            onRun={(tool, params) => void send({ type: 'run_tool', tool, params })}
+-            onStop={() => void send({ type: 'stop_tool' })}
+-            onVision={() => {
+-              if (now - visionAt < 4000) return;
+-              setVisionAt(now);
+-              void send({ type: 'vision', on: !tel.frame?.vision });
+-            }}
+-          />
+-          <WaypointCard seq={tel.frame?.seq ?? null} />
++        </div>
++
++        <ToolsCard
++          frame={tel.frame}
++          canEdit={canEdit}
++          toolBusy={toolBusy}
++          padLabel={padLabel}
++          areaClear={areaClear}
++          setAreaClear={setAreaClear}
++          imu={imu}
++          setImu={setImu}
++          drive={drive}
++          setDrive={setDrive}
++          imuOk={imuOk}
++          driveOk={driveOk}
++          onRun={(tool, params) => void send({ type: 'run_tool', tool, params })}
++          onStop={() => void send({ type: 'stop_tool' })}
++          onVision={() => {
++            if (now - visionAt < 4000) return;
++            setVisionAt(now);
++            void send({ type: 'vision', on: !tel.frame?.vision });
++          }}
++        />
++
++        <div className="op-pair">
+           <CameraCard frame={tel.frame} phase={tel.link.phase} lastAt={tel.lastTelemetryAt} now={now} />
++          <WaypointCard seq={tel.frame?.seq ?? null} />
+         </div>
+ 
+         <section className="card" id="console" aria-label="Console">
+-          <h2>Console — data & events</h2>
++          <h2>Console</h2>
+           <div className="logbox" tabIndex={0} ref={(el) => { if (el) el.scrollTop = el.scrollHeight; }}>
+             {tel.logs.map((ln, i) => (
+               <div key={i} className={ln.level === 'tool' ? 'ln ln-tool' : `ln ${ln.level === 'error' || ln.level === 'run' || ln.level === 'info' ? ln.level : 'info'}`}>
+@@ -530,9 +580,18 @@ export function Dashboard() {
+         </section>
+       </div>
+ 
++      <XboxController
++        open={padOpen}
++        onClose={() => setPadOpen(false)}
++        canEdit={canEdit}
++        padLabel={padLabel}
++        physical={physicalPad}
++        virtualRef={virtualPadRef}
++      />
++
+       <div className="toasts" aria-live="polite">{toasts[0] && <div className="toast" role="status">{toasts[0].text}</div>}</div>
+       {help && (
+-        <div className="helpdlg" role="dialog" aria-label="Keyboard shortcuts">
++        <div className="helpdlg glass-liquid" role="dialog" aria-label="Keyboard shortcuts">
+           <h3>Keyboard</h3>
+           <p>W A S D or arrows drive. N nav, M no-go, C cancel, +/− zoom, G give, K keep. Space or Esc emergency-stops (not while typing).</p>
+           <button type="button" className="btn" onClick={() => setHelp(false)}>Close</button>
+@@ -639,7 +698,7 @@ function SystemCard({ frame, canEdit, mapName, setMapName, onSave }: { frame: No
+       <div style={{ marginTop: 10 }}>
+         <div className={`row ${canEdit ? '' : 'locked'}`} aria-disabled={!canEdit}>
+           <input className={`mapname${mapNameError(mapName) ? ' bad' : ''}`} aria-label="map name (blank = timestamp)" aria-invalid={mapNameError(mapName) ? true : undefined} aria-describedby={mapNameError(mapName) ? 'map-name-err' : undefined} placeholder="map name (blank = timestamp)" value={mapName} onChange={(e) => setMapName(e.target.value)} />
+-          <button type="button" className="btn" disabled={!!mapNameError(mapName)} onClick={onSave}>💾 Save map</button>
++          <button type="button" className="btn" disabled={!!mapNameError(mapName)} onClick={onSave}>Save map</button>
+         </div>
+         {mapNameError(mapName) && <p id="map-name-err" className="err" role="alert">{mapNameError(mapName)}</p>}
+       </div>
+@@ -707,17 +766,17 @@ function ToolsCard(props: {
+     <section className="card" aria-label="Tools">
+       <h2>Tools — run on demand only</h2>
+       {props.frame?.tool && (
+-        <div className="running">⏳ {props.frame.tool} running… <button type="button" className="btn stop" style={{ marginLeft: 'auto' }} disabled={!props.canEdit} onClick={props.onStop}>Stop</button></div>
++        <div className="running">{props.frame.tool} running… <button type="button" className="btn stop" style={{ marginLeft: 'auto' }} disabled={!props.canEdit} onClick={props.onStop}>Stop</button></div>
+       )}
+       <div className={lock} aria-disabled={!props.canEdit}>
+         <div className="tool">
+-          <h3>📐 IMU test</h3>
++          <h3>IMU test</h3>
+           <p>Static analysis of /imu — bias, noise, rate. Keep the robot still.</p>
+           <button type="button" className="btn" disabled={!props.canEdit || props.toolBusy} onClick={() => props.onRun('imu_test')}>Run test</button>
+         </div>
+         <div className="tool">
+-          <h3>🧭 IMU calibration</h3>
+-          <p>⚠ The robot ROTATES IN PLACE. Clear space around it first.</p>
++          <h3>IMU calibration</h3>
++          <p>The robot rotates in place. Clear space around it first.</p>
+           <div className="row">
+             <label>speed rad/s <input className={props.imuOk ? '' : 'bad'} value={props.imu.speed} onChange={(e) => props.setImu({ ...props.imu, speed: e.target.value })} /></label>
+             <label>rotations <input className={props.imuOk ? '' : 'bad'} value={props.imu.rotations} onChange={(e) => props.setImu({ ...props.imu, rotations: e.target.value })} /></label>
+@@ -726,8 +785,8 @@ function ToolsCard(props: {
+           </div>
+         </div>
+         <div className="tool">
+-          <h3>📏 Drive distance</h3>
+-          <p>⚠ The robot DRIVES the given distance (negative = backward).</p>
++          <h3>Drive distance</h3>
++          <p>Drives the given distance (negative = backward).</p>
+           <div className="row">
+             <label>distance m <input className={props.driveOk ? '' : 'bad'} value={props.drive.distance} onChange={(e) => props.setDrive({ ...props.drive, distance: e.target.value })} /></label>
+             <label>max vel m/s <input className={props.driveOk ? '' : 'bad'} value={props.drive.maxVel} onChange={(e) => props.setDrive({ ...props.drive, maxVel: e.target.value })} /></label>
+@@ -735,15 +794,15 @@ function ToolsCard(props: {
+           </div>
+         </div>
+         <div className="tool">
+-          <h3>🎥 Semantic vision</h3>
+-          <p>YOLO-World camera detections + LiDAR depth → labelled objects on the map (needs the camera connected). Runs alongside the tools above.</p>
++          <h3>Semantic vision</h3>
++          <p>YOLO-World + LiDAR depth → labelled objects on the map. Needs camera connected.</p>
+           <button type="button" className={props.frame?.vision ? 'btn stop' : 'btn'} disabled={!props.canEdit} onClick={props.onVision}>{props.frame?.vision ? 'Stop' : 'Start'}</button>
+-          {props.frame?.yoloText && <p>👁 {props.frame.yoloText}</p>}
++          {props.frame?.yoloText && <p>{props.frame.yoloText}</p>}
+         </div>
+       </div>
+-      <p className="help">🎮 Gamepad: <b>B</b> save map · <b>X</b> vision on/off · <b>A</b> waypoint seq start/stop · <b>LT+RT+LB+RB</b> IMU calibration</p>
++      <p className="help">Gamepad: <b>B</b> save map · <b>X</b> vision · <b>A</b> waypoint seq · <b>LT+RT+LB+RB</b> IMU cal</p>
+       <p className="help" style={{ color: props.padLabel === 'connected' ? 'var(--ok)' : 'var(--dim)' }}>
+-        🎮 {props.padLabel === 'connected' ? 'Gamepad connected' : props.padLabel === 'idle' ? 'Gamepad idle (view only)' : 'No gamepad'}
++        {props.padLabel === 'connected' ? 'Gamepad connected' : props.padLabel === 'idle' ? 'Gamepad idle (view only)' : 'No gamepad'}
+       </p>
+     </section>
+   );
+@@ -755,7 +814,7 @@ function WaypointCard({ seq }: { seq: { goals: [number, number][]; idx: number }
+   const running = idx >= 0;
+   return (
+     <section className="card" aria-label="Waypoint sequence">
+-      <h2>📍 Waypoint Sequence</h2>
++      <h2>Waypoint sequence</h2>
+       <div className="seqlist" tabIndex={0}>
+         {goals.map((g, i) => (
+           <div key={i} className={`sq-item ${i === idx ? 'active' : i < idx && running ? 'done' : ''}`}>
+@@ -794,7 +853,7 @@ function CameraCard({ frame, phase, lastAt, now }: { frame: NormState | null; ph
+         : 'Camera unavailable until the robot is live';
+   return (
+     <section className="card" aria-label="Camera feed">
+-      <h2>📷 Camera feed</h2>
++      <h2>Camera feed</h2>
+       {src ? (
+         <div className="camwrap">
+           {/* eslint-disable-next-line @next/next/no-img-element */}
+@@ -845,25 +904,6 @@ function StatusMark({ phase }: { phase: LinkPhase }) {
+   return <span className="status-off" aria-hidden />;
+ }
+ 
+-function readGamepad(): { a: number[]; b: number } | null {
+-  const pads = typeof navigator !== 'undefined' && navigator.getGamepads ? navigator.getGamepads() : [];
+-  const pad = Array.from(pads).find((p) => p && (p.mapping === 'standard' || p.axes.length >= 4));
+-  if (!pad) return null;
+-  const ax = (i: number) => pad.axes[i] ?? 0;
+-  const btn = (i: number) => pad.buttons[i];
+-  const dead = (n: number) => Math.abs(n) < 0.08 ? 0 : n;
+-  const a = [
+-    dead(-ax(0)), dead(-ax(1)), dead(-ax(2)), ax(3),
+-    btn(6)?.value ?? 0, btn(7)?.value ?? 0,
+-    (btn(15)?.pressed ? -1 : 0) + (btn(14)?.pressed ? 1 : 0),
+-    (btn(12)?.pressed ? 1 : 0) + (btn(13)?.pressed ? -1 : 0),
+-  ].map((n) => Math.round(n * 1000) / 1000);
+-  let bits = 0;
+-  const map: [number, number][] = [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4], [5, 5], [8, 6], [9, 7], [16, 8], [10, 9], [11, 10]];
+-  for (const [idx, bit] of map) if (btn(idx)?.pressed) bits |= 1 << bit;
+-  return { a, b: bits };
+-}
+-
+ function Eye() {
+   return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></svg>;
+ }
+diff --git a/src/components/control/XboxController.tsx b/src/components/control/XboxController.tsx
+new file mode 100644
+index 0000000..a2ed7d9
+--- /dev/null
++++ b/src/components/control/XboxController.tsx
+@@ -0,0 +1,278 @@
++'use client';
++
++import { useEffect, useRef, useState, type MutableRefObject, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
++import {
++  joyActive,
++  leftKnobOffset,
++  rightKnobOffset,
++  screenToLeftStick,
++  screenToRightStick,
++} from '@/lib/control/joy-axes';
++
++export type JoyReading = { a: number[]; b: number };
++
++const ZERO: JoyReading = { a: [0, 0, 0, 0, 0, 0, 0, 0], b: 0 };
++
++/** Bits match web_gamepad_node / Dashboard physical pad (A=0 B=1 X=2 Y=3 LB=4 RB=5 …). */
++const BIT = { A: 0, B: 1, X: 2, Y: 3, LB: 4, RB: 5, View: 6, Menu: 7 } as const;
++
++type Props = {
++  open: boolean;
++  onClose: () => void;
++  canEdit: boolean;
++  padLabel: 'none' | 'connected' | 'idle';
++  physical: JoyReading | null;
++  /** Written while the on-screen pad is driving; null when idle so a real pad can take over. */
++  virtualRef: MutableRefObject<JoyReading | null>;
++};
++
++export function XboxController({ open, onClose, canEdit, padLabel, physical, virtualRef }: Props) {
++  const [virt, setVirt] = useState<JoyReading>(ZERO);
++  const drag = useRef<{ stick: 'L' | 'R'; pointerId: number } | null>(null);
++  const leftRef = useRef<HTMLDivElement>(null);
++  const rightRef = useRef<HTMLDivElement>(null);
++
++  useEffect(() => {
++    if (!open) {
++      virtualRef.current = null;
++      setVirt(ZERO);
++      return;
++    }
++    return () => { virtualRef.current = null; };
++  }, [open, virtualRef]);
++
++  useEffect(() => {
++    if (!open) return;
++    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
++    window.addEventListener('keydown', onKey);
++    return () => window.removeEventListener('keydown', onKey);
++  }, [open, onClose]);
++
++  const live = joyActive(virt.a, virt.b) ? virt : (physical ?? virt);
++  const lx = live.a[0] ?? 0;
++  const ly = live.a[1] ?? 0;
++  const rx = live.a[2] ?? 0;
++  const ry = live.a[3] ?? 0;
++  const lt = live.a[4] ?? 0;
++  const rt = live.a[5] ?? 0;
++  const pressed = (bit: number) => (live.b & (1 << bit)) !== 0;
++  const lk = leftKnobOffset(lx, ly);
++  const rk = rightKnobOffset(rx, ry);
++
++  const patchAxes = (write: (a: number[]) => void) => {
++    if (!canEdit) return;
++    setVirt((prev) => {
++      const a = [...prev.a];
++      write(a);
++      const next = { a, b: prev.b };
++      virtualRef.current = joyActive(next.a, next.b) ? next : null;
++      return next;
++    });
++  };
++
++  const setBit = (bit: number, on: boolean) => {
++    if (!canEdit) return;
++    setVirt((prev) => {
++      const b = on ? (prev.b | (1 << bit)) : (prev.b & ~(1 << bit));
++      const next = { a: [...prev.a], b };
++      virtualRef.current = canEdit && joyActive(next.a, next.b) ? next : null;
++      return next;
++    });
++  };
++
++  const setTrigger = (side: 'LT' | 'RT', v: number) => {
++    patchAxes((a) => { a[side === 'LT' ? 4 : 5] = Math.max(0, Math.min(1, v)); });
++  };
++
++  const onStickDown = (stick: 'L' | 'R', el: HTMLDivElement | null, e: ReactPointerEvent) => {
++    if (!canEdit || !el) return;
++    el.setPointerCapture(e.pointerId);
++    drag.current = { stick, pointerId: e.pointerId };
++    moveStick(stick, el, e.clientX, e.clientY);
++  };
++
++  const moveStick = (stick: 'L' | 'R', el: HTMLDivElement, cx: number, cy: number) => {
++    const r = el.getBoundingClientRect();
++    const dx = (cx - (r.left + r.width / 2)) / (r.width / 2);
++    const dy = (cy - (r.top + r.height / 2)) / (r.height / 2);
++    const mag = Math.hypot(dx, dy) || 1;
++    const s = mag > 1 ? 1 / mag : 1;
++    const nx = dx * s;
++    const ny = dy * s;
++    patchAxes((a) => {
++      if (stick === 'L') {
++        const p = screenToLeftStick(nx, ny);
++        a[0] = p.x; a[1] = p.y;
++      } else {
++        const p = screenToRightStick(nx, ny);
++        a[2] = p.x; a[3] = p.y;
++      }
++    });
++  };
++
++  const onStickMove = (e: ReactPointerEvent) => {
++    const d = drag.current;
++    if (!d || d.pointerId !== e.pointerId) return;
++    const el = d.stick === 'L' ? leftRef.current : rightRef.current;
++    if (el) moveStick(d.stick, el, e.clientX, e.clientY);
++  };
++
++  const onStickUp = (e: ReactPointerEvent) => {
++    const d = drag.current;
++    if (!d || d.pointerId !== e.pointerId) return;
++    drag.current = null;
++    patchAxes((a) => {
++      if (d.stick === 'L') { a[0] = 0; a[1] = 0; }
++      else { a[2] = 0; a[3] = 0; }
++    });
++  };
++
++  if (!open) return null;
++
++  const status =
++    !canEdit ? 'Take control to drive with this pad'
++      : padLabel === 'connected' ? 'Streaming joy → web_gamepad / bridge'
++        : 'Touch sticks to stream joy commands';
++
++  return (
++    <div className="xb-scrim" role="dialog" aria-modal="true" aria-label="Xbox controller" onClick={onClose}>
++      <div className="xb-panel glass-liquid" onClick={(e) => e.stopPropagation()}>
++        <div className="xb-head">
++          <div>
++            <h3>Xbox controller</h3>
++            <p className="xb-status">{status}</p>
++          </div>
++          <button type="button" className="btn ghost" onClick={onClose}>Close</button>
++        </div>
++
++        <div className={`xb-body ${canEdit ? '' : 'locked'}`} aria-disabled={!canEdit}>
++          <div className="xb-triggers">
++            <button type="button" className={`xb-trig ${lt > 0.1 ? 'on' : ''}`} style={{ ['--p' as string]: `${lt * 100}%` }} onPointerDown={() => setTrigger('LT', 1)} onPointerUp={() => setTrigger('LT', 0)} onPointerLeave={() => setTrigger('LT', 0)}>LT</button>
++            <button type="button" className={`xb-trig ${rt > 0.1 ? 'on' : ''}`} style={{ ['--p' as string]: `${rt * 100}%` }} onPointerDown={() => setTrigger('RT', 1)} onPointerUp={() => setTrigger('RT', 0)} onPointerLeave={() => setTrigger('RT', 0)}>RT</button>
++          </div>
++
++          <div className="xb-bumpers">
++            <Face label="LB" on={pressed(BIT.LB)} onDown={() => setBit(BIT.LB, true)} onUp={() => setBit(BIT.LB, false)} wide />
++            <Face label="RB" on={pressed(BIT.RB)} onDown={() => setBit(BIT.RB, true)} onUp={() => setBit(BIT.RB, false)} wide />
++          </div>
++
++          <div className="xb-core">
++            <Stick refEl={leftRef} ox={lk.x} oy={lk.y} label="LS" onDown={(e) => onStickDown('L', leftRef.current, e)} onMove={onStickMove} onUp={onStickUp} />
++            <div className="xb-center">
++              <Face label="⧉" on={pressed(BIT.View)} onDown={() => setBit(BIT.View, true)} onUp={() => setBit(BIT.View, false)} tiny />
++              <div className="xb-logo" aria-hidden />
++              <Face label="☰" on={pressed(BIT.Menu)} onDown={() => setBit(BIT.Menu, true)} onUp={() => setBit(BIT.Menu, false)} tiny />
++            </div>
++            <div className="xb-face">
++              <Face label="Y" on={pressed(BIT.Y)} onDown={() => setBit(BIT.Y, true)} onUp={() => setBit(BIT.Y, false)} className="xb-y" />
++              <Face label="X" on={pressed(BIT.X)} onDown={() => setBit(BIT.X, true)} onUp={() => setBit(BIT.X, false)} className="xb-x" />
++              <Face label="B" on={pressed(BIT.B)} onDown={() => setBit(BIT.B, true)} onUp={() => setBit(BIT.B, false)} className="xb-b" />
++              <Face label="A" on={pressed(BIT.A)} onDown={() => setBit(BIT.A, true)} onUp={() => setBit(BIT.A, false)} className="xb-a" />
++            </div>
++          </div>
++
++          <div className="xb-lower">
++            <Dpad
++              up={(live.a[7] ?? 0) > 0.5}
++              down={(live.a[7] ?? 0) < -0.5}
++              left={(live.a[6] ?? 0) > 0.5}
++              right={(live.a[6] ?? 0) < -0.5}
++              on={(dir, on) => {
++                patchAxes((a) => {
++                  if (dir === 'up') a[7] = on ? 1 : 0;
++                  if (dir === 'down') a[7] = on ? -1 : 0;
++                  if (dir === 'left') a[6] = on ? 1 : 0;
++                  if (dir === 'right') a[6] = on ? -1 : 0;
++                });
++              }}
++            />
++            <Stick refEl={rightRef} ox={rk.x} oy={rk.y} label="RS" onDown={(e) => onStickDown('R', rightRef.current, e)} onMove={onStickMove} onUp={onStickUp} />
++          </div>
++        </div>
++
++        <p className="xb-hint">
++          Left stick → drive · A seq · B save map · X vision · Y / shoulders IMU · matches web_gamepad_node
++        </p>
++      </div>
++    </div>
++  );
++}
++
++function Face({
++  label, on, onDown, onUp, wide, tiny, className = '',
++}: {
++  label: string; on: boolean; onDown: () => void; onUp: () => void;
++  wide?: boolean; tiny?: boolean; className?: string;
++}) {
++  return (
++    <button
++      type="button"
++      className={`xb-btn ${wide ? 'wide' : ''} ${tiny ? 'tiny' : ''} ${on ? 'on' : ''} ${className}`}
++      onPointerDown={(e) => { e.preventDefault(); onDown(); }}
++      onPointerUp={onUp}
++      onPointerLeave={onUp}
++      onPointerCancel={onUp}
++    >{label}</button>
++  );
++}
++
++function Stick({
++  refEl, ox, oy, label, onDown, onMove, onUp,
++}: {
++  refEl: RefObject<HTMLDivElement | null>;
++  ox: number; oy: number; label: string;
++  onDown: (e: ReactPointerEvent) => void;
++  onMove: (e: ReactPointerEvent) => void;
++  onUp: (e: ReactPointerEvent) => void;
++}) {
++  return (
++    <div
++      ref={refEl}
++      className="xb-stick"
++      onPointerDown={onDown}
++      onPointerMove={onMove}
++      onPointerUp={onUp}
++      onPointerCancel={onUp}
++    >
++      <span className="xb-stick-label">{label}</span>
++      <i style={{ transform: `translate(${ox}px, ${oy}px)` }} />
++    </div>
++  );
++}
++
++function Dpad({
++  up, down, left, right, on,
++}: {
++  up: boolean; down: boolean; left: boolean; right: boolean;
++  on: (dir: 'up' | 'down' | 'left' | 'right', pressed: boolean) => void;
++}) {
++  return (
++    <div className="xb-dpad" aria-label="D-pad">
++      <button type="button" className={`xb-d ${up ? 'on' : ''}`} style={{ gridArea: 'u' }} aria-label="Up" onPointerDown={() => on('up', true)} onPointerUp={() => on('up', false)} onPointerLeave={() => on('up', false)} />
++      <button type="button" className={`xb-d ${left ? 'on' : ''}`} style={{ gridArea: 'l' }} aria-label="Left" onPointerDown={() => on('left', true)} onPointerUp={() => on('left', false)} onPointerLeave={() => on('left', false)} />
++      <span className="xb-d-mid" style={{ gridArea: 'm' }} />
++      <button type="button" className={`xb-d ${right ? 'on' : ''}`} style={{ gridArea: 'r' }} aria-label="Right" onPointerDown={() => on('right', true)} onPointerUp={() => on('right', false)} onPointerLeave={() => on('right', false)} />
++      <button type="button" className={`xb-d ${down ? 'on' : ''}`} style={{ gridArea: 'd' }} aria-label="Down" onPointerDown={() => on('down', true)} onPointerUp={() => on('down', false)} onPointerLeave={() => on('down', false)} />
++    </div>
++  );
++}
++
++/** Browser Gamepad → same `a`/`b` layout posted to web_gamepad `/api/joy`. */
++export function readPhysicalGamepad(): JoyReading | null {
++  const pads = typeof navigator !== 'undefined' && navigator.getGamepads ? navigator.getGamepads() : [];
++  const pad = Array.from(pads).find((p) => p && (p.mapping === 'standard' || p.axes.length >= 4));
++  if (!pad) return null;
++  const ax = (i: number) => pad.axes[i] ?? 0;
++  const btn = (i: number) => pad.buttons[i];
++  const dead = (n: number) => Math.abs(n) < 0.08 ? 0 : n;
++  const a = [
++    dead(-ax(0)), dead(-ax(1)), dead(-ax(2)), ax(3),
++    btn(6)?.value ?? 0, btn(7)?.value ?? 0,
++    (btn(15)?.pressed ? -1 : 0) + (btn(14)?.pressed ? 1 : 0),
++    (btn(12)?.pressed ? 1 : 0) + (btn(13)?.pressed ? -1 : 0),
++  ].map((n) => Math.round(n * 1000) / 1000);
++  let bits = 0;
++  const map: [number, number][] = [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4], [5, 5], [8, 6], [9, 7], [16, 8], [10, 9], [11, 10]];
++  for (const [idx, bit] of map) if (btn(idx)?.pressed) bits |= 1 << bit;
++  return { a, b: bits };
++}
+diff --git a/src/components/control/dashboard.css b/src/components/control/dashboard.css
+index b9bbf7e..cf04bd4 100644
+--- a/src/components/control/dashboard.css
++++ b/src/components/control/dashboard.css
+@@ -1,8 +1,10 @@
+-/* Operator area. Palette aligned with marketing tokens (src/styles/tokens.css). */
++/* Operator console — site tokens, liquid glass, dense vertical scroll, motion. */
+ .op {
+   --bg: #050507;
+-  --card: rgba(10, 10, 14, 0.88);
+-  --edge: rgba(255, 255, 255, 0.12);
++  --card: linear-gradient(155deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0.03) 42%, rgba(123, 47, 247, 0.06) 100%);
++  --card-solid: rgba(12, 10, 18, 0.55);
++  --edge: rgba(255, 255, 255, 0.16);
++  --edge-soft: rgba(255, 255, 255, 0.08);
+   --tx: #ffffff;
+   --dim: #8a8794;
+   --acc: #7b2ff7;
+@@ -11,241 +13,561 @@
+   --warn: #ffb74d;
+   --err: #ff6b8b;
+   --run: #e81cb0;
+-  --inset: #0a0a10;
+-  --tool-bg: rgba(10, 10, 14, 0.55);
++  --inset: rgba(8, 8, 14, 0.55);
++  --tool-bg: rgba(255, 255, 255, 0.03);
+   --bar-track: rgba(255, 255, 255, 0.08);
+   --grad: linear-gradient(90deg, #7b2ff7 0%, #e81cb0 100%);
+-  background:
+-    radial-gradient(ellipse 90% 55% at 15% -10%, rgba(123, 47, 247, 0.22), transparent 55%),
+-    radial-gradient(ellipse 70% 45% at 95% 5%, rgba(232, 28, 176, 0.14), transparent 50%),
+-    var(--bg);
++  --glass-blur: blur(22px) saturate(1.55);
++  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
++  --ease-expo: cubic-bezier(0.16, 1, 0.3, 1);
++  --dur-enter: 700ms;
++  position: relative;
++  isolation: isolate;
++  background: var(--bg);
+   color: var(--tx);
+   min-height: 100dvh;
+-  font: 14px/1.45 var(--font-inter-tight, system-ui), system-ui, sans-serif;
++  font: 13px/1.4 var(--font-inter-tight, system-ui), system-ui, sans-serif;
++}
++.glass-liquid,
++.op .card,
++.op-sticky,
++.op-auth,
++.op .banner,
++.op .menu,
++.op .toast,
++.op .helpdlg,
++.op .prompt {
++  background: var(--card);
++  background-color: var(--card-solid);
++  border: 1px solid var(--edge);
++  box-shadow:
++    inset 0 1px 0 rgba(255, 255, 255, 0.18),
++    inset 0 -1px 0 rgba(255, 255, 255, 0.04),
++    0 12px 40px rgba(0, 0, 0, 0.35);
++  backdrop-filter: var(--glass-blur);
++  -webkit-backdrop-filter: var(--glass-blur);
++}
++.glass-liquid::before,
++.op .card::before {
++  content: '';
++  position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
++  background: linear-gradient(125deg, rgba(255,255,255,0.14) 0%, transparent 32%, transparent 68%, rgba(232, 28, 176, 0.06) 100%);
++  opacity: 0.85;
+ }
++.op .card { position: relative; overflow: hidden; }
++.op-bg {
++  position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
++  background:
++    radial-gradient(ellipse 100% 60% at 10% -15%, rgba(123, 47, 247, 0.28), transparent 55%),
++    radial-gradient(ellipse 80% 50% at 100% 0%, rgba(232, 28, 176, 0.16), transparent 50%),
++    radial-gradient(ellipse 50% 40% at 50% 100%, rgba(123, 47, 247, 0.08), transparent 60%),
++    var(--bg);
++}
++.op-bg .fx-waves { height: 42%; opacity: 0.9; }
++.op-bg::after {
++  content: '';
++  position: absolute; inset: 0;
++  background: linear-gradient(180deg, transparent 40%, rgba(5, 5, 7, 0.85) 100%);
++}
++.op > *:not(.op-bg) { position: relative; z-index: 1; }
++
+ .op button, .op input, .op select, .op textarea { font-family: inherit; color: inherit; }
+ .op :focus-visible { outline: 2px solid var(--acc-hot); outline-offset: 2px; }
+ .op .mono { font-family: var(--font-jetbrains, ui-monospace), Consolas, monospace; }
+ 
+ .op h1 { font-weight: 700; font-family: var(--font-unbounded, system-ui), system-ui, sans-serif; }
+-.op-sticky { position: sticky; top: 0; z-index: 5; }
++.op-sticky {
++  position: sticky; top: 0; z-index: 5;
++  border-bottom: 1px solid var(--edge);
++  border-radius: 0;
++  animation: op-chrome-in var(--dur-enter) var(--ease-expo) both;
++}
++@keyframes op-chrome-in {
++  from { opacity: 0; transform: translateY(-10px); }
++  to { opacity: 1; transform: none; }
++}
+ .op-header {
+-  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+-  padding: 10px 18px; background: var(--card); border-bottom: 1px solid var(--edge);
+-  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+-  position: static;
++  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
++  padding: 8px 14px; position: static;
+ }
+-.op-header h1 { font-size: 17px; letter-spacing: .4px; font-weight: 700; }
++.op-header h1 { font-size: 15px; letter-spacing: .02em; font-weight: 700; display: flex; align-items: baseline; gap: 8px; }
+ .op-brand {
+   font-family: var(--font-unbounded, system-ui), system-ui, sans-serif;
+-  font-weight: 700; font-size: 1.15rem; letter-spacing: 0.02em;
++  font-weight: 700; font-size: 1.05rem; letter-spacing: 0.04em;
+   background-image: var(--grad);
+   -webkit-background-clip: text; background-clip: text; color: transparent;
+ }
+-.op-switch { display: flex; gap: 6px; }
++.op-bot-label { color: var(--dim); font-weight: 600; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; }
++.op-switch { display: flex; gap: 4px; padding: 2px; border-radius: 999px; background: rgba(255,255,255,0.04); border: 1px solid var(--edge); }
+ .op-switch button {
+-  border-radius: 99px; padding: 3px 12px; font-size: 12px; font-weight: 600; cursor: pointer;
+-  background: var(--inset); color: var(--dim); border: 1px solid var(--edge);
++  border-radius: 999px; padding: 4px 12px; font-size: 11px; font-weight: 600; cursor: pointer;
++  background: transparent; color: var(--dim); border: 0;
++  transition: color 200ms var(--ease-out), background 200ms var(--ease-out), transform 120ms;
+ }
+ .op-switch button[aria-pressed="true"] {
+-  background: rgba(123, 47, 247, 0.22); color: #d9ccff; border-color: var(--acc);
++  background: var(--grad); color: #fff;
+ }
++.op-switch button:hover:not([aria-pressed="true"]) { color: var(--tx); }
+ 
+-.op .pill { padding: 3px 12px; border-radius: 99px; font-weight: 600; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; height: 26px; }
++.op .pill {
++  padding: 3px 10px; border-radius: 999px; font-weight: 600; font-size: 11px;
++  display: inline-flex; align-items: center; gap: 6px; height: 24px;
++  letter-spacing: 0.04em; text-transform: uppercase;
++}
+ .op .pill.ok { background: rgba(94, 230, 168, 0.14); color: var(--ok); }
+ .op .pill.bad { background: rgba(255, 107, 139, 0.14); color: var(--err); }
+ .op .pill.run { background: rgba(232, 28, 176, 0.16); color: var(--run); }
+ .op .pill.vision { background: rgba(123, 47, 247, 0.18); color: #d9ccff; }
+ .op .pill.saving { background: rgba(123, 47, 247, 0.18); color: #d9ccff; }
+-.op .pill.viewer { background: var(--inset); color: var(--dim); border: 1px solid var(--edge); }
++.op .pill.viewer { background: transparent; color: var(--dim); border: 1px solid var(--edge); }
+ .op .pill.link.live { background: rgba(94, 230, 168, 0.14); color: var(--ok); }
+ .op .pill.link.idle { background: rgba(255, 183, 77, 0.14); color: var(--warn); }
+-.op .pill.link.connecting { background: var(--inset); color: var(--dim); border: 1px solid var(--edge); }
++.op .pill.link.connecting { background: transparent; color: var(--dim); border: 1px solid var(--edge); }
+ .op .pill.link.offline { background: rgba(255, 107, 139, 0.14); color: var(--err); }
+ .op .status-ring, .op .status-idle, .op .status-live, .op .status-off {
+-  width: 8px; height: 8px; flex: none; border-radius: 50%; display: inline-block;
++  width: 7px; height: 7px; flex: none; border-radius: 50%; display: inline-block;
+ }
+-.op .status-ring { border: 1.5px solid var(--dim); animation: control-status-pulse 1.6s ease-out infinite; }
++.op .status-ring { border: 1.5px solid var(--dim); animation: control-status-pulse 1.6s var(--ease-out) infinite; }
+ .op .status-idle { border: 1px solid var(--warn); background: linear-gradient(90deg, var(--warn) 50%, transparent 50%); }
+-.op .status-live { background: var(--ok); }
++.op .status-live { background: var(--ok); box-shadow: 0 0 0 0 rgba(94, 230, 168, 0.5); animation: op-live-glow 2s ease-out infinite; }
+ .op .status-off { border: 1px solid var(--err); background: transparent; }
+ @keyframes control-status-pulse {
+-  0% { box-shadow: 0 0 0 0 rgba(125, 143, 161, 0.65); }
++  0% { box-shadow: 0 0 0 0 rgba(125, 143, 161, 0.55); }
+   100% { box-shadow: 0 0 0 6px rgba(125, 143, 161, 0); }
+ }
++@keyframes op-live-glow {
++  0% { box-shadow: 0 0 0 0 rgba(94, 230, 168, 0.45); }
++  100% { box-shadow: 0 0 0 8px rgba(94, 230, 168, 0); }
++}
+ 
+-.op-signs {
+-  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+-  padding: 8px 18px; background: var(--inset); border-bottom: 1px solid var(--edge);
++/* Status strip — primary compartment, always on top */
++.op-status {
++  display: grid;
++  grid-template-columns: 1fr;
++  gap: 6px;
++  padding: 8px 14px 10px;
++  border-top: 1px solid rgba(255,255,255,0.06);
++}
++.op-status-row {
++  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px;
+ }
++.op-signs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0; background: transparent; border: 0; }
+ .op-sign {
+-  display: inline-flex; align-items: center; gap: 8px; min-height: 32px;
+-  padding: 4px 10px; border: 1px dashed var(--edge); border-radius: 8px;
+-  color: var(--tx); font-size: 13px; font-weight: 600; background: transparent;
+-}
+-.op-sign[data-on="true"] { border-style: solid; border-width: 2px; background: var(--card); }
+-.op-sign.sign-nodata[data-on="true"] { border-color: var(--warn); }
+-.op-sign.sign-down[data-on="true"] { border-color: var(--err); }
+-.op-sign.sign-error[data-on="true"] { border-color: var(--err); }
+-.op-sign .reason { font-weight: 500; color: var(--dim); }
+-.op-sign .sign-half, .op-sign .sign-hollow, .op-sign .sign-x { width: 12px; height: 12px; flex: none; }
++  display: inline-flex; align-items: center; gap: 6px; min-height: 26px;
++  padding: 2px 8px; border: 1px solid transparent; border-radius: 8px;
++  color: var(--dim); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
++  background: rgba(255,255,255,0.03); transition: border-color 200ms, color 200ms, background 200ms;
++}
++.op-sign[data-on="true"] { border-color: currentColor; color: var(--tx); background: rgba(255,255,255,0.06); }
++.op-sign.sign-nodata[data-on="true"] { color: var(--warn); }
++.op-sign.sign-down[data-on="true"] { color: var(--err); }
++.op-sign.sign-error[data-on="true"] { color: var(--err); }
++.op-sign .reason { font-weight: 500; color: var(--dim); text-transform: none; letter-spacing: 0; }
++.op-sign .sign-half, .op-sign .sign-hollow, .op-sign .sign-x { width: 10px; height: 10px; flex: none; }
+ .op-sign .sign-half {
+   border-radius: 50%; border: 1.5px solid currentColor;
+   background: linear-gradient(90deg, currentColor 50%, transparent 50%);
+ }
+ .op-sign .sign-hollow { border-radius: 50%; border: 1.5px solid currentColor; background: transparent; }
+ .op-sign .sign-x { display: block; }
+-.op-note { font-size: 13px; font-weight: 500; color: var(--dim); }
+-.op-telem { margin-left: auto; font-size: 13px; color: var(--acc); }
++.op-note { font-size: 12px; font-weight: 500; color: var(--dim); }
++.op-telem {
++  margin-left: auto; font-size: 12px; color: #d9ccff;
++  padding: 4px 10px; border-radius: 8px;
++  background: rgba(123, 47, 247, 0.12); border: 1px solid rgba(123, 47, 247, 0.25);
++}
+ 
+-.op-grow { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
++.op-grow { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+ .op-estop {
+   background: var(--err); color: #050507; border: 0; border-radius: 10px;
+-  font-size: 15px; font-weight: 800; padding: 10px 26px; cursor: pointer; letter-spacing: 1px;
++  font-size: 13px; font-weight: 800; padding: 8px 18px; cursor: pointer; letter-spacing: 0.08em;
+   position: relative; overflow: hidden;
++  transition: transform 120ms, filter 200ms;
+ }
++.op-estop:hover { filter: brightness(1.08); }
+ .op-estop:active { transform: scale(.96); }
+ .op-estop.latched { background: rgba(255, 107, 139, 0.12); color: var(--err); border: 1px solid var(--err); }
+ .op-estop .hold { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--err); }
+-.op-estop-bar { background: rgba(255, 107, 139, 0.12); color: var(--err); height: 40px; display: flex; align-items: center; justify-content: center; font-weight: 700; letter-spacing: .4px; }
+-.op-reconnect { background: rgba(255, 183, 77, 0.12); color: var(--warn); border-bottom: 1px solid var(--warn); text-align: center; padding: 6px 12px; font-size: 13px; }
++.op-estop-bar {
++  background: rgba(255, 107, 139, 0.14); color: var(--err); height: 32px;
++  display: flex; align-items: center; justify-content: center;
++  font-weight: 700; letter-spacing: .12em; font-size: 11px; text-transform: uppercase;
++  animation: op-estop-pulse 1.4s ease-in-out infinite;
++}
++@keyframes op-estop-pulse {
++  0%, 100% { background: rgba(255, 107, 139, 0.12); }
++  50% { background: rgba(255, 107, 139, 0.22); }
++}
++.op-reconnect {
++  background: rgba(255, 183, 77, 0.12); color: var(--warn);
++  border-bottom: 1px solid rgba(255, 183, 77, 0.35);
++  text-align: center; padding: 5px 12px; font-size: 12px;
++}
++
++/* Long vertical scroll — one column, dense */
++.op-main {
++  display: flex; flex-direction: column; gap: 10px;
++  max-width: 1100px; margin: 0 auto;
++  padding: 12px 14px 48px;
++}
++.op-main > .card,
++.op-main > .banner,
++.op-main > .op-pair > .card {
++  animation: op-rise var(--dur-enter) var(--ease-expo) both;
++}
++.op-main > .card:nth-child(1) { animation-delay: 40ms; }
++.op-main > .card:nth-child(2) { animation-delay: 90ms; }
++.op-main > .card:nth-child(3),
++.op-main > .op-pair { animation-delay: 130ms; }
++.op-main > .card:nth-child(4) { animation-delay: 170ms; }
++.op-main > .card:nth-child(5),
++.op-main > .op-pair:nth-of-type(2) { animation-delay: 210ms; }
++.op-main > #console { animation-delay: 250ms; }
++@keyframes op-rise {
++  from { opacity: 0; transform: translateY(18px); }
++  to { opacity: 1; transform: none; }
++}
+ 
+-.op-grid { display: grid; grid-template-columns: minmax(420px, 1.4fr) minmax(330px, 1fr); gap: 14px; padding: 14px; }
+-.op .card { background: var(--card); border: 1px solid var(--edge); border-radius: 16px; padding: 14px; }
+-.op .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1.4px; color: var(--dim); margin-bottom: 10px; font-weight: 600; }
+-.op .right { display: flex; flex-direction: column; gap: 14px; }
++.op-pair {
++  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
++}
++.op .card {
++  border-radius: 14px; padding: 12px;
++  transition: border-color 220ms var(--ease-out), transform 220ms var(--ease-out), box-shadow 220ms;
++}
++.op .card:hover {
++  border-color: rgba(185, 120, 255, 0.45);
++  box-shadow:
++    inset 0 1px 0 rgba(255, 255, 255, 0.22),
++    0 16px 48px rgba(123, 47, 247, 0.12);
++}
++.op .card h2 {
++  font-family: var(--font-unbounded, system-ui), system-ui, sans-serif;
++  font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em;
++  color: var(--dim); margin-bottom: 8px; font-weight: 600;
++}
+ .op .locked { opacity: .45; pointer-events: none; }
+ 
+-.op #cv, .op .cv { width: 100%; border-radius: 8px; background: var(--inset); display: block; aspect-ratio: 900 / 620; }
+-.op .readouts { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; margin-top: 10px; }
+-.op .ro, .op .sys { background: var(--inset); border: 1px solid var(--edge); border-radius: 8px; padding: 7px 10px; }
+-.op .ro b, .op .sys b { display: block; font-size: 11px; color: var(--dim); font-weight: 600; }
+-.op .ro span { font-family: var(--font-jetbrains, ui-monospace), Consolas, monospace; font-size: 15px; color: #d9ccff; white-space: nowrap; }
+-.op .sys span { font-family: var(--font-jetbrains, ui-monospace), Consolas, monospace; font-size: 14px; color: #d9ccff; }
+-.op .navmode { margin-top: 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; color: var(--dim); font-size: 13px; }
++.op #cv, .op .cv {
++  width: 100%; border-radius: 10px; background: #050508;
++  display: block; aspect-ratio: 16 / 10; max-height: min(52vh, 520px);
++  border: 1px solid rgba(255,255,255,0.06);
++}
++.op .readouts {
++  display: grid; grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); gap: 6px; margin-top: 8px;
++}
++.op .ro, .op .sys {
++  background: var(--inset); border: 1px solid var(--edge); border-radius: 8px; padding: 6px 8px;
++  transition: border-color 200ms;
++}
++.op .ro:hover, .op .sys:hover { border-color: rgba(123, 47, 247, 0.4); }
++.op .ro b, .op .sys b { display: block; font-size: 10px; color: var(--dim); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
++.op .ro span { font-family: var(--font-jetbrains, ui-monospace), Consolas, monospace; font-size: 14px; color: #d9ccff; white-space: nowrap; }
++.op .sys span { font-family: var(--font-jetbrains, ui-monospace), Consolas, monospace; font-size: 13px; color: #d9ccff; }
++
++.op-controls {
++  display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: start;
++}
++.op .navmode {
++  margin-top: 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
++  color: var(--dim); font-size: 12px;
++}
+ .op .navmode select, .op .tool input, .op .sq-in, .op .mapname, .op-auth input {
+-  background: var(--inset); color: var(--tx); border: 1px solid var(--edge); border-radius: 10px; padding: 5px 7px;
++  background: var(--inset); color: var(--tx); border: 1px solid var(--edge); border-radius: 8px; padding: 5px 7px;
+   font-family: var(--font-jetbrains, ui-monospace), Consolas, monospace;
++  transition: border-color 200ms;
+ }
+-.op-auth input:focus-visible { border-color: var(--acc); }
++.op-auth input:focus-visible,
++.op .mapname:focus-visible,
++.op .navmode select:focus-visible { border-color: var(--acc); }
+ .op .mapname { flex: 1; min-width: 0; padding: 6px 8px; }
+ .op .mapname.bad { border-color: var(--err); }
+-.op .pad { display: grid; grid-template-columns: repeat(3, 46px); gap: 6px; justify-content: center; margin-top: 10px; }
+-.op .pad button { height: 40px; background: var(--inset); border: 1px solid var(--edge); color: var(--tx); border-radius: 8px; font-size: 16px; cursor: pointer; }
+-.op .pad button:active { background: var(--grad); color: #fff; }
++.op .pad { display: grid; grid-template-columns: repeat(3, 42px); gap: 5px; justify-content: center; margin: 0; }
++.op .pad button {
++  height: 38px; background: var(--inset); border: 1px solid var(--edge); color: var(--tx);
++  border-radius: 10px; font-size: 14px; cursor: pointer;
++  transition: background 150ms, transform 100ms, border-color 150ms;
++}
++.op .pad button:hover:not(:disabled) { border-color: var(--acc); }
++.op .pad button:active { background: var(--grad); color: #fff; transform: scale(0.96); }
+ .op .pad button:disabled { opacity: .35; cursor: not-allowed; }
+-.op .help { color: var(--dim); font-size: 12px; margin-top: 8px; }
++.op .help { color: var(--dim); font-size: 11px; margin-top: 6px; }
+ 
+-.op table { width: 100%; border-collapse: collapse; font-size: 13px; }
+-.op td { padding: 3px 6px; border-bottom: 1px solid var(--edge); }
+-.op td.num { font-family: ui-monospace, Consolas, monospace; text-align: right; }
+-.op .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; }
++.op table { width: 100%; border-collapse: collapse; font-size: 12px; }
++.op td { padding: 2px 4px; border-bottom: 1px solid rgba(255,255,255,0.06); }
++.op td.num { font-family: var(--font-jetbrains, ui-monospace), Consolas, monospace; text-align: right; color: #d9ccff; }
++.op .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; }
+ .op .dot.ok { background: var(--ok); }
+ .op .dot.bad { background: var(--err); }
+-.op .nodes { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 14px; font-size: 13px; }
+-.op .sysgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+-.op .bar { height: 5px; border-radius: 3px; background: var(--bar-track); margin-top: 5px; overflow: hidden; }
+-.op .bar i { display: block; height: 100%; border-radius: 3px; }
+-.op .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
++.op .nodes { display: grid; grid-template-columns: 1fr 1fr; gap: 1px 10px; font-size: 12px; }
++.op .sysgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
++.op .bar { height: 4px; border-radius: 3px; background: var(--bar-track); margin-top: 4px; overflow: hidden; }
++.op .bar i { display: block; height: 100%; border-radius: 3px; transition: width 400ms var(--ease-out); }
++.op .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+ 
+ .op .btn {
+-  background: var(--grad); color: #fff; font-weight: 700; border: 0; border-radius: 999px;
+-  padding: 7px 16px; cursor: pointer; font-size: 13px;
++  background: var(--grad); background-size: 200% 100%; background-position: 0% 0;
++  color: #fff; font-weight: 700; border: 0; border-radius: 999px;
++  padding: 6px 14px; cursor: pointer; font-size: 12px;
++  transition: background-position 280ms var(--ease-out), transform 100ms, opacity 200ms;
+ }
++.op .btn:hover:not(:disabled) { background-position: 100% 0; }
++.op .btn:active:not(:disabled) { transform: scale(0.97); }
+ .op .btn.stop { background: var(--warn); color: #2b1a00; }
+ .op .btn:disabled, .op .btn[aria-disabled="true"] { opacity: .35; cursor: not-allowed; }
+ .op .btn.full { width: 100%; height: 40px; }
+ .op .btn.ghost { background: transparent; color: var(--tx); border: 1px solid var(--edge); }
+-.op .link { background: none; border: 0; color: #d9ccff; cursor: pointer; padding: 0; font-size: 13px; text-decoration: underline; }
+-.op .textbtn { background: none; border: 0; color: var(--dim); cursor: pointer; padding: 0; font-size: 13px; }
++.op .link { background: none; border: 0; color: #d9ccff; cursor: pointer; padding: 0; font-size: 12px; text-decoration: underline; }
++.op .textbtn { background: none; border: 0; color: var(--dim); cursor: pointer; padding: 0; font-size: 12px; }
+ .op .textbtn:hover { color: var(--tx); }
+ 
+-.op .tool { border: 1px solid var(--edge); border-radius: 10px; padding: 10px; margin-bottom: 10px; background: var(--tool-bg); }
+-.op .tool h3 { font-size: 13px; margin-bottom: 6px; }
+-.op .tool p { color: var(--dim); font-size: 12px; margin-bottom: 8px; }
+-.op .tool label { font-size: 12px; color: var(--dim); }
+-.op .tool input { width: 70px; }
++.op .tool {
++  border: 1px solid var(--edge); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px;
++  background: var(--tool-bg);
++  transition: border-color 200ms;
++}
++.op .tool:hover { border-color: rgba(232, 28, 176, 0.35); }
++.op .tool h3 { font-size: 12px; margin-bottom: 4px; font-weight: 600; }
++.op .tool p { color: var(--dim); font-size: 11px; margin-bottom: 6px; }
++.op .tool label { font-size: 11px; color: var(--dim); }
++.op .tool input { width: 64px; }
+ .op .tool input.bad { border-color: var(--err); }
+-.op .running { display: flex; align-items: center; gap: 10px; background: rgba(232, 28, 176, 0.12); border: 1px solid var(--run); border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; font-size: 13px; color: var(--run); }
++.op .running {
++  display: flex; align-items: center; gap: 8px;
++  background: rgba(232, 28, 176, 0.12); border: 1px solid var(--run);
++  border-radius: 8px; padding: 6px 10px; margin-bottom: 8px; font-size: 12px; color: var(--run);
++}
+ 
+-.op .ln { font: 12px/1.6 var(--font-jetbrains, ui-monospace), Consolas, monospace; }
++.op .ln { font: 11px/1.55 var(--font-jetbrains, ui-monospace), Consolas, monospace; }
+ .op .ln .t { color: var(--dim); margin-right: 8px; }
+ .op .ln.info { color: var(--tx); }
+ .op .ln.error { color: var(--err); }
+ .op .ln.run { color: var(--run); }
+ .op .ln-tool { color: #b57bff; }
+-.op .logbox { background: var(--inset); border: 1px solid var(--edge); border-radius: 8px; height: 230px; overflow-y: auto; padding: 8px 10px; }
+-.op #console { grid-column: 1 / -1; }
++.op .logbox {
++  background: var(--inset); border: 1px solid var(--edge); border-radius: 8px;
++  height: 180px; overflow-y: auto; padding: 6px 8px;
++}
+ 
+-.op .sq-in { width: 62px; }
+-.op .seqlist { display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto; margin-bottom: 8px; }
+-.op .sq-item { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; background: var(--inset); border: 1px solid var(--edge); font-size: 12px; font-family: var(--font-jetbrains, ui-monospace), Consolas, monospace; }
++.op .sq-in { width: 56px; }
++.op .seqlist { display: flex; flex-direction: column; gap: 3px; max-height: 160px; overflow-y: auto; margin-bottom: 6px; }
++.op .sq-item {
++  display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 6px;
++  background: var(--inset); border: 1px solid var(--edge); font-size: 11px;
++  font-family: var(--font-jetbrains, ui-monospace), Consolas, monospace;
++}
+ .op .sq-item.active { border-color: var(--ok); background: rgba(94, 230, 168, 0.1); }
+ .op .sq-item.done { opacity: .4; }
+-.op .sq-num { min-width: 22px; font-weight: 700; color: #d9ccff; }
++.op .sq-num { min-width: 20px; font-weight: 700; color: #d9ccff; }
+ .op .sq-item.active .sq-num { color: var(--ok); }
+ 
+-.op .cam { width: 100%; border-radius: 8px; background: var(--inset); display: block; max-height: 220px; object-fit: contain; }
+-.op .camwrap { position: relative; }
+-.op .camchip { position: absolute; left: 8px; bottom: 8px; font: 11px var(--font-jetbrains, ui-monospace), Consolas, monospace; background: rgba(5,5,7,.8); color: #d9ccff; padding: 2px 6px; border-radius: 6px; }
+-.op .muted { color: var(--dim); font-size: 12px; text-align: center; padding: 10px 0; }
++.op .cam { width: 100%; border-radius: 8px; background: var(--inset); display: block; max-height: 200px; object-fit: contain; }
++.op .camwrap { position: relative; overflow: hidden; border-radius: 8px; }
++.op .camchip {
++  position: absolute; left: 8px; bottom: 8px;
++  font: 10px var(--font-jetbrains, ui-monospace), Consolas, monospace;
++  background: rgba(5,5,7,.82); color: #d9ccff; padding: 2px 6px; border-radius: 6px;
++  border: 1px solid rgba(123, 47, 247, 0.35);
++}
++.op .muted { color: var(--dim); font-size: 12px; text-align: left; padding: 6px 0; }
+ 
+-.op .who { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+-.op .av { width: 28px; height: 28px; border-radius: 50%; background: var(--inset); border: 1px solid var(--edge); display: grid; place-items: center; color: #d9ccff; font-weight: 700; font-size: 13px; }
+-.op .av.driving { border: 2px solid var(--ok); }
+-.op .menu { position: absolute; right: 0; top: 36px; background: var(--card); border: 1px solid var(--edge); border-radius: 16px; padding: 8px; min-width: 200px; z-index: 6; }
+-.op .menu p { font: 12px var(--font-jetbrains, ui-monospace), Consolas, monospace; color: var(--dim); margin-bottom: 8px; word-break: break-all; }
++.op .who { display: flex; align-items: center; gap: 6px; font-size: 12px; }
++.op .av {
++  width: 26px; height: 26px; border-radius: 50%; background: var(--inset);
++  border: 1px solid var(--edge); display: grid; place-items: center;
++  color: #d9ccff; font-weight: 700; font-size: 11px;
++  transition: border-color 200ms, box-shadow 200ms;
++}
++.op .av.driving { border: 2px solid var(--ok); box-shadow: 0 0 0 3px rgba(94, 230, 168, 0.15); }
++.op .menu {
++  position: absolute; right: 0; top: 34px; background: rgba(10, 10, 14, 0.95);
++  border: 1px solid var(--edge); border-radius: 12px; padding: 8px; min-width: 200px; z-index: 6;
++  backdrop-filter: blur(12px); animation: op-rise 280ms var(--ease-expo) both;
++}
++.op .menu p { font: 11px var(--font-jetbrains, ui-monospace), Consolas, monospace; color: var(--dim); margin-bottom: 8px; word-break: break-all; }
+ 
+-.op .banner { background: var(--card); border: 1px solid var(--edge); border-left: 3px solid var(--dim); border-radius: 16px; padding: 12px 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
++.op .banner {
++  background: var(--card); border: 1px solid var(--edge); border-left: 3px solid var(--dim);
++  border-radius: 12px; padding: 10px 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
++  backdrop-filter: blur(10px);
++}
+ .op .banner.warn { border-left-color: var(--warn); }
+ .op .banner.ok { border-left-color: var(--ok); color: var(--ok); }
+-.op .banner .fill { flex: 1; min-width: 160px; }
+-.op .cbar { height: 3px; background: var(--bar-track); border-radius: 3px; margin-top: 6px; overflow: hidden; }
+-.op .cbar i { display: block; height: 100%; background: var(--grad); }
++.op .banner .fill { flex: 1; min-width: 140px; }
++.op .cbar { height: 3px; background: var(--bar-track); border-radius: 3px; margin-top: 5px; overflow: hidden; }
++.op .cbar i { display: block; height: 100%; background: var(--grad); transition: width 300ms var(--ease-out); }
+ .op .cbar.warn i { background: var(--warn); }
+ .op .count.warn { color: var(--warn); background: transparent; }
+ .op .waitline { display: flex; gap: 8px; align-items: baseline; }
+ 
+ .op .prompt {
+   position: static; width: 100%;
+-  background: var(--card); border: 1px solid var(--run); border-radius: 16px; padding: 14px;
++  background: var(--card); border: 1px solid var(--run); border-radius: 12px; padding: 12px;
++  backdrop-filter: blur(10px);
+ }
+ .op .helpdlg {
+-  position: fixed; right: 14px; top: 80px; width: 360px; max-width: calc(100vw - 28px);
+-  background: var(--card); border: 1px solid var(--edge); border-radius: 16px; padding: 14px; z-index: 8;
++  position: fixed; right: 14px; top: 80px; width: 340px; max-width: calc(100vw - 28px);
++  background: rgba(10, 10, 14, 0.95); border: 1px solid var(--edge); border-radius: 12px;
++  padding: 12px; z-index: 8; backdrop-filter: blur(14px);
++  animation: op-rise 320ms var(--ease-expo) both;
+ }
+-.op .helpdlg h3 { font-size: 14px; font-weight: 700; }
+-.op .helpdlg p { color: var(--dim); font-size: 13px; margin: 4px 0 8px; }
++.op .helpdlg h3 { font-size: 13px; font-weight: 700; font-family: var(--font-unbounded, system-ui), system-ui, sans-serif; }
++.op .helpdlg p { color: var(--dim); font-size: 12px; margin: 4px 0 8px; }
+ .op .prompt + .prompt { margin-top: 8px; }
+-.op .prompt h3 { font-size: 14px; font-weight: 700; }
+-.op .prompt p { color: var(--dim); font-size: 13px; margin: 4px 0 8px; }
+-.op .count { font-family: var(--font-jetbrains, ui-monospace), Consolas, monospace; font-size: 14px; }
+-.op .stack { position: fixed; right: 14px; top: 118px; z-index: 8; display: flex; flex-direction: column; gap: 8px; width: 360px; max-width: calc(100vw - 28px); }
+-/* Header plus the status-sign row. The latched bar adds 40px. */
+-.op:has(.op-estop-bar) .stack { top: 158px; }
+-.op .chip { background: var(--inset); color: var(--dim); border-radius: 99px; padding: 2px 8px; font-size: 12px; }
++.op .prompt h3 { font-size: 13px; font-weight: 700; }
++.op .prompt p { color: var(--dim); font-size: 12px; margin: 4px 0 8px; }
++.op .count { font-family: var(--font-jetbrains, ui-monospace), Consolas, monospace; font-size: 13px; }
++.op .stack {
++  position: fixed; right: 14px; top: 120px; z-index: 8;
++  display: flex; flex-direction: column; gap: 8px; width: 340px; max-width: calc(100vw - 28px);
++}
++.op:has(.op-estop-bar) .stack { top: 152px; }
++.op .chip { background: var(--inset); color: var(--dim); border-radius: 999px; padding: 2px 8px; font-size: 11px; }
+ 
+ .op .toasts { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 9; }
+-.op .toast { background: var(--card); border: 1px solid var(--edge); border-radius: 16px; padding: 10px 14px; font-size: 13px; }
++.op .toast {
++  background: rgba(10, 10, 14, 0.95); border: 1px solid var(--edge); border-radius: 12px;
++  padding: 10px 14px; font-size: 12px; backdrop-filter: blur(12px);
++  animation: op-rise 320ms var(--ease-expo) both;
++}
+ 
+-.op .offline { border: 1px solid var(--edge); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; color: var(--dim); font-size: 13px; }
+-.op .err { color: var(--err); font-size: 13px; display: flex; gap: 6px; align-items: flex-start; }
+-.op .spin { width: 14px; height: 14px; border: 2px solid var(--edge); border-top-color: var(--warn); border-radius: 50%; animation: op-spin .8s linear infinite; display: inline-block; }
++.op .offline { border: 1px solid var(--edge); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; color: var(--dim); font-size: 12px; }
++.op .err { color: var(--err); font-size: 12px; display: flex; gap: 6px; align-items: flex-start; }
++.op .spin { width: 12px; height: 12px; border: 2px solid var(--edge); border-top-color: var(--warn); border-radius: 50%; animation: op-spin .8s linear infinite; display: inline-block; }
+ @keyframes op-spin { to { transform: rotate(360deg); } }
+-.op .skel { height: 26px; width: 120px; border-radius: 99px; background: var(--inset); border: 1px solid var(--edge); }
++.op .skel {
++  height: 24px; width: 100px; border-radius: 999px; background: var(--inset); border: 1px solid var(--edge);
++  position: relative; overflow: hidden;
++}
++.op .skel::after {
++  content: ''; position: absolute; inset: 0; width: 40%;
++  background: linear-gradient(90deg, transparent, rgba(255,255,255,.07), transparent);
++  animation: op-shimmer 1.5s linear infinite;
++}
++@keyframes op-shimmer {
++  from { transform: translateX(-100%); }
++  to { transform: translateX(280%); }
++}
+ 
+-.op-auth-page { min-height: 100dvh; display: grid; place-items: center; padding: 24px; }
++.op-auth-page { min-height: 100dvh; display: grid; place-items: center; padding: 24px; position: relative; }
+ .op-auth {
+-  width: 400px; max-width: 100%; background: var(--card); border: 1px solid var(--edge);
++  position: relative; overflow: hidden;
++  width: 400px; max-width: 100%;
+   border-radius: 16px; padding: 28px;
+-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
++  animation: op-rise var(--dur-enter) var(--ease-expo) both;
++}
++.op .xb-open { padding: 5px 12px; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
++.op .xb-open.on { border-color: var(--acc); color: #d9ccff; }
++
++/* —— Xbox controller overlay —— */
++.xb-scrim {
++  position: fixed; inset: 0; z-index: 40;
++  display: grid; place-items: end center;
++  padding: 16px;
++  background: rgba(5, 5, 7, 0.45);
++  backdrop-filter: blur(8px) saturate(1.2);
++  -webkit-backdrop-filter: blur(8px) saturate(1.2);
++  animation: op-rise 320ms var(--ease-expo) both;
++}
++.xb-panel {
++  position: relative; overflow: hidden;
++  width: min(560px, 100%);
++  border-radius: 20px;
++  padding: 14px 16px 16px;
++  margin-bottom: 8px;
++}
++.xb-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
++.xb-head h3 {
++  font-family: var(--font-unbounded, system-ui), system-ui, sans-serif;
++  font-size: 14px; letter-spacing: 0.06em; text-transform: uppercase; margin: 0;
++}
++.xb-status { color: var(--dim); font-size: 12px; margin-top: 4px; }
++.xb-body { display: flex; flex-direction: column; gap: 10px; user-select: none; touch-action: none; }
++.xb-triggers, .xb-bumpers { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
++.xb-trig {
++  height: 28px; border-radius: 10px 10px 6px 6px; border: 1px solid var(--edge);
++  background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
++  color: var(--dim); font-size: 10px; font-weight: 700; letter-spacing: 0.08em; cursor: pointer;
++  position: relative; overflow: hidden;
++}
++.xb-trig::after {
++  content: ''; position: absolute; left: 0; bottom: 0; height: var(--p, 0%); width: 100%;
++  background: var(--grad); opacity: 0.55; transition: height 80ms linear;
++}
++.xb-trig.on { color: #fff; border-color: rgba(185, 120, 255, 0.55); }
++.xb-core {
++  display: grid; grid-template-columns: 1fr auto 1fr; gap: 12px; align-items: center;
++}
++.xb-center { display: flex; align-items: center; gap: 8px; justify-content: center; }
++.xb-logo {
++  width: 28px; height: 28px; border-radius: 50%;
++  background: var(--grad); box-shadow: 0 0 18px rgba(123, 47, 247, 0.45);
++  animation: op-live-glow 2.4s ease-out infinite;
++}
++.xb-face {
++  display: grid; grid-template-areas: ". y ." "x . b" ". a .";
++  grid-template-columns: 36px 36px 36px; grid-template-rows: 36px 36px 36px;
++  gap: 4px; justify-self: end;
++}
++.xb-y { grid-area: y; } .xb-x { grid-area: x; } .xb-b { grid-area: b; } .xb-a { grid-area: a; }
++.xb-btn {
++  width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--edge);
++  background: rgba(255,255,255,0.05); color: var(--tx); font-size: 11px; font-weight: 800;
++  cursor: pointer; transition: background 120ms, border-color 120ms, transform 100ms, box-shadow 120ms;
++}
++.xb-btn.wide { width: 100%; height: 30px; border-radius: 10px; font-size: 10px; letter-spacing: 0.1em; }
++.xb-btn.tiny { width: 28px; height: 28px; font-size: 12px; }
++.xb-btn.on, .xb-btn:active {
++  background: var(--grad); border-color: transparent; color: #fff;
++  box-shadow: 0 0 16px rgba(232, 28, 176, 0.35); transform: scale(0.96);
++}
++.xb-a.on, .xb-a:active { background: #5ee6a8; color: #050507; box-shadow: 0 0 14px rgba(94,230,168,.4); }
++.xb-b.on, .xb-b:active { background: #ff6b8b; color: #050507; box-shadow: 0 0 14px rgba(255,107,139,.4); }
++.xb-x.on, .xb-x:active { background: #4fc3f7; color: #050507; box-shadow: 0 0 14px rgba(79,195,247,.4); }
++.xb-y.on, .xb-y:active { background: #ffb74d; color: #050507; box-shadow: 0 0 14px rgba(255,183,77,.4); }
++.xb-stick {
++  position: relative; width: 110px; height: 110px; border-radius: 50%;
++  border: 1px solid var(--edge);
++  background:
++    radial-gradient(circle at 35% 30%, rgba(255,255,255,0.16), transparent 45%),
++    rgba(255,255,255,0.04);
++  touch-action: none; cursor: grab; justify-self: center;
++}
++.xb-stick:active { cursor: grabbing; }
++.xb-stick i {
++  position: absolute; left: 50%; top: 50%; width: 42px; height: 42px; margin: -21px 0 0 -21px;
++  border-radius: 50%; background: var(--grad);
++  box-shadow: 0 4px 16px rgba(123, 47, 247, 0.45), inset 0 1px 0 rgba(255,255,255,0.35);
++  transition: transform 40ms linear;
++}
++.xb-stick-label {
++  position: absolute; left: 50%; top: 8px; transform: translateX(-50%);
++  font-size: 9px; letter-spacing: 0.12em; color: var(--dim); font-weight: 700;
++}
++.xb-lower { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 0 8px; }
++.xb-dpad {
++  display: grid;
++  grid-template-areas: ". u ." "l m r" ". d .";
++  grid-template-columns: 34px 34px 34px; grid-template-rows: 34px 34px 34px; gap: 2px;
++}
++.xb-d {
++  border: 1px solid var(--edge); background: rgba(255,255,255,0.05); border-radius: 6px; cursor: pointer;
++}
++.xb-d.on, .xb-d:active { background: var(--grad); border-color: transparent; }
++.xb-d-mid { border-radius: 4px; background: rgba(255,255,255,0.04); border: 1px solid var(--edge-soft); }
++.xb-hint { color: var(--dim); font-size: 11px; margin-top: 12px; text-align: center; }
++
++@media (max-width: 560px) {
++  .xb-core { grid-template-columns: 1fr; justify-items: center; }
++  .xb-face { justify-self: center; }
++  .xb-lower { flex-direction: column; }
+ }
+ .op-auth h1 {
+   font-family: var(--font-unbounded, system-ui), system-ui, sans-serif;
+   font-size: 1.35rem; letter-spacing: .02em; margin: 10px 0 6px; font-weight: 700;
+ }
+ .op-auth .sub { color: var(--dim); font-size: 13px; margin-bottom: 16px; }
+-.op-auth label { display: block; font-size: 13px; margin: 10px 0 4px; color: var(--dim); }
++.op-auth label { display: block; font-size: 12px; margin: 10px 0 4px; color: var(--dim); letter-spacing: 0.04em; text-transform: uppercase; }
+ .op-auth input { width: 100%; height: 40px; padding: 0 10px; }
+ .op-auth .field { position: relative; }
+ .op-auth .field input { padding-right: 64px; }
+@@ -259,17 +581,17 @@
+ .op .pulse { animation: op-pulse .4s ease; }
+ @keyframes op-pulse { from { transform: scale(.98); } to { transform: scale(1); } }
+ 
+-@media (max-width: 900px) {
+-  .op-grid { display: flex; flex-direction: column; }
+-  .op .right { display: contents; }
+-  .op .banner { order: -1; }
++@media (max-width: 820px) {
++  .op-pair { grid-template-columns: 1fr; }
++  .op-controls { grid-template-columns: 1fr; justify-items: center; }
+   .op-header { align-items: flex-start; }
+-  /* The wrapped header is taller than 65px, so a fixed 105px top still covers the bar. */
+-  .op .stack { position: static; width: min(360px, calc(100% - 28px)); margin: 14px 14px 0 auto; }
++  .op .stack { position: static; width: min(340px, calc(100% - 28px)); margin: 10px 14px 0 auto; }
++  .op .telem { margin-left: 0; width: 100%; }
+ }
+ @media (prefers-reduced-motion: reduce) {
+-  .op .spin { animation: none; border-top-color: var(--warn); }
+-  .op .pulse { animation: none; }
+-  .op .status-ring { animation: none; }
+-  .op-estop:active { transform: none; }
++  .op .spin, .op .pulse, .op .status-ring, .op .status-live, .op-estop-bar,
++  .op-sticky, .op-main > .card, .op-main > .banner, .op-main > .op-pair,
++  .op .skel::after, .op .toast, .op .menu, .op .helpdlg, .op-auth { animation: none; }
++  .op-estop:active, .op .btn:active:not(:disabled), .op .pad button:active { transform: none; }
++  .op-main > .card, .op-main > .banner, .op-sticky, .op-auth { opacity: 1; transform: none; }
+ }
+diff --git a/src/lib/control/bot-persist.ts b/src/lib/control/bot-persist.ts
+new file mode 100644
+index 0000000..1d5a1a7
+--- /dev/null
++++ b/src/lib/control/bot-persist.ts
+@@ -0,0 +1,31 @@
++import { BOTS, type BotId } from '@/lib/telemetry/protocol';
++
++const KEY = 'amr-control-bot';
++
++export function isBotId(v: string | null | undefined): v is BotId {
++  return BOTS.some((b) => b.id === v);
++}
++
++/** URL `?bot=` wins, then localStorage, then Hardware bot. */
++export function readStoredBot(fallback: BotId = 'hardware-bot'): BotId {
++  if (typeof window === 'undefined') return fallback;
++  try {
++    const q = new URLSearchParams(window.location.search).get('bot');
++    if (isBotId(q)) return q;
++    const s = localStorage.getItem(KEY);
++    if (isBotId(s)) return s;
++  } catch { /* private mode */ }
++  return fallback;
++}
++
++export function persistBot(id: BotId): void {
++  if (typeof window === 'undefined') return;
++  try {
++    localStorage.setItem(KEY, id);
++    const url = new URL(window.location.href);
++    if (url.searchParams.get('bot') !== id) {
++      url.searchParams.set('bot', id);
++      window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
++    }
++  } catch { /* private mode */ }
++}
+diff --git a/src/lib/control/joy-axes.ts b/src/lib/control/joy-axes.ts
+new file mode 100644
+index 0000000..aed9068
+--- /dev/null
++++ b/src/lib/control/joy-axes.ts
+@@ -0,0 +1,38 @@
++/** Pack screen stick deltas into the 8-float `a` array web_gamepad_node expects.
++ *
++ * Screen: +x right, +y down.
++ * ROS / web_gamepad (left stick): left = +1, up = +1.
++ * Matches the browser Gamepad path in the control panel (`-axes[0]`, `-axes[1]`).
++ */
++export function screenToLeftStick(dx: number, dy: number): { x: number; y: number } {
++  return { x: clamp(-dx), y: clamp(-dy) };
++}
++
++/** Right stick: match existing browser Gamepad mapping (−axes[2], +axes[3]). */
++export function screenToRightStick(dx: number, dy: number): { x: number; y: number } {
++  return { x: clamp(-dx), y: clamp(dy) };
++}
++
++export function clamp(n: number, lo = -1, hi = 1): number {
++  const v = Math.max(lo, Math.min(hi, n));
++  return Object.is(v, -0) ? 0 : v;
++}
++
++export function joyActive(a: number[], b: number, eps = 0.02): boolean {
++  if (b !== 0) return true;
++  return a.some((v) => Math.abs(v) > eps);
++}
++
++function px(n: number): number {
++  const v = Math.round(n * 1000) / 1000;
++  return Object.is(v, -0) ? 0 : v;
++}
++
++/** Knob CSS translate (px) so the visual matches packed axes. */
++export function leftKnobOffset(ax: number, ay: number, radius = 28): { x: number; y: number } {
++  return { x: px(-ax * radius), y: px(-ay * radius) };
++}
++
++export function rightKnobOffset(ax: number, ay: number, radius = 28): { x: number; y: number } {
++  return { x: px(-ax * radius), y: px(ay * radius) };
++}
+diff --git a/tests/bot-persist.test.ts b/tests/bot-persist.test.ts
+new file mode 100644
+index 0000000..28f443d
+--- /dev/null
++++ b/tests/bot-persist.test.ts
+@@ -0,0 +1,11 @@
++import { describe, expect, it } from 'vitest';
++import { isBotId } from '@/lib/control/bot-persist';
++
++describe('bot persist', () => {
++  it('accepts known bot ids', () => {
++    expect(isBotId('hardware-bot')).toBe(true);
++    expect(isBotId('amr4')).toBe(true);
++    expect(isBotId('other')).toBe(false);
++    expect(isBotId(null)).toBe(false);
++  });
++});
+diff --git a/tests/joy-axes.test.ts b/tests/joy-axes.test.ts
+new file mode 100644
+index 0000000..4dd923b
+--- /dev/null
++++ b/tests/joy-axes.test.ts
+@@ -0,0 +1,31 @@
++import { describe, expect, it } from 'vitest';
++import { joyActive, leftKnobOffset, screenToLeftStick, screenToRightStick } from '@/lib/control/joy-axes';
++
++describe('joy axes ↔ web_gamepad_node', () => {
++  it('maps screen up/right to ROS left-stick up/right', () => {
++    // screen up (dy < 0) → a[1] = +1 forward
++    expect(screenToLeftStick(0, -1)).toEqual({ x: 0, y: 1 });
++    // screen right (dx > 0) → a[0] = -1 (turn right)
++    expect(screenToLeftStick(1, 0)).toEqual({ x: -1, y: 0 });
++    // screen left → +1
++    expect(screenToLeftStick(-1, 0)).toEqual({ x: 1, y: 0 });
++  });
++
++  it('maps right stick like the browser Gamepad path', () => {
++    expect(screenToRightStick(1, 0)).toEqual({ x: -1, y: 0 });
++    expect(screenToRightStick(0, -1)).toEqual({ x: 0, y: -1 });
++  });
++
++  it('knob offset follows packed left axes', () => {
++    // forward (y=+1) moves knob up
++    expect(leftKnobOffset(0, 1, 28)).toEqual({ x: 0, y: -28 });
++    // turn right (x=-1) moves knob right
++    expect(leftKnobOffset(-1, 0, 28)).toEqual({ x: 28, y: 0 });
++  });
++
++  it('detects active joy', () => {
++    expect(joyActive([0, 0, 0, 0, 0, 0, 0, 0], 0)).toBe(false);
++    expect(joyActive([0, 0.5, 0, 0, 0, 0, 0, 0], 0)).toBe(true);
++    expect(joyActive([0, 0, 0, 0, 0, 0, 0, 0], 1)).toBe(true);
++  });
++});
+-- 
+2.43.0
+
