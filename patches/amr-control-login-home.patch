@@ -1,0 +1,835 @@
+From a97272474c9c8f625804321667eb93603348a321 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 19 Oct 2026 12:07:12 +0000
+Subject: [PATCH] Control login: name-only allowlist, forced password reset,
+ Home link.
+
+Sign-in takes an allowlisted operator name, prompts for a new password when
+password_set is false, drops forgot-password in favor of amey/admin emails,
+and adds a Home back link on the control panel. operator-auth claim + status
+stay in sync with the Supabase edge function.
+---
+ e2e/login-mock.spec.ts                    |  38 +--
+ e2e/login.spec.ts                         |   4 +-
+ src/app/login/reset/ResetRedirect.tsx     |   6 +-
+ src/components/auth/SetPasswordForm.tsx   |   3 +-
+ src/components/auth/SignInForm.tsx        | 272 +++++++++++++++++-----
+ src/components/control/Dashboard.tsx      |   1 +
+ src/components/control/dashboard.css      |  10 +
+ src/lib/control/access.ts                 |   7 +-
+ src/lib/control/operator-auth.ts          |  97 ++++++++
+ supabase/functions/operator-auth/index.ts | 188 +++++++++++++++
+ 10 files changed, 539 insertions(+), 87 deletions(-)
+ create mode 100644 src/lib/control/operator-auth.ts
+ create mode 100644 supabase/functions/operator-auth/index.ts
+
+diff --git a/e2e/login-mock.spec.ts b/e2e/login-mock.spec.ts
+index 34357b8..61449e4 100644
+--- a/e2e/login-mock.spec.ts
++++ b/e2e/login-mock.spec.ts
+@@ -5,24 +5,24 @@ import AxeBuilder from '@axe-core/playwright';
+ const serious = (r: { violations: { impact?: string | null; id: string }[] }) => r.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical');
+ 
+ test.describe('login mock adapter (dev)', () => {
+-  test('login form: invalid → generic error; mock ok → redirect', async ({ page }) => {
++  test('login form: name then password; invalid → generic error; mock ok → redirect', async ({ page }) => {
+     await page.goto('/login/?next=/control/');
+-    await page.getByLabel('Email').fill('nobody@amrslam.tech');
+-    await page.getByLabel(/^Password/).fill('not-the-password');
+-    await page.getByRole('button', { name: 'Sign in' }).click();
+-    await expect(page.locator('#signin-pass-err')).toHaveText('⚠ Email or password is incorrect.');
+-    await expect(page.getByLabel('Email')).toHaveValue('nobody@amrslam.tech');
++    await page.getByLabel('Name').fill('nobody');
++    await page.getByRole('button', { name: 'Continue' }).click();
++    await expect(page.getByText("That name isn't on the allowlist.")).toBeVisible();
++
++    await page.getByLabel('Name').fill('demo');
++    await page.getByRole('button', { name: 'Continue' }).click();
++    await expect(page.getByRole('heading', { name: /Hi, Demo/i })).toBeVisible();
+ 
+-    await page.getByLabel('Email').fill('demo@amrslam.tech');
+-    await page.getByLabel(/^Password/).fill('nope-nope');
++    await page.getByLabel(/^Password/).fill('not-the-password');
+     await page.getByRole('button', { name: 'Sign in' }).click();
+-    await expect(page.locator('#signin-pass-err')).toHaveText('⚠ Email or password is incorrect.');
+-    await expect(page.getByLabel(/^Password/)).toHaveValue('nope-nope');
++    await expect(page.locator('#signin-pass-err')).toHaveText('⚠ Name or password is incorrect.');
+ 
+     await page.getByLabel(/^Password/).fill('demo-password');
+     await page.getByRole('button', { name: 'Sign in' }).click();
+     await expect(page).toHaveURL(/\/control\/$/, { timeout: 10_000 });
+-    await expect(page.getByRole('heading', { name: /AMR4/ })).toBeVisible();
++    await expect(page.getByRole('link', { name: /Home/i })).toBeVisible();
+     expect(serious(await new AxeBuilder({ page }).analyze())).toEqual([]);
+   });
+ 
+@@ -30,12 +30,14 @@ test.describe('login mock adapter (dev)', () => {
+     const logs: string[] = [];
+     page.on('console', (m) => logs.push(m.text()));
+     await page.goto('/login/?mock=locked');
+-    await page.getByLabel('Email').fill('demo@amrslam.tech');
++    await page.getByLabel('Name').fill('demo');
++    await page.getByRole('button', { name: 'Continue' }).click();
+     await page.getByLabel(/^Password/).fill('demo-password');
+     await page.getByRole('button', { name: 'Sign in' }).click();
+     await expect(page.getByText('Too many attempts. Try again in a minute.')).toBeVisible();
+     await page.goto('/login/?mock=network');
+-    await page.getByLabel('Email').fill('demo@amrslam.tech');
++    await page.getByLabel('Name').fill('demo');
++    await page.getByRole('button', { name: 'Continue' }).click();
+     await page.getByLabel(/^Password/).fill('demo-password');
+     await page.getByRole('button', { name: 'Sign in' }).click();
+     await expect(page.getByText("Can't reach the server. Check your connection.").first()).toBeVisible();
+@@ -47,10 +49,18 @@ test.describe('login mock adapter (dev)', () => {
+ 
+   test('open-redirect: //evil.com → /control/', async ({ page }) => {
+     await page.goto('/login/?next=' + encodeURIComponent('//evil.com'));
+-    await page.getByLabel('Email').fill('demo@amrslam.tech');
++    await page.getByLabel('Name').fill('demo');
++    await page.getByRole('button', { name: 'Continue' }).click();
+     await page.getByLabel(/^Password/).fill('demo-password');
+     await page.getByRole('button', { name: 'Sign in' }).click();
+     await expect(page).toHaveURL(/\/control\/$/, { timeout: 10_000 });
+     expect(page.url()).not.toMatch(/evil/);
+   });
++
++  test('no forgot-password button; shows admin emails', async ({ page }) => {
++    await page.goto('/sign-in/');
++    await expect(page.getByRole('button', { name: /Forgot password/i })).toHaveCount(0);
++    await expect(page.getByRole('link', { name: 'amey@amrslam.tech' })).toBeVisible();
++    await expect(page.getByRole('link', { name: 'admin@amrslam.tech' })).toBeVisible();
++  });
+ });
+diff --git a/e2e/login.spec.ts b/e2e/login.spec.ts
+index 2f1efcb..d9261e5 100644
+--- a/e2e/login.spec.ts
++++ b/e2e/login.spec.ts
+@@ -14,9 +14,9 @@ test.describe('login-spec pages', () => {
+     });
+   }
+ 
+-  test('/login/reset/ redirects to the forgot-password card', async ({ page }) => {
++  test('/login/reset/ redirects to sign-in', async ({ page }) => {
+     await page.goto('/login/reset/');
+-    await page.waitForURL(/\/sign-in\/\?forgot=1/, { timeout: 10_000 });
++    await page.waitForURL(/\/sign-in\/$/, { timeout: 10_000 });
+     expect(serious(await new AxeBuilder({ page }).analyze())).toEqual([]);
+   });
+ 
+diff --git a/src/app/login/reset/ResetRedirect.tsx b/src/app/login/reset/ResetRedirect.tsx
+index 45d2f10..2e832e7 100644
+--- a/src/app/login/reset/ResetRedirect.tsx
++++ b/src/app/login/reset/ResetRedirect.tsx
+@@ -3,8 +3,8 @@
+ import { useEffect } from 'react';
+ import { asset } from '@/lib/asset';
+ 
+-/** Old reset stub. Forgot-password now lives on the sign-in card. */
++/** Old reset stub. Password help is now “email amey / admin” on sign-in. */
+ export function ResetRedirect() {
+-  useEffect(() => { window.location.replace(asset('/sign-in/?forgot=1')); }, []);
+-  return <p><a href={asset('/sign-in/?forgot=1')}>Continue to password reset</a></p>;
++  useEffect(() => { window.location.replace(asset('/sign-in/')); }, []);
++  return <p><a href={asset('/sign-in/')}>Continue to sign in</a></p>;
+ }
+diff --git a/src/components/auth/SetPasswordForm.tsx b/src/components/auth/SetPasswordForm.tsx
+index abe558b..25366a1 100644
+--- a/src/components/auth/SetPasswordForm.tsx
++++ b/src/components/auth/SetPasswordForm.tsx
+@@ -61,7 +61,8 @@ export function SetPasswordForm({ tokenHash, type }: { tokenHash: string | null;
+           <>
+             <h1>Reset your password</h1>
+             <p className="err" role="alert">⚠ {error || COPY.expiredLink}</p>
+-            <p style={{ marginTop: 16 }}><a className="btn full" href="/sign-in/?forgot=1" style={{ display: 'grid', placeItems: 'center', textDecoration: 'none' }}>Send a new link</a></p>
++            <p className="sub" style={{ marginTop: 12 }}>Need help? Email <a href="mailto:amey@amrslam.tech">amey@amrslam.tech</a> or <a href="mailto:admin@amrslam.tech">admin@amrslam.tech</a>.</p>
++            <p style={{ marginTop: 16 }}><a className="btn full" href="/sign-in/" style={{ display: 'grid', placeItems: 'center', textDecoration: 'none' }}>Back to sign in</a></p>
+           </>
+         )}
+         {step === 'continue' && (
+diff --git a/src/components/auth/SignInForm.tsx b/src/components/auth/SignInForm.tsx
+index 98cfc82..86a89af 100644
+--- a/src/components/auth/SignInForm.tsx
++++ b/src/components/auth/SignInForm.tsx
+@@ -4,28 +4,33 @@ import { useState, type FormEvent } from 'react';
+ import { useRouter } from 'next/navigation';
+ import { useServices } from '@/components/providers/ServicesProvider';
+ import { readConfig } from '@/lib/config';
+-import { COPY } from '@/lib/control/access';
++import { COPY, MIN_PASSWORD, passwordRules } from '@/lib/control/access';
++import {
++  isUsernameShape,
++  normalizeUsername,
++  operatorClaim,
++  operatorEmail,
++  operatorStatus,
++} from '@/lib/control/operator-auth';
+ import { WaveLines } from '@/components/effects/WaveLines';
+ import '@/components/effects/effects.css';
+ import '@/components/control/dashboard.css';
+ 
+-export function SignInForm({ redirectTarget, startForgot = false }: { redirectTarget: string; startForgot?: boolean }) {
++type Step = 'name' | 'password' | 'set-password';
++
++export function SignInForm({ redirectTarget }: { redirectTarget: string; startForgot?: boolean }) {
+   const { auth } = useServices();
+   const cfg = readConfig();
+   const router = useRouter();
+-  const [forgot, setForgot] = useState(startForgot);
+-  const [forgotFrom, setForgotFrom] = useState(startForgot);
+-  if (startForgot !== forgotFrom) {
+-    setForgotFrom(startForgot);
+-    setForgot(startForgot);
+-  }
+-  const [email, setEmail] = useState('');
++  const [step, setStep] = useState<Step>('name');
++  const [name, setName] = useState('');
++  const [displayName, setDisplayName] = useState('');
+   const [password, setPassword] = useState('');
++  const [confirm, setConfirm] = useState('');
+   const [show, setShow] = useState(false);
+   const [busy, setBusy] = useState(false);
+-  const [emailErr, setEmailErr] = useState('');
++  const [nameErr, setNameErr] = useState('');
+   const [passErr, setPassErr] = useState('');
+-  const [info, setInfo] = useState('');
+ 
+   if (!auth.isAvailable()) {
+     return (
+@@ -40,53 +45,120 @@ export function SignInForm({ redirectTarget, startForgot = false }: { redirectTa
+     );
+   }
+ 
+-  async function onSignIn(e: FormEvent) {
++  function goAfterSignIn() {
++    const go = () => (redirectTarget.startsWith('/') ? router.replace(redirectTarget) : window.location.assign(redirectTarget));
++    go();
++  }
++
++  async function gateOperator() {
++    if (auth.name !== 'supabase' || !cfg.supabaseUrl || !cfg.supabaseKey) return true;
++    const session = await auth.getSession();
++    if (!session?.userId) return true;
++    const { userIsActiveOperator } = await import('@/lib/control/password-flow');
++    const gate = await userIsActiveOperator(cfg.supabaseUrl, cfg.supabaseKey, session.userId);
++    if (gate === 'no') {
++      await auth.signOut();
++      setPassErr(COPY.forbidden);
++      return false;
++    }
++    return true;
++  }
++
++  async function onNameContinue(e: FormEvent) {
++    e.preventDefault();
++    if (busy) return;
++    setNameErr(''); setPassErr('');
++    const u = normalizeUsername(name);
++    if (!u) { setNameErr('Enter your name.'); return; }
++    if (!isUsernameShape(u)) { setNameErr('Use your operator name (letters, numbers, _).'); return; }
++    setBusy(true);
++    if (auth.name === 'mock') {
++      setBusy(false);
++      if (u !== 'demo') { setNameErr('That name isn\'t on the allowlist.'); return; }
++      setName('demo');
++      setDisplayName('Demo');
++      setPassword('');
++      setConfirm('');
++      setStep('password');
++      return;
++    }
++    if (!cfg.supabaseUrl || !cfg.supabaseKey) { setBusy(false); setNameErr(COPY.network); return; }
++    const st = await operatorStatus(cfg.supabaseUrl, cfg.supabaseKey, u);
++    setBusy(false);
++    if (st.status === 'network' || st.status === 'unavailable') { setNameErr(COPY.network); return; }
++    if (st.status !== 'ok') { setNameErr('That name isn\'t on the allowlist.'); return; }
++    setName(st.username);
++    setDisplayName(st.displayName || st.username);
++    setPassword('');
++    setConfirm('');
++    setStep(st.needsPassword ? 'set-password' : 'password');
++  }
++
++  async function onPasswordSignIn(e: FormEvent) {
+     e.preventDefault();
+     if (busy) return;
+-    setEmailErr(''); setPassErr(''); setInfo('');
+-    if (!email.trim()) { setEmailErr('Enter your email.'); return; }
++    setPassErr('');
+     if (!password) { setPassErr('Enter your password.'); return; }
+     setBusy(true);
+-    const res = await auth.signIn({ email: email.trim(), password });
++    if (auth.name === 'mock') {
++      const res = await auth.signIn({ email: 'demo@amrslam.tech', password });
++      if (res.status === 'ok') { goAfterSignIn(); return; }
++      setBusy(false);
++      if (res.status === 'rate_limited') setPassErr(COPY.rate);
++      else if (res.status === 'network') setPassErr(COPY.network);
++      else setPassErr(COPY.invalid);
++      return;
++    }
++    if (!cfg.supabaseUrl || !cfg.supabaseKey) { setBusy(false); setPassErr(COPY.network); return; }
++    const resolved = await operatorEmail(cfg.supabaseUrl, cfg.supabaseKey, name);
++    if (resolved.status !== 'ok') {
++      setBusy(false);
++      setPassErr(resolved.status === 'network' ? COPY.network : 'That name isn\'t on the allowlist.');
++      return;
++    }
++    if (resolved.needsPassword) {
++      setBusy(false);
++      setStep('set-password');
++      return;
++    }
++    const res = await auth.signIn({ email: resolved.email, password });
+     if (res.status === 'ok') {
+-      if (auth.name === 'supabase' && cfg.supabaseUrl && cfg.supabaseKey) {
+-        const session = await auth.getSession();
+-        if (session?.userId) {
+-          const { userIsActiveOperator } = await import('@/lib/control/password-flow');
+-          const gate = await userIsActiveOperator(cfg.supabaseUrl, cfg.supabaseKey, session.userId);
+-          if (gate === 'no') {
+-            await auth.signOut();
+-            setPassErr(COPY.forbidden);
+-            setBusy(false);
+-            return;
+-          }
+-        }
+-      }
+-      const go = () => (redirectTarget.startsWith('/') ? router.replace(redirectTarget) : window.location.assign(redirectTarget));
+-      go();
++      if (!(await gateOperator())) { setBusy(false); return; }
++      goAfterSignIn();
+       return;
+     }
+     setBusy(false);
+     if (res.status === 'forbidden') setPassErr(COPY.forbidden);
+     else if (res.status === 'rate_limited') setPassErr(COPY.rate);
+     else if (res.status === 'network') setPassErr(COPY.network);
+-    else if (res.status === 'unavailable') setPassErr("Sign-in isn't available yet.");
+     else setPassErr(COPY.invalid);
+   }
+ 
+-  async function onReset(e: FormEvent) {
++  async function onSetPassword(e: FormEvent) {
+     e.preventDefault();
+     if (busy) return;
+-    setEmailErr(''); setInfo('');
+-    if (!email.trim()) { setEmailErr('Enter your email.'); return; }
+-    if (!cfg.supabaseUrl || !cfg.supabaseKey) { setEmailErr(COPY.network); return; }
++    setPassErr('');
++    const rules = passwordRules(password, confirm);
++    if (!rules.length) { setPassErr(`Use at least ${MIN_PASSWORD} characters.`); return; }
++    if (!rules.match) { setPassErr(COPY.mismatch); return; }
++    if (!cfg.supabaseUrl || !cfg.supabaseKey) { setPassErr(COPY.network); return; }
+     setBusy(true);
+-    try {
+-      const { sendPasswordReset } = await import('@/lib/control/password-flow');
+-      await sendPasswordReset(cfg.supabaseUrl, cfg.supabaseKey, email);
+-    } catch { /* same copy either way, so the allowlist stays private */ }
++    const claimed = await operatorClaim(cfg.supabaseUrl, cfg.supabaseKey, name, password);
++    if (claimed.status !== 'ok') {
++      setBusy(false);
++      if (claimed.reason === 'password') setPassErr(`Use at least ${MIN_PASSWORD} characters.`);
++      else if (claimed.status === 'network' || claimed.status === 'unavailable') setPassErr(COPY.network);
++      else setPassErr('Couldn\'t set password. Email amey@amrslam.tech or admin@amrslam.tech.');
++      return;
++    }
++    const res = await auth.signIn({ email: claimed.email, password });
++    if (res.status === 'ok') {
++      if (!(await gateOperator())) { setBusy(false); return; }
++      goAfterSignIn();
++      return;
++    }
+     setBusy(false);
+-    setInfo(COPY.resetSent);
++    setPassErr(res.status === 'network' ? COPY.network : 'Password saved, but sign-in failed. Try again.');
+   }
+ 
+   return (
+@@ -94,31 +166,103 @@ export function SignInForm({ redirectTarget, startForgot = false }: { redirectTa
+       <div className="op-bg" aria-hidden><WaveLines lines={5} /></div>
+       <div className="op-auth">
+         <div className="op-brand">AMR</div>
+-        <h1>{forgot ? 'Send reset link' : 'Sign in'}</h1>
+-        {!forgot && <p className="sub">Operator access only.</p>}
+-        <form onSubmit={forgot ? onReset : onSignIn} noValidate>
+-          <label htmlFor="signin-email">Email</label>
+-          <input id="signin-email" name="email" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} aria-invalid={emailErr ? true : undefined} aria-describedby={emailErr ? 'signin-email-err' : undefined} />
+-          {emailErr && <p id="signin-email-err" className="err" role="alert">⚠ {emailErr}</p>}
+-          {!forgot && (
+-            <>
+-              <label htmlFor="signin-password">Password</label>
+-              <div className="field">
+-                <input id="signin-password" name="password" type={show ? 'text' : 'password'} autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} aria-invalid={passErr ? true : undefined} aria-describedby={passErr ? 'signin-pass-err' : undefined} />
+-                <button type="button" onClick={() => setShow((v) => !v)} aria-label={show ? 'Hide password' : 'Show password'}>{show ? 'Hide' : 'Show'}</button>
+-              </div>
+-              {passErr && <p id="signin-pass-err" className="err" aria-live="polite">⚠ {passErr}</p>}
+-            </>
+-          )}
+-          {info && <p role="status" className="sub">{info}</p>}
+-          <div style={{ marginTop: 16 }}>
+-            <button className="btn full" type="submit" disabled={busy}>{busy ? 'Please wait…' : forgot ? 'Send reset link' : 'Sign in'}</button>
+-          </div>
+-        </form>
+-        <p style={{ marginTop: 12 }}>
+-          <button type="button" className="link" onClick={() => { setForgot((v) => !v); setInfo(''); setPassErr(''); }}>{forgot ? 'Back to sign in' : 'Forgot password?'}</button>
++        <h1>
++          {step === 'name' && 'Sign in'}
++          {step === 'password' && `Hi, ${displayName || name}`}
++          {step === 'set-password' && 'Set your password'}
++        </h1>
++        <p className="sub">
++          {step === 'name' && 'Enter your operator name.'}
++          {step === 'password' && 'Enter your password to open the control panel.'}
++          {step === 'set-password' && 'Choose a new password for this account. You\'ll use it next time.'}
++        </p>
++
++        {step === 'name' && (
++          <form onSubmit={onNameContinue} noValidate>
++            <label htmlFor="signin-name">Name</label>
++            <input
++              id="signin-name"
++              name="username"
++              autoComplete="username"
++              autoCapitalize="none"
++              spellCheck={false}
++              value={name}
++              onChange={(e) => setName(e.target.value)}
++              aria-invalid={nameErr ? true : undefined}
++              aria-describedby={nameErr ? 'signin-name-err' : undefined}
++            />
++            {nameErr && <p id="signin-name-err" className="err" role="alert">⚠ {nameErr}</p>}
++            <div style={{ marginTop: 16 }}>
++              <button className="btn full" type="submit" disabled={busy}>{busy ? 'Please wait…' : 'Continue'}</button>
++            </div>
++          </form>
++        )}
++
++        {step === 'password' && (
++          <form onSubmit={onPasswordSignIn} noValidate>
++            <label htmlFor="signin-password">Password</label>
++            <div className="field">
++              <input
++                id="signin-password"
++                name="password"
++                type={show ? 'text' : 'password'}
++                autoComplete="current-password"
++                value={password}
++                onChange={(e) => setPassword(e.target.value)}
++                aria-invalid={passErr ? true : undefined}
++                aria-describedby={passErr ? 'signin-pass-err' : undefined}
++              />
++              <button type="button" onClick={() => setShow((v) => !v)} aria-label={show ? 'Hide password' : 'Show password'}>{show ? 'Hide' : 'Show'}</button>
++            </div>
++            {passErr && <p id="signin-pass-err" className="err" aria-live="polite">⚠ {passErr}</p>}
++            <div style={{ marginTop: 16 }}>
++              <button className="btn full" type="submit" disabled={busy}>{busy ? 'Please wait…' : 'Sign in'}</button>
++            </div>
++            <p style={{ marginTop: 12 }}>
++              <button type="button" className="link" onClick={() => { setStep('name'); setPassErr(''); setPassword(''); }}>Change name</button>
++            </p>
++          </form>
++        )}
++
++        {step === 'set-password' && (
++          <form onSubmit={onSetPassword} noValidate>
++            <label htmlFor="new-password">New password</label>
++            <div className="field">
++              <input
++                id="new-password"
++                name="new-password"
++                type={show ? 'text' : 'password'}
++                autoComplete="new-password"
++                value={password}
++                onChange={(e) => setPassword(e.target.value)}
++              />
++              <button type="button" onClick={() => setShow((v) => !v)} aria-label={show ? 'Hide password' : 'Show password'}>{show ? 'Hide' : 'Show'}</button>
++            </div>
++            <label htmlFor="confirm-password">Confirm password</label>
++            <input
++              id="confirm-password"
++              name="confirm"
++              type={show ? 'text' : 'password'}
++              autoComplete="new-password"
++              value={confirm}
++              onChange={(e) => setConfirm(e.target.value)}
++            />
++            {passErr && <p className="err" role="alert">⚠ {passErr}</p>}
++            <div style={{ marginTop: 16 }}>
++              <button className="btn full" type="submit" disabled={busy}>{busy ? 'Please wait…' : 'Save password & continue'}</button>
++            </div>
++            <p style={{ marginTop: 12 }}>
++              <button type="button" className="link" onClick={() => { setStep('name'); setPassErr(''); setPassword(''); setConfirm(''); }}>Change name</button>
++            </p>
++          </form>
++        )}
++
++        <p className="foot">
++          Need a reset or access? Email{' '}
++          <a href="mailto:amey@amrslam.tech">amey@amrslam.tech</a>
++          {' '}or{' '}
++          <a href="mailto:admin@amrslam.tech">admin@amrslam.tech</a>.
+         </p>
+-        <p className="foot">Access is by invitation. Need access? Email admin@amrslam.tech.</p>
+       </div>
+     </div>
+   );
+diff --git a/src/components/control/Dashboard.tsx b/src/components/control/Dashboard.tsx
+index 73f689b..29093ae 100644
+--- a/src/components/control/Dashboard.tsx
++++ b/src/components/control/Dashboard.tsx
+@@ -360,6 +360,7 @@ export function Dashboard() {
+           <div className="op-reconnect" role="status">{tel.heartbeatError || 'Reconnecting…'}</div>
+         )}
+         <header className="op-header">
++          <a className="op-home" href={asset('/')} title="Back to home">← Home</a>
+           <h1>
+             <span className="op-brand">AMR</span>
+             <span className="op-bot-label">{bot.label}</span>
+diff --git a/src/components/control/dashboard.css b/src/components/control/dashboard.css
+index cf04bd4..ca692eb 100644
+--- a/src/components/control/dashboard.css
++++ b/src/components/control/dashboard.css
+@@ -97,6 +97,15 @@
+   background-image: var(--grad);
+   -webkit-background-clip: text; background-clip: text; color: transparent;
+ }
++.op-home {
++  display: inline-flex; align-items: center; gap: 4px;
++  padding: 5px 12px; border-radius: 999px;
++  border: 1px solid var(--edge); color: var(--dim); text-decoration: none;
++  font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
++  background: rgba(255,255,255,0.04);
++  transition: color 180ms, border-color 180ms, background 180ms;
++}
++.op-home:hover { color: var(--tx); border-color: rgba(185, 120, 255, 0.45); background: rgba(123, 47, 247, 0.12); }
+ .op-bot-label { color: var(--dim); font-weight: 600; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; }
+ .op-switch { display: flex; gap: 4px; padding: 2px; border-radius: 999px; background: rgba(255,255,255,0.04); border: 1px solid var(--edge); }
+ .op-switch button {
+@@ -573,6 +582,7 @@
+ .op-auth .field input { padding-right: 64px; }
+ .op-auth .field button { position: absolute; right: 8px; top: 8px; background: none; border: 0; color: #d9ccff; cursor: pointer; font-size: 12px; }
+ .op-auth .foot { color: var(--dim); font-size: 12px; margin-top: 16px; }
++.op-auth .foot a { color: #d9ccff; text-decoration: underline; }
+ .op-auth .rules { list-style: none; margin: 8px 0; font-size: 13px; color: var(--dim); }
+ .op-auth .rules li.ok { color: var(--ok); }
+ .op-auth .segs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-top: 6px; }
+diff --git a/src/lib/control/access.ts b/src/lib/control/access.ts
+index ee21982..b55a704 100644
+--- a/src/lib/control/access.ts
++++ b/src/lib/control/access.ts
+@@ -4,11 +4,12 @@ export const SET_PASSWORD_REDIRECT = 'https://amrslam.tech/set-password';
+ export const MIN_PASSWORD = 10;
+ 
+ export const COPY = {
+-  invalid: 'Email or password is incorrect.',
+-  forbidden: "This account doesn't have access. Contact admin@amrslam.tech.",
++  invalid: 'Name or password is incorrect.',
++  forbidden: "This account doesn't have access. Email amey@amrslam.tech or admin@amrslam.tech.",
+   rate: 'Too many attempts. Try again in a minute.',
+   network: "Can't reach the server. Check your connection.",
+-  resetSent: 'If this email has access, a link is on its way.',
++  resetSent: 'Need a reset? Email amey@amrslam.tech or admin@amrslam.tech.',
++  helpReset: 'Need a reset or access? Email amey@amrslam.tech or admin@amrslam.tech.',
+   expiredLink: 'This link has expired or was already used.',
+   weak: 'Choose a stronger password. This one is too common.',
+   mismatch: "Passwords don't match.",
+diff --git a/src/lib/control/operator-auth.ts b/src/lib/control/operator-auth.ts
+new file mode 100644
+index 0000000..9c607a6
+--- /dev/null
++++ b/src/lib/control/operator-auth.ts
+@@ -0,0 +1,97 @@
++/** Client for the `operator-auth` edge function (username allowlist login). */
++
++export type OperatorStatus =
++  | { status: 'ok'; username: string; displayName?: string; needsPassword: boolean }
++  | { status: 'invalid' | 'network' | 'unavailable' | 'forbidden' | 'disabled'; reason?: string };
++
++export type OperatorEmail =
++  | { status: 'ok'; email: string; needsPassword: boolean }
++  | { status: 'invalid' | 'network' | 'unavailable' };
++
++export type OperatorClaim =
++  | { status: 'ok'; email: string }
++  | { status: 'invalid' | 'network' | 'unavailable'; reason?: string };
++
++function fnUrl(supabaseUrl: string) {
++  return `${supabaseUrl.replace(/\/$/, '')}/functions/v1/operator-auth`;
++}
++
++async function post(
++  supabaseUrl: string,
++  key: string,
++  body: Record<string, unknown>,
++): Promise<{ ok: boolean; data: Record<string, unknown>; http: number }> {
++  const res = await fetch(fnUrl(supabaseUrl), {
++    method: 'POST',
++    headers: {
++      'Content-Type': 'application/json',
++      apikey: key,
++      Authorization: `Bearer ${key}`,
++    },
++    body: JSON.stringify(body),
++    signal: AbortSignal.timeout(12_000),
++  });
++  let data: Record<string, unknown> = {};
++  try { data = await res.json() as Record<string, unknown>; } catch { /* empty */ }
++  return { ok: res.ok, data, http: res.status };
++}
++
++export async function operatorStatus(supabaseUrl: string, key: string, username: string): Promise<OperatorStatus> {
++  try {
++    const { data, http } = await post(supabaseUrl, key, { action: 'status', username });
++    if (http >= 500) return { status: 'network' };
++    if (data.status === 'ok') {
++      return {
++        status: 'ok',
++        username: String(data.username ?? username),
++        displayName: typeof data.displayName === 'string' ? data.displayName : undefined,
++        needsPassword: Boolean(data.needsPassword),
++      };
++    }
++    if (data.status === 'unavailable') return { status: 'unavailable' };
++    return { status: 'invalid' };
++  } catch {
++    return { status: 'network' };
++  }
++}
++
++export async function operatorEmail(supabaseUrl: string, key: string, username: string): Promise<OperatorEmail> {
++  try {
++    const { data, http } = await post(supabaseUrl, key, { action: 'email', username });
++    if (http >= 500) return { status: 'network' };
++    if (data.status === 'ok' && typeof data.email === 'string') {
++      return { status: 'ok', email: data.email, needsPassword: Boolean(data.needsPassword) };
++    }
++    return { status: 'invalid' };
++  } catch {
++    return { status: 'network' };
++  }
++}
++
++/** First login / forced reset: set password for an allowlisted username, then sign in. */
++export async function operatorClaim(
++  supabaseUrl: string,
++  key: string,
++  username: string,
++  password: string,
++): Promise<OperatorClaim> {
++  try {
++    const { data, http } = await post(supabaseUrl, key, { action: 'claim', username, password });
++    if (http >= 500) return { status: 'network' };
++    if (data.status === 'ok' && typeof data.email === 'string') {
++      return { status: 'ok', email: data.email };
++    }
++    if (data.status === 'unavailable') return { status: 'unavailable' };
++    return { status: 'invalid', reason: typeof data.reason === 'string' ? data.reason : undefined };
++  } catch {
++    return { status: 'network' };
++  }
++}
++
++export function normalizeUsername(raw: string): string {
++  return raw.trim().toLowerCase();
++}
++
++export function isUsernameShape(u: string): boolean {
++  return /^[a-z][a-z0-9_]{1,31}$/.test(u);
++}
+diff --git a/supabase/functions/operator-auth/index.ts b/supabase/functions/operator-auth/index.ts
+new file mode 100644
+index 0000000..affca4f
+--- /dev/null
++++ b/supabase/functions/operator-auth/index.ts
+@@ -0,0 +1,188 @@
++/**
++ * Invite-only operator auth (no public signup).
++ *
++ * POST JSON:
++ *   { action: "status", username }
++ *   { action: "claim", username, password }   // first-time / forced reset set password
++ *   { action: "email", username }             // resolve auth email for sign-in
++ *   { action: "force_reset_all", secret }     // admin: invalidate passwords, require claim
++ *
++ * verify_jwt=false — gated by permitted_operators allowlist + rate-friendly responses.
++ */
++import "jsr:@supabase/functions-js/edge-runtime.d.ts";
++import { createClient } from "jsr:@supabase/supabase-js@2";
++
++const cors = {
++  "Access-Control-Allow-Origin": "*",
++  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
++};
++
++function json(body: unknown, status = 200) {
++  return new Response(JSON.stringify(body), {
++    status,
++    headers: { ...cors, "Content-Type": "application/json" },
++  });
++}
++
++function normUser(u: unknown): string {
++  return String(u ?? "").trim().toLowerCase();
++}
++
++function validPassword(p: unknown): p is string {
++  return typeof p === "string" && p.length >= 10 && p.length <= 128;
++}
++
++function randomPassword(): string {
++  const bytes = new Uint8Array(24);
++  crypto.getRandomValues(bytes);
++  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
++}
++
++Deno.serve(async (req) => {
++  if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
++  if (req.method !== "POST") return json({ status: "invalid" }, 405);
++
++  const url = Deno.env.get("SUPABASE_URL");
++  const service = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
++  if (!url || !service) return json({ status: "unavailable" }, 503);
++
++  let body: { action?: string; username?: string; password?: string; secret?: string };
++  try {
++    body = await req.json();
++  } catch {
++    return json({ status: "invalid" }, 400);
++  }
++
++  const admin = createClient(url, service, {
++    auth: { autoRefreshToken: false, persistSession: false },
++  });
++
++  const action = body.action ?? "status";
++
++  if (action === "force_reset_all") {
++    const expected = Deno.env.get("OPERATOR_FORCE_RESET_SECRET") ?? "";
++    if (!expected || body.secret !== expected) return json({ status: "forbidden" }, 403);
++
++    const { data: rows, error } = await admin
++      .from("permitted_operators")
++      .select("username, user_id, auth_email")
++      .eq("active", true);
++    if (error) return json({ status: "network" }, 500);
++
++    for (const row of rows ?? []) {
++      if (row.user_id) {
++        const upd = await admin.auth.admin.updateUserById(row.user_id, {
++          password: randomPassword(),
++        });
++        if (upd.error) {
++          /* continue — still mark password_set false */
++        }
++      }
++    }
++
++    const { error: markErr } = await admin
++      .from("permitted_operators")
++      .update({ password_set: false, updated_at: new Date().toISOString() })
++      .eq("active", true);
++    if (markErr) return json({ status: "network" }, 500);
++
++    return json({ status: "ok", reset: (rows ?? []).length });
++  }
++
++  const username = normUser(body.username);
++  if (!username || !/^[a-z][a-z0-9_]{1,31}$/.test(username)) {
++    return json({ status: "invalid" });
++  }
++
++  const { data: row, error } = await admin
++    .from("permitted_operators")
++    .select("username, auth_email, authority_rank, user_id, password_set, active, display_name")
++    .eq("username", username)
++    .maybeSingle();
++
++  if (error) return json({ status: "network" }, 500);
++  if (!row || row.active === false) return json({ status: "invalid" });
++
++  if (action === "status") {
++    return json({
++      status: "ok",
++      username: row.username,
++      displayName: row.display_name ?? row.username,
++      needsPassword: !row.password_set,
++    });
++  }
++
++  if (action === "email") {
++    return json({
++      status: "ok",
++      email: row.auth_email,
++      needsPassword: !row.password_set,
++    });
++  }
++
++  if (action === "claim") {
++    // Allowed when password_set is false (first login or after force reset).
++    if (row.password_set) return json({ status: "invalid", reason: "already_set" });
++    if (!validPassword(body.password)) {
++      return json({ status: "invalid", reason: "password" });
++    }
++
++    let userId = row.user_id as string | null;
++
++    if (!userId) {
++      const created = await admin.auth.admin.createUser({
++        email: row.auth_email,
++        password: body.password,
++        email_confirm: true,
++        app_metadata: {
++          username: row.username,
++          authority_rank: row.authority_rank,
++          provider: "operator",
++        },
++        user_metadata: { username: row.username },
++      });
++      if (created.error || !created.data.user) {
++        const listed = await admin.auth.admin.listUsers({ page: 1, perPage: 1000 });
++        const existing = listed.data?.users?.find((u) => u.email === row.auth_email);
++        if (!existing) return json({ status: "network" }, 500);
++        userId = existing.id;
++        const upd = await admin.auth.admin.updateUserById(userId, {
++          password: body.password,
++          email_confirm: true,
++          app_metadata: {
++            username: row.username,
++            authority_rank: row.authority_rank,
++            provider: "operator",
++          },
++        });
++        if (upd.error) return json({ status: "network" }, 500);
++      } else {
++        userId = created.data.user.id;
++      }
++    } else {
++      const upd = await admin.auth.admin.updateUserById(userId, {
++        password: body.password,
++        email_confirm: true,
++      });
++      if (upd.error) return json({ status: "network" }, 500);
++    }
++
++    await admin.from("permitted_operators").update({
++      user_id: userId,
++      password_set: true,
++      updated_at: new Date().toISOString(),
++    }).eq("username", username);
++
++    await admin.from("operator_profiles").upsert({
++      user_id: userId,
++      email: row.auth_email,
++      display_name: row.display_name ?? row.username,
++      authority_rank: row.authority_rank,
++      updated_at: new Date().toISOString(),
++    });
++
++    return json({ status: "ok", email: row.auth_email });
++  }
++
++  return json({ status: "invalid" }, 400);
++});
+-- 
+2.43.0
+
