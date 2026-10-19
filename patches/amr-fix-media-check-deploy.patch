@@ -1,0 +1,55 @@
+diff --git a/scripts/check-media.ts b/scripts/check-media.ts
+index 52630bb..cb87905 100644
+--- a/scripts/check-media.ts
++++ b/scripts/check-media.ts
+@@ -5,6 +5,7 @@ import { join } from 'node:path';
+ import { simulationVideo, mediaFilePaths, simulationSlidePosterPaths } from '../src/data/media';
+ 
+ const root = process.env.MEDIA_CHECK_ROOT ?? 'public';
++const fixture = process.env.NEXT_PUBLIC_SIM_VIDEO_FIXTURE === '1';
+ let fail = false;
+ 
+ function checkPoster(file: string) {
+@@ -14,15 +15,21 @@ function checkPoster(file: string) {
+   else console.log(`ok    ${file}: ${kb.toFixed(1)} KB`);
+ }
+ 
+-const slides = simulationSlidePosterPaths();
+-if (slides.length) {
+-  for (const p of slides) {
+-    const file = join(root, p);
+-    if (!existsSync(file)) { console.log(`FAIL  missing slide poster: ${file}`); fail = true; continue; }
+-    checkPoster(file);
++// Carousel posters are production assets. Skip them in the e2e fixture harness (MEDIA_CHECK_ROOT
++// points at a temp tree that only has __e2e__ bytes) so unit tests stay isolated.
++if (!fixture) {
++  const slides = simulationSlidePosterPaths();
++  if (slides.length) {
++    for (const p of slides) {
++      const file = join(root, p);
++      if (!existsSync(file)) { console.log(`FAIL  missing slide poster: ${file}`); fail = true; continue; }
++      checkPoster(file);
++    }
++  } else {
++    console.log('ok    simulationSlides = [] (no carousel posters)');
+   }
+ } else {
+-  console.log('ok    simulationSlides = [] (no carousel posters)');
++  console.log('ok    skipping simulationSlides (e2e fixture mode)');
+ }
+ 
+ const v = simulationVideo;
+@@ -30,7 +37,7 @@ if (!v) {
+   console.log('ok    simulationVideo = null (placeholder / carousel)');
+   process.exit(fail ? 1 : 0);
+ }
+-if (process.env.NEXT_PUBLIC_SIM_VIDEO_FIXTURE === '1' && !process.env.MEDIA_CHECK_ROOT) {
++if (fixture && !process.env.MEDIA_CHECK_ROOT) {
+   console.log('ok    e2e fixture video (served by Playwright)');
+   process.exit(fail ? 1 : 0);
+ }
+@@ -45,3 +52,4 @@ for (const p of mediaFilePaths(v)) {
+   }
+ }
+ process.exit(fail ? 1 : 0);
++
