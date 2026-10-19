@@ -383,8 +383,8 @@ class RosSource:
 
 
 def resolve_source(raw: Optional[str]) -> str:
-    """Return ``ros`` or ``dashboard`` (default)."""
-    v = (raw or "dashboard").strip().lower()
-    if v in ("ros", "rclpy", "direct"):
-        return "ros"
-    return "dashboard"
+    """Return ``ros`` (default) or ``dashboard``."""
+    v = (raw or "ros").strip().lower()
+    if v in ("dashboard", "http", "sse"):
+        return "dashboard"
+    return "ros"

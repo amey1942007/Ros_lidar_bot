@@ -449,10 +449,11 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "enable_robot_dashboard",
-            default_value="true",
+            default_value="false",
             description=(
-                "If true, start robot_dashboard (:8080 local UI). "
-                "Set false when the cloud bridge uses AMR_SOURCE=ros and you do not need the Pi web UI."
+                "If true, start the optional local robot_dashboard (:8080). "
+                "Default false: cloud /control uses AMR_SOURCE=ros on the Pi (or a Tailscale relay). "
+                "Set true only if you still want the Pi browser UI or an HTTP SSE front for a relay."
             ),
         ),
         DeclareLaunchArgument(

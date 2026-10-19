@@ -21,12 +21,12 @@ Same-origin auth with the marketing site, existing AuthGuard + Supabase session,
 
 ## Do you need `robot_dashboard`?
 
-**Not for the website.** `/control` only sees Supabase Realtime. The dashboard is a local Pi UI + optional HTTP front for the bridge.
+**No for the website.** `/control` only sees Supabase Realtime. The dashboard is an optional local Pi UI (`enable_robot_dashboard` defaults to **false**).
 
-- `AMR_SOURCE=ros` on the Pi → bridge reads ROS topics; set `enable_robot_dashboard:=false` if you do not want `:8080`.
-- `AMR_SOURCE=dashboard` (default) → bridge needs the dashboard (or a Tailscale relay pulling from it). Required when the bridge runs off-robot.
+- Recommended on the Pi (campus Wi‑Fi + Tailscale for SSH): `AMR_SOURCE=ros` — bridge reads ROS topics, no `:8080` UI.
+- `AMR_SOURCE=dashboard` only if you turn the local UI back on.
 
-See [`TAILSCALE_RELAY.md`](./TAILSCALE_RELAY.md) for the Tailscale relay path (campus Wi‑Fi often blocks Pi → Supabase).
+See [`TAILSCALE_RELAY.md`](./TAILSCALE_RELAY.md). Cloud smoke test: `scripts/demo_cloud_telemetry.py` (full hb/telemetry/map/log suite).
 
 ## Include in ROS launch
 

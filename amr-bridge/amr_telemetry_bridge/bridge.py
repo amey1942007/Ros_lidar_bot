@@ -2471,8 +2471,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--dashboard", default=_env("AMR_DASHBOARD_URL", "http://127.0.0.1:8080"))
     p.add_argument(
         "--source",
-        default=_env("AMR_SOURCE", "dashboard"),
-        help="dashboard = SSE from robot_dashboard; ros = read ROS topics on this host",
+        default=_env("AMR_SOURCE", "ros"),
+        help="ros = read ROS topics on this host (default); dashboard = SSE from robot_dashboard",
     )
     p.add_argument("--camera-url", default=_env("AMR_CAMERA_URL"))
     p.add_argument("--camera-jpeg-max-kb", type=int, default=int(_env("AMR_CAMERA_JPEG_MAX_KB", "24") or 24))

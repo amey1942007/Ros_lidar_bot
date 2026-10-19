@@ -77,15 +77,15 @@ def _missing_required(env: dict[str, str]) -> list[str]:
 
 
 class SourceModeTests(unittest.TestCase):
-    def test_resolve_source_default_dashboard(self):
-        self.assertEqual(resolve_source(None), "dashboard")
-        self.assertEqual(resolve_source(""), "dashboard")
-        self.assertEqual(resolve_source("DASHBOARD"), "dashboard")
+    def test_resolve_source_default_ros(self):
+        self.assertEqual(resolve_source(None), "ros")
+        self.assertEqual(resolve_source(""), "ros")
+        self.assertEqual(resolve_source("ROS"), "ros")
 
-    def test_resolve_source_ros_aliases(self):
-        self.assertEqual(resolve_source("ros"), "ros")
-        self.assertEqual(resolve_source("rclpy"), "ros")
-        self.assertEqual(resolve_source("direct"), "ros")
+    def test_resolve_source_dashboard_aliases(self):
+        self.assertEqual(resolve_source("dashboard"), "dashboard")
+        self.assertEqual(resolve_source("http"), "dashboard")
+        self.assertEqual(resolve_source("sse"), "dashboard")
 
 
 class ProtocolTests(unittest.TestCase):
