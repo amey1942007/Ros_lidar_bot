@@ -2703,7 +2703,7 @@ index c038424..ed6a3ea 100644
      </div>
    );
 diff --git a/src/components/overlay/Overlays.tsx b/src/components/overlay/Overlays.tsx
-index 6111ac4..5459f40 100644
+index 6111ac4..4b6a5fa 100644
 --- a/src/components/overlay/Overlays.tsx
 +++ b/src/components/overlay/Overlays.tsx
 @@ -11,18 +11,21 @@ import { useServices } from '@/components/providers/ServicesProvider';
@@ -2730,28 +2730,32 @@ index 6111ac4..5459f40 100644
      KEYS.forEach((k, i) => {
        const el = cards.current[i];
        if (!el) return;
-@@ -32,6 +35,20 @@ export function Overlays({ tier, mobile, live = true }: { tier: 'high' | 'low';
+@@ -32,6 +35,24 @@ export function Overlays({ tier, mobile, live = true }: { tier: 'high' | 'low';
        el.style.visibility = v < 0.005 ? 'hidden' : 'visible';
        if (v > best) { best = v; active = el; }
      });
++    let cloudWinner = -1;
++    CLOUD_KEYS.forEach((k, i) => {
++      const v = S[k];
++      if (v > cloudBest) { cloudBest = v; cloudWinner = i; }
++    });
 +    CLOUD_KEYS.forEach((k, i) => {
 +      const el = cloudCards.current[i];
 +      if (!el) return;
-+      const v = S[k];
-+      el.style.opacity = String(v);
-+      el.style.transform = `translateY(${18 * (1 - v)}px)`;
-+      el.style.visibility = v < 0.005 ? 'hidden' : 'visible';
-+      if (v > cloudBest) cloudBest = v;
++      // Winner-takes-all: never stack two beats (crossfade looked like text soup).
++      const on = i === cloudWinner && cloudBest > 0.005;
++      el.style.opacity = on ? String(cloudBest) : '0';
++      el.style.transform = on ? `translateY(${18 * (1 - cloudBest)}px)` : 'translateY(18px)';
++      el.style.visibility = on ? 'visible' : 'hidden';
 +    });
 +    if (cloudWrap.current) {
-+      // Wrap stays fully visible while any beat is on; each card fades itself.
 +      cloudWrap.current.style.opacity = cloudBest > 0.005 ? '1' : '0';
 +      cloudWrap.current.style.visibility = cloudBest < 0.005 ? 'hidden' : 'visible';
 +    }
      if (scrim.current) scrim.current.style.opacity = String(best);
      if (path.current) {
        const a = active as HTMLDivElement | null;
-@@ -75,6 +92,25 @@ export function Overlays({ tier, mobile, live = true }: { tier: 'high' | 'low';
+@@ -75,6 +96,25 @@ export function Overlays({ tier, mobile, live = true }: { tier: 'high' | 'low';
        <p ref={beyond} className="absolute inset-0 grid place-items-center text-center font-display text-[length:var(--text-display)] font-bold leading-[0.9] tracking-[-0.04em]" style={{ opacity: 0, background: 'radial-gradient(closest-side, rgba(0,0,0,.4), transparent)' }}>
          {copy.beyond}
        </p>
@@ -3183,7 +3187,7 @@ index b870ff4..4573d98 100644
 +  return simulationSlides.map((s) => s.poster.replace(/\?.*$/, '').replace(/^\//, ''));
 +}
 diff --git a/src/lib/content.ts b/src/lib/content.ts
-index 0c75278..cdf8ee0 100644
+index 0c75278..953c84d 100644
 --- a/src/lib/content.ts
 +++ b/src/lib/content.ts
 @@ -16,6 +16,13 @@ export const copy = {
@@ -3192,10 +3196,10 @@ index 0c75278..cdf8ee0 100644
    beyond: 'Beyond the room.',
 +  /** Center overlays during the long cloud stretch (fills dead scroll after the room). */
 +  cloudBeats: [
-+    { id: 'cb1', eyebrow: 'SCALE', title: 'Beyond the room — into the full stack.' },
-+    { id: 'cb2', eyebrow: 'BUILD', title: 'AMR4 on Jetson Orin · Hardware Bot on Pi 5.' },
-+    { id: 'cb3', eyebrow: 'STACK', title: 'ROS 2 · Nav2 · slam_toolbox · live LiDAR maps.' },
-+    { id: 'cb4', eyebrow: 'DRIVE', title: 'Browser teleop — or let it explore alone.' },
++    { id: 'cb1', eyebrow: 'SCALE', title: 'Beyond the room.' },
++    { id: 'cb2', eyebrow: 'BUILD', title: 'Jetson AMR4 · Pi 5 Hardware Bot.' },
++    { id: 'cb3', eyebrow: 'STACK', title: 'ROS 2 · Nav2 · slam_toolbox.' },
++    { id: 'cb4', eyebrow: 'DRIVE', title: 'Browser teleop — or explore alone.' },
 +  ],
  } as const;
  
@@ -3214,7 +3218,7 @@ index b5f00f3..8ea57db 100644
  };
  export type SceneState = typeof S;
 diff --git a/src/lib/timeline.ts b/src/lib/timeline.ts
-index 1f1a0b8..042c44d 100644
+index 1f1a0b8..7991847 100644
 --- a/src/lib/timeline.ts
 +++ b/src/lib/timeline.ts
 @@ -32,11 +32,18 @@ export function buildMasterTimeline() {
@@ -3226,15 +3230,15 @@ index 1f1a0b8..042c44d 100644
 -    .to({ cloudLight: 1, duration: 0.12 }, 0.78)
 -    .to({ cloudDissolve: 1, duration: 0.12, ease: 'power1.in' }, 0.86)
 -    .to({ stars: 0.6, duration: 0.16 }, 0.84);
-+    // Cloud stretch: sequential startup beats (fills the long empty scroll).
-+    .to({ cb1: 1, duration: 0.03 }, 0.64)
-+    .to({ cb1: 0, duration: 0.03 }, 0.7)
-+    .to({ cb2: 1, duration: 0.03 }, 0.7)
-+    .to({ cb2: 0, duration: 0.03 }, 0.76)
-+    .to({ cb3: 1, duration: 0.03 }, 0.76)
-+    .to({ cb3: 0, duration: 0.03 }, 0.82)
-+    .to({ cb4: 1, duration: 0.03 }, 0.82)
-+    .to({ cb4: 0, duration: 0.03 }, 0.88)
++    // Cloud stretch: sequential startup beats with tiny gaps (no stacked crossfade).
++    .to({ cb1: 1, duration: 0.025 }, 0.64)
++    .to({ cb1: 0, duration: 0.02 }, 0.695)
++    .to({ cb2: 1, duration: 0.025 }, 0.705)
++    .to({ cb2: 0, duration: 0.02 }, 0.76)
++    .to({ cb3: 1, duration: 0.025 }, 0.77)
++    .to({ cb3: 0, duration: 0.02 }, 0.825)
++    .to({ cb4: 1, duration: 0.025 }, 0.835)
++    .to({ cb4: 0, duration: 0.02 }, 0.89)
 +    .to({ cloudLight: 1, duration: 0.12 }, 0.8)
 +    .to({ cloudDissolve: 1, duration: 0.12, ease: 'power1.in' }, 0.88)
 +    .to({ stars: 0.6, duration: 0.16 }, 0.86);
