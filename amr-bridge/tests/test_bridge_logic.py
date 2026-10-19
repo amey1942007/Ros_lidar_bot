@@ -45,6 +45,7 @@ from amr_telemetry_bridge.protocol import (  # noqa: E402
     channel_name,
     private_topic,
 )
+from amr_telemetry_bridge.ros_source import resolve_source  # noqa: E402
 
 
 def _load_env_file(path: Path) -> dict[str, str]:
@@ -73,6 +74,18 @@ def _missing_required(env: dict[str, str]) -> list[str]:
     if not env.get("AMR_BRIDGE_TOKEN"):
         missing.append("AMR_BRIDGE_TOKEN")
     return missing
+
+
+class SourceModeTests(unittest.TestCase):
+    def test_resolve_source_default_dashboard(self):
+        self.assertEqual(resolve_source(None), "dashboard")
+        self.assertEqual(resolve_source(""), "dashboard")
+        self.assertEqual(resolve_source("DASHBOARD"), "dashboard")
+
+    def test_resolve_source_ros_aliases(self):
+        self.assertEqual(resolve_source("ros"), "ros")
+        self.assertEqual(resolve_source("rclpy"), "ros")
+        self.assertEqual(resolve_source("direct"), "ros")
 
 
 class ProtocolTests(unittest.TestCase):

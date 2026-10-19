@@ -1,0 +1,32 @@
+[Unit]
+Description=AMR cloud telemetry bridge for %i (Tailscale relay)
+Documentation=file:/opt/amr-bridge/TAILSCALE_RELAY.md
+After=network-online.target tailscaled.service
+Wants=network-online.target
+Wants=tailscaled.service
+
+[Service]
+Type=simple
+# Run as the installing user. Override with: systemctl edit amr-bridge@hardware-bot
+User=REPLACE_USER
+Group=REPLACE_GROUP
+EnvironmentFile=-/etc/amr-bridge-%i.env
+Environment=AMR_BOT_ID=%i
+WorkingDirectory=/opt/amr-bridge
+ExecStartPre=/usr/bin/bash -c 'test -n "$AMR_SUPABASE_URL" && test -n "$AMR_SUPABASE_KEY" && test -n "$AMR_BRIDGE_TOKEN"'
+ExecStartPre=/opt/amr-bridge/scripts/wait_for_dashboard.sh
+ExecStart=/opt/amr-bridge/.venv/bin/python -u -m amr_telemetry_bridge
+Restart=always
+RestartSec=3
+TimeoutStartSec=120
+UnsetEnvironment=PYTHONPATH PYTHONHOME
+Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/tmp
+ReadOnlyPaths=/etc/amr-bridge-%i.env /opt/amr-bridge
+
+[Install]
+WantedBy=multi-user.target

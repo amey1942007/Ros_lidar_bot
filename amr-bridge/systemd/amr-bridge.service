@@ -1,0 +1,28 @@
+[Unit]
+Description=AMR cloud telemetry bridge (on-robot or Tailscale relay)
+Documentation=file:/opt/amr-bridge/TAILSCALE_RELAY.md
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# install_bridge_service.sh rewrites User= and paths.
+User=pi
+EnvironmentFile=-/etc/amr-bridge.env
+WorkingDirectory=/opt/amr-bridge
+ExecStartPre=/opt/amr-bridge/scripts/wait_for_dashboard.sh
+ExecStart=/opt/amr-bridge/.venv/bin/python -u -m amr_telemetry_bridge
+Restart=always
+RestartSec=3
+TimeoutStartSec=120
+UnsetEnvironment=PYTHONPATH PYTHONHOME
+Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/tmp
+ReadOnlyPaths=/etc/amr-bridge.env /opt/amr-bridge
+
+[Install]
+WantedBy=multi-user.target

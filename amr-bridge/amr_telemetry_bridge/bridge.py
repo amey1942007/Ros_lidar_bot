@@ -67,6 +67,7 @@ from .protocol import (
     channel_name,
     private_topic,
 )
+from .ros_source import RosSource, resolve_source
 
 log = logging.getLogger("amr_bridge")
 
@@ -1440,6 +1441,7 @@ class Bridge:
         public_channel: bool = False,
         private_channel: bool = True,
         control_poll_s: float = 2.0,
+        source: str = "dashboard",
     ):
         if bot_id not in BOT_IDS:
             raise SystemExit(f"AMR_BOT_ID must be one of {BOT_IDS}")
@@ -1451,6 +1453,7 @@ class Bridge:
         self._bridge_password = bridge_password
         self.public_channel = public_channel
         self.private_channel = private_channel and bool(bridge_email) and bool(bridge_password)
+        self.source = resolve_source(source)
         if private_channel and not self.private_channel:
             log.warning(
                 "private channels skipped: set AMR_BRIDGE_EMAIL and AMR_BRIDGE_PASSWORD "
@@ -1458,7 +1461,8 @@ class Bridge:
             )
         if not self.public_channel and not self.private_channel:
             log.warning("no Realtime channel is enabled; telemetry will not be published")
-        self.dash = DashboardClient(dashboard_url)
+        self.dash = DashboardClient(dashboard_url) if self.source == "dashboard" else None
+        self._ros: RosSource | None = None
         self.camera_url = camera_url
         self.camera_jpeg_max_kb = camera_jpeg_max_kb
         self.scan_max_points = _scan_max_points()
@@ -1659,8 +1663,16 @@ class Bridge:
             public_rest=self.public_rest,
         )
         await asyncio.to_thread(self._hub.connect)
+        if self.source == "ros":
+            log.info("AMR_SOURCE=ros — reading ROS topics directly (robot_dashboard not required)")
+            self._ros = RosSource(on_event=self._queue_ros_event)
+            await asyncio.to_thread(self._ros.start)
+            feed = self._ros_idle_loop()
+        else:
+            log.info("AMR_SOURCE=dashboard — SSE from %s", self.dash.base if self.dash else "?")
+            feed = self._sse_loop()
         tasks = [
-            self._sse_loop(),
+            feed,
             self._heartbeat_loop(),
             self._presence_touch_loop(),
             self._watchdog_loop(),
@@ -1672,6 +1684,22 @@ class Bridge:
             tasks.append(self._control_poll_loop())
             tasks.append(self._auth_refresh_loop())
         await asyncio.gather(*tasks)
+
+    def _queue_ros_event(self, event: dict) -> None:
+        """Hop a ROS callback onto the bridge asyncio loop.
+
+        Uses ``_spawn`` (uncapped), not ``_schedule`` — the command queue cap
+        would drop 10 Hz telemetry frames.
+        """
+        self._spawn(self._handle_sse_event(event))
+
+    async def _ros_idle_loop(self) -> None:
+        """Keep the gather alive while the ROS thread pushes events."""
+        while not self._stop.is_set():
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                pass
 
     async def _ctl_drain(self) -> None:
         while not self._stop.is_set():
@@ -1901,20 +1929,28 @@ class Bridge:
                 pass
 
     async def _estop_once(self) -> bool:
-        """Dashboard e-stop, zero nudge, and zero joy, all at once."""
+        """Zero motion immediately. ROS source publishes /cmd_vel; dashboard uses HTTP."""
         timeout = COMMAND_HTTP_TIMEOUT_S
 
-        async def _stop_dashboard() -> None:
+        async def _stop_primary() -> None:
+            if self._ros is not None:
+                await asyncio.to_thread(self._ros.estop)
+                return
+            assert self.dash is not None
             await self.dash.post("/api/estop", timeout=timeout)
 
         async def _zero_nudge() -> None:
+            if self._ros is not None:
+                await asyncio.to_thread(self._ros.nudge, 0.0, 0.0)
+                return
+            assert self.dash is not None
             await self.dash.post(
                 "/api/nudge", {"lin": 0.0, "ang": 0.0}, timeout=timeout,
             )
 
         async def _zero_joy() -> None:
             gamepad = os.environ.get("AMR_GAMEPAD_URL", "").rstrip("/")
-            if not gamepad:
+            if not gamepad or self.dash is None:
                 return
             response = await self.dash._http.post(
                 f"{gamepad}/api/joy",
@@ -1924,7 +1960,7 @@ class Bridge:
             response.raise_for_status()
 
         results = await asyncio.gather(
-            _stop_dashboard(), _zero_nudge(), _zero_joy(), return_exceptions=True,
+            _stop_primary(), _zero_nudge(), _zero_joy(), return_exceptions=True,
         )
         ok = True
         for item in results:
@@ -1942,10 +1978,10 @@ class Bridge:
             log.info("rate mode → %s", mode)
 
     async def _dispatch_cmd(self, cmd: dict) -> None:
-        """Forward a command through the dashboard / gamepad HTTP APIs.
+        """Forward a command to ROS (/cmd_vel) or the dashboard / gamepad HTTP APIs.
 
-        Those processes publish /cmd_vel. safety_stop is the only publisher of
-        /cmd_vel_safe. Do not add a publisher here.
+        Motion always lands on /cmd_vel so safety_stop stays in front of the motors.
+        Do not publish /cmd_vel_safe from this process.
         """
         typ = cmd.get("type")
         timeout = COMMAND_HTTP_TIMEOUT_S
@@ -1959,6 +1995,18 @@ class Bridge:
                     self._guard.mark_zeroed(owed)
             return
         async with self._io_lock:
+            if self._ros is not None:
+                if typ == "nav_goal":
+                    await asyncio.to_thread(
+                        self._ros.nav_goal, float(cmd.get("x", 0)), float(cmd.get("y", 0)),
+                    )
+                elif typ == "nav_cancel":
+                    await asyncio.to_thread(self._ros.cancel_nav)
+                elif typ in ("vision", "save_map", "run_tool", "stop_tool", "blacklist"):
+                    result = self._ros.unsupported(typ)
+                    log.info("ros source: %s", result.get("error"))
+                return
+            assert self.dash is not None
             if typ == "nav_goal":
                 await self.dash.post("/api/nav_goal", {
                     "x": float(cmd.get("x", 0)),
@@ -1992,10 +2040,12 @@ class Bridge:
         timeout = COMMAND_HTTP_TIMEOUT_S
         typ = cmd.get("type")
         if typ in ("nudge", "drive"):
-            await self.dash.post("/api/nudge", {
-                "lin": float(cmd.get("lin", 0)),
-                "ang": float(cmd.get("ang", 0)),
-            }, timeout=timeout)
+            lin, ang = float(cmd.get("lin", 0)), float(cmd.get("ang", 0))
+            if self._ros is not None:
+                await asyncio.to_thread(self._ros.nudge, lin, ang)
+                return
+            assert self.dash is not None
+            await self.dash.post("/api/nudge", {"lin": lin, "ang": ang}, timeout=timeout)
             return
         await self._post_joy(cmd, timeout)
 
@@ -2010,7 +2060,7 @@ class Bridge:
             buttons = int(cmd["b"])
         else:
             buttons = int(cmd["buttons"]) if cmd.get("buttons") is not None else 0
-        if gamepad:
+        if gamepad and self.dash is not None:
             response = await self.dash._http.post(
                 f"{gamepad}/api/joy",
                 json={"a": axes[:8], "b": buttons},
@@ -2023,6 +2073,10 @@ class Bridge:
         lin = max(-0.3, min(0.3, -float(ax[1]) * 0.35))
         ang = max(-1.0, min(1.0, -float(ax[0]) * 0.9))
         if abs(lin) > 0.02 or abs(ang) > 0.02:
+            if self._ros is not None:
+                await asyncio.to_thread(self._ros.nudge, lin, ang)
+                return
+            assert self.dash is not None
             await self.dash.post("/api/nudge", {"lin": lin, "ang": ang}, timeout=timeout)
 
     async def _post_zero(self) -> bool:
@@ -2034,12 +2088,16 @@ class Bridge:
         """
         timeout = COMMAND_HTTP_TIMEOUT_S
         try:
-            await self.dash.post("/api/nudge", {"lin": 0.0, "ang": 0.0}, timeout=timeout)
+            if self._ros is not None:
+                await asyncio.to_thread(self._ros.nudge, 0.0, 0.0)
+            else:
+                assert self.dash is not None
+                await self.dash.post("/api/nudge", {"lin": 0.0, "ang": 0.0}, timeout=timeout)
         except Exception as exc:
             log.warning("watchdog zero nudge failed: %s", exc)
             return False
         gamepad = os.environ.get("AMR_GAMEPAD_URL", "").rstrip("/")
-        if not gamepad:
+        if not gamepad or self.dash is None:
             return True
         try:
             response = await self.dash._http.post(
@@ -2074,6 +2132,7 @@ class Bridge:
         await asyncio.to_thread(self._hub.send, event, payload)
 
     async def _sse_loop(self) -> None:
+        assert self.dash is not None
         url = f"{self.dash.base}/events"
         backoff = 1.0
         while not self._stop.is_set():
@@ -2190,7 +2249,7 @@ class Bridge:
             ),
         }
 
-        if mode == "full" and not self.camera_url:
+        if mode == "full" and not self.camera_url and self.dash is not None:
             self._cam_every = (self._cam_every + 1) % 15
             if self._cam_every == 0:
                 jpeg = await self.dash.fetch_camera_jpeg(self.camera_jpeg_max_kb)
@@ -2376,7 +2435,11 @@ class Bridge:
 
     async def stop(self) -> None:
         self._stop.set()
-        await self.dash.close()
+        if self._ros is not None:
+            await asyncio.to_thread(self._ros.stop)
+            self._ros = None
+        if self.dash is not None:
+            await self.dash.close()
         if self._hub:
             await asyncio.to_thread(self._hub.close)
 
@@ -2406,6 +2469,11 @@ def main(argv: list[str] | None = None) -> None:
         default=float(_env("AMR_CONTROL_POLL_S", "2") or 2),
     )
     p.add_argument("--dashboard", default=_env("AMR_DASHBOARD_URL", "http://127.0.0.1:8080"))
+    p.add_argument(
+        "--source",
+        default=_env("AMR_SOURCE", "dashboard"),
+        help="dashboard = SSE from robot_dashboard; ros = read ROS topics on this host",
+    )
     p.add_argument("--camera-url", default=_env("AMR_CAMERA_URL"))
     p.add_argument("--camera-jpeg-max-kb", type=int, default=int(_env("AMR_CAMERA_JPEG_MAX_KB", "24") or 24))
     args = p.parse_args(argv)
@@ -2418,6 +2486,9 @@ def main(argv: list[str] | None = None) -> None:
             "(sb_secret_ prefix or a JWT with role service_role). "
             "Use the publishable key only."
         )
+    source = resolve_source(args.source)
+    if source == "ros" and not args.dashboard:
+        args.dashboard = "http://127.0.0.1:8080"  # unused when source=ros
 
     bridge = Bridge(
         bot_id=args.bot_id,
@@ -2432,6 +2503,7 @@ def main(argv: list[str] | None = None) -> None:
         public_channel=flag_enabled(str(args.public_channel) if args.public_channel is not None else None, False),
         private_channel=flag_enabled(str(args.private_channel) if args.private_channel is not None else None, True),
         control_poll_s=args.control_poll_s,
+        source=source,
     )
 
     loop = asyncio.new_event_loop()
