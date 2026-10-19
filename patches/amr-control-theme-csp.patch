@@ -1,0 +1,389 @@
+From 8908187642a3ba1490bbc3b3cd814408ac11b530 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 19 Oct 2026 11:32:16 +0000
+Subject: [PATCH] Fix control Realtime CSP and align login/control with site
+ theme.
+
+Allow wss:// for the Supabase origin in connect-src so the browser can
+open Realtime (presence alone looked online while Live stayed empty).
+Restyle the operator login and control panel to the site violet/magenta
+tokens, Unbounded/Inter Tight fonts, and brand wordmark.
+---
+ scripts/csp-meta.mjs                    |  17 ++-
+ src/components/auth/SetPasswordForm.tsx |   2 +-
+ src/components/auth/SignInForm.tsx      |   4 +-
+ src/components/control/Dashboard.tsx    |   2 +-
+ src/components/control/dashboard.css    | 142 ++++++++++++++----------
+ 5 files changed, 100 insertions(+), 67 deletions(-)
+
+diff --git a/scripts/csp-meta.mjs b/scripts/csp-meta.mjs
+index 7129a44..45260dc 100644
+--- a/scripts/csp-meta.mjs
++++ b/scripts/csp-meta.mjs
+@@ -8,7 +8,18 @@ import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+ import { join, relative, sep } from 'node:path';
+ 
+ let supa = '';
+-try { if (process.env.NEXT_PUBLIC_SUPABASE_URL) supa = new URL(process.env.NEXT_PUBLIC_SUPABASE_URL).origin; } catch { /* invalid → none */ }
++let supaWs = '';
++try {
++  if (process.env.NEXT_PUBLIC_SUPABASE_URL) {
++    const u = new URL(process.env.NEXT_PUBLIC_SUPABASE_URL);
++    supa = u.origin;
++    // Browsers do not reliably treat https://host as allowing wss://host for WebSockets.
++    // Realtime needs an explicit wss (or ws) origin or the control panel stays "online, no data".
++    const wsProto = u.protocol === 'https:' ? 'wss:' : u.protocol === 'http:' ? 'ws:' : '';
++    if (wsProto) supaWs = `${wsProto}//${u.host}`;
++  }
++} catch { /* invalid → none */ }
++const connectSupa = [supa, supaWs].filter(Boolean).join(' ');
+ 
+ // The Basis (KTX2) transcoder is an Emscripten/embind build: its worker builds invokers with new Function(), and a
+ // blob worker inherits the page's CSP. So the home page (the only page that decodes KTX2: clouds, HDRI) also allows
+@@ -22,7 +33,7 @@ const base = (scriptSrc, route = '') => [
+   `img-src 'self' data: blob:${supa ? ' ' + supa : ''} https://i.ytimg.com https://i.vimeocdn.com`,
+   `media-src 'self' blob:${supa ? ' ' + supa : ''}`,
+   "font-src 'self'",
+-  `connect-src 'self' data: blob:${supa ? ' ' + supa : ''}`,
++  `connect-src 'self' data: blob:${connectSupa ? ' ' + connectSupa : ''}`,
+   "worker-src 'self' blob:",
+   'frame-src https://www.youtube-nocookie.com https://player.vimeo.com',
+   "object-src 'none'",
+@@ -48,4 +59,4 @@ for (const file of walk('out')) {
+   n++;
+ }
+ writeFileSync(join('out', '_headers'), headers.join('\n') + '\n');
+-console.log(`ok    CSP meta on ${n} pages; out/_headers with frame-ancestors 'none'${supa ? `; connect-src + ${supa}` : '; no Supabase origin (env unset)'}`);
++console.log(`ok    CSP meta on ${n} pages; out/_headers with frame-ancestors 'none'${connectSupa ? `; connect-src + ${connectSupa}` : '; no Supabase origin (env unset)'}`);
+diff --git a/src/components/auth/SetPasswordForm.tsx b/src/components/auth/SetPasswordForm.tsx
+index c36c764..bde223c 100644
+--- a/src/components/auth/SetPasswordForm.tsx
++++ b/src/components/auth/SetPasswordForm.tsx
+@@ -53,7 +53,7 @@ export function SetPasswordForm({ tokenHash, type }: { tokenHash: string | null;
+   return (
+     <div className="op op-auth-page">
+       <div className="op-auth">
+-        <div>🤖 AMR</div>
++        <div className="op-brand">AMR</div>
+         {step === 'expired' && (
+           <>
+             <h1>Reset your password</h1>
+diff --git a/src/components/auth/SignInForm.tsx b/src/components/auth/SignInForm.tsx
+index eab1c85..467152d 100644
+--- a/src/components/auth/SignInForm.tsx
++++ b/src/components/auth/SignInForm.tsx
+@@ -29,7 +29,7 @@ export function SignInForm({ redirectTarget, startForgot = false }: { redirectTa
+     return (
+       <div className="op op-auth-page">
+         <div className="op-auth">
+-          <div className="word">🤖 AMR</div>
++          <div className="op-brand">AMR</div>
+           <h1>Sign in</h1>
+           <p className="sub">Sign-in isn&apos;t available yet.</p>
+         </div>
+@@ -89,7 +89,7 @@ export function SignInForm({ redirectTarget, startForgot = false }: { redirectTa
+   return (
+     <div className="op op-auth-page">
+       <div className="op-auth">
+-        <div>🤖 AMR</div>
++        <div className="op-brand">AMR</div>
+         <h1>{forgot ? 'Send reset link' : 'Sign in'}</h1>
+         {!forgot && <p className="sub">Operator access only.</p>}
+         <form onSubmit={forgot ? onReset : onSignIn} noValidate>
+diff --git a/src/components/control/Dashboard.tsx b/src/components/control/Dashboard.tsx
+index 1fef004..f0ec206 100644
+--- a/src/components/control/Dashboard.tsx
++++ b/src/components/control/Dashboard.tsx
+@@ -333,7 +333,7 @@ export function Dashboard() {
+         <div className="op-reconnect" role="status">{tel.heartbeatError || 'Reconnecting…'}</div>
+       )}
+       <header className="op-header">
+-        <h1>🤖 {bot.label}</h1>
++        <h1><span className="op-brand">AMR</span> <span style={{ fontWeight: 600, letterSpacing: '0.02em' }}>{bot.label}</span></h1>
+         <div className="op-switch" role="group" aria-label="Bot">
+           {BOTS.map((b) => (
+             <button key={b.id} type="button" aria-pressed={b.id === botId} onClick={() => { if (b.id !== botId) { setBotId(b.id); joined.current = false; } }}>{b.label}</button>
+diff --git a/src/components/control/dashboard.css b/src/components/control/dashboard.css
+index 31f3875..b9bbf7e 100644
+--- a/src/components/control/dashboard.css
++++ b/src/components/control/dashboard.css
+@@ -1,53 +1,67 @@
+-/* Operator area. Tokens copied from the robot dashboard. Scoped so the marketing site keeps its theme. */
++/* Operator area. Palette aligned with marketing tokens (src/styles/tokens.css). */
+ .op {
+-  --bg: #0e141b;
+-  --card: #161f29;
+-  --edge: #243342;
+-  --tx: #d7e1ea;
+-  --dim: #7d8fa1;
+-  --acc: #4fc3f7;
+-  --ok: #3ddc84;
++  --bg: #050507;
++  --card: rgba(10, 10, 14, 0.88);
++  --edge: rgba(255, 255, 255, 0.12);
++  --tx: #ffffff;
++  --dim: #8a8794;
++  --acc: #7b2ff7;
++  --acc-hot: #e81cb0;
++  --ok: #5ee6a8;
+   --warn: #ffb74d;
+-  --err: #ff5d5d;
+-  --run: #c792ea;
+-  --inset: #0a0f14;
+-  --tool-bg: #101820;
+-  --bar-track: #1c2733;
+-  background: var(--bg);
++  --err: #ff6b8b;
++  --run: #e81cb0;
++  --inset: #0a0a10;
++  --tool-bg: rgba(10, 10, 14, 0.55);
++  --bar-track: rgba(255, 255, 255, 0.08);
++  --grad: linear-gradient(90deg, #7b2ff7 0%, #e81cb0 100%);
++  background:
++    radial-gradient(ellipse 90% 55% at 15% -10%, rgba(123, 47, 247, 0.22), transparent 55%),
++    radial-gradient(ellipse 70% 45% at 95% 5%, rgba(232, 28, 176, 0.14), transparent 50%),
++    var(--bg);
+   color: var(--tx);
+   min-height: 100dvh;
+-  font: 14px/1.45 system-ui, "Segoe UI", Roboto, sans-serif;
++  font: 14px/1.45 var(--font-inter-tight, system-ui), system-ui, sans-serif;
+ }
+ .op button, .op input, .op select, .op textarea { font-family: inherit; color: inherit; }
+-.op :focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+-.op .mono { font-family: ui-monospace, Consolas, monospace; }
++.op :focus-visible { outline: 2px solid var(--acc-hot); outline-offset: 2px; }
++.op .mono { font-family: var(--font-jetbrains, ui-monospace), Consolas, monospace; }
+ 
+-.op h1 { font-weight: 700; }
++.op h1 { font-weight: 700; font-family: var(--font-unbounded, system-ui), system-ui, sans-serif; }
+ .op-sticky { position: sticky; top: 0; z-index: 5; }
+ .op-header {
+   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+   padding: 10px 18px; background: var(--card); border-bottom: 1px solid var(--edge);
++  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+   position: static;
+ }
+ .op-header h1 { font-size: 17px; letter-spacing: .4px; font-weight: 700; }
++.op-brand {
++  font-family: var(--font-unbounded, system-ui), system-ui, sans-serif;
++  font-weight: 700; font-size: 1.15rem; letter-spacing: 0.02em;
++  background-image: var(--grad);
++  -webkit-background-clip: text; background-clip: text; color: transparent;
++}
+ .op-switch { display: flex; gap: 6px; }
+ .op-switch button {
+   border-radius: 99px; padding: 3px 12px; font-size: 12px; font-weight: 600; cursor: pointer;
+   background: var(--inset); color: var(--dim); border: 1px solid var(--edge);
+ }
+-.op-switch button[aria-pressed="true"] { background: #102a3a; color: var(--acc); border-color: var(--acc); }
++.op-switch button[aria-pressed="true"] {
++  background: rgba(123, 47, 247, 0.22); color: #d9ccff; border-color: var(--acc);
++}
+ 
+ .op .pill { padding: 3px 12px; border-radius: 99px; font-weight: 600; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; height: 26px; }
+-.op .pill.ok { background: #123924; color: var(--ok); }
+-.op .pill.bad { background: #3c1518; color: var(--err); }
+-.op .pill.run { background: #1d1430; color: var(--run); }
+-.op .pill.vision { background: #0d2b1a; color: var(--acc); }
+-.op .pill.saving { background: #102a3a; color: #4fc3f7; }
++.op .pill.ok { background: rgba(94, 230, 168, 0.14); color: var(--ok); }
++.op .pill.bad { background: rgba(255, 107, 139, 0.14); color: var(--err); }
++.op .pill.run { background: rgba(232, 28, 176, 0.16); color: var(--run); }
++.op .pill.vision { background: rgba(123, 47, 247, 0.18); color: #d9ccff; }
++.op .pill.saving { background: rgba(123, 47, 247, 0.18); color: #d9ccff; }
+ .op .pill.viewer { background: var(--inset); color: var(--dim); border: 1px solid var(--edge); }
+-.op .pill.link.live { background: #123924; color: var(--ok); }
+-.op .pill.link.idle { background: #3a2a10; color: var(--warn); }
++.op .pill.link.live { background: rgba(94, 230, 168, 0.14); color: var(--ok); }
++.op .pill.link.idle { background: rgba(255, 183, 77, 0.14); color: var(--warn); }
+ .op .pill.link.connecting { background: var(--inset); color: var(--dim); border: 1px solid var(--edge); }
+-.op .pill.link.offline { background: #3c1518; color: var(--err); }
++.op .pill.link.offline { background: rgba(255, 107, 139, 0.14); color: var(--err); }
+ .op .status-ring, .op .status-idle, .op .status-live, .op .status-off {
+   width: 8px; height: 8px; flex: none; border-radius: 50%; display: inline-block;
+ }
+@@ -86,18 +100,18 @@
+ 
+ .op-grow { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+ .op-estop {
+-  background: var(--err); color: #fff; border: 0; border-radius: 8px;
++  background: var(--err); color: #050507; border: 0; border-radius: 10px;
+   font-size: 15px; font-weight: 800; padding: 10px 26px; cursor: pointer; letter-spacing: 1px;
+   position: relative; overflow: hidden;
+ }
+ .op-estop:active { transform: scale(.96); }
+-.op-estop.latched { background: #3c1518; color: var(--err); border: 1px solid var(--err); }
++.op-estop.latched { background: rgba(255, 107, 139, 0.12); color: var(--err); border: 1px solid var(--err); }
+ .op-estop .hold { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--err); }
+-.op-estop-bar { background: #3c1518; color: var(--err); height: 40px; display: flex; align-items: center; justify-content: center; font-weight: 700; letter-spacing: .4px; }
+-.op-reconnect { background: #3a2a10; color: var(--warn); border-bottom: 1px solid var(--warn); text-align: center; padding: 6px 12px; font-size: 13px; }
++.op-estop-bar { background: rgba(255, 107, 139, 0.12); color: var(--err); height: 40px; display: flex; align-items: center; justify-content: center; font-weight: 700; letter-spacing: .4px; }
++.op-reconnect { background: rgba(255, 183, 77, 0.12); color: var(--warn); border-bottom: 1px solid var(--warn); text-align: center; padding: 6px 12px; font-size: 13px; }
+ 
+ .op-grid { display: grid; grid-template-columns: minmax(420px, 1.4fr) minmax(330px, 1fr); gap: 14px; padding: 14px; }
+-.op .card { background: var(--card); border: 1px solid var(--edge); border-radius: 12px; padding: 14px; }
++.op .card { background: var(--card); border: 1px solid var(--edge); border-radius: 16px; padding: 14px; }
+ .op .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1.4px; color: var(--dim); margin-bottom: 10px; font-weight: 600; }
+ .op .right { display: flex; flex-direction: column; gap: 14px; }
+ .op .locked { opacity: .45; pointer-events: none; }
+@@ -106,18 +120,19 @@
+ .op .readouts { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; margin-top: 10px; }
+ .op .ro, .op .sys { background: var(--inset); border: 1px solid var(--edge); border-radius: 8px; padding: 7px 10px; }
+ .op .ro b, .op .sys b { display: block; font-size: 11px; color: var(--dim); font-weight: 600; }
+-.op .ro span { font-family: ui-monospace, Consolas, monospace; font-size: 15px; color: var(--acc); white-space: nowrap; }
+-.op .sys span { font-family: ui-monospace, Consolas, monospace; font-size: 14px; color: var(--acc); }
++.op .ro span { font-family: var(--font-jetbrains, ui-monospace), Consolas, monospace; font-size: 15px; color: #d9ccff; white-space: nowrap; }
++.op .sys span { font-family: var(--font-jetbrains, ui-monospace), Consolas, monospace; font-size: 14px; color: #d9ccff; }
+ .op .navmode { margin-top: 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; color: var(--dim); font-size: 13px; }
+ .op .navmode select, .op .tool input, .op .sq-in, .op .mapname, .op-auth input {
+-  background: var(--inset); color: var(--acc); border: 1px solid var(--edge); border-radius: 6px; padding: 5px 7px;
+-  font-family: ui-monospace, Consolas, monospace;
++  background: var(--inset); color: var(--tx); border: 1px solid var(--edge); border-radius: 10px; padding: 5px 7px;
++  font-family: var(--font-jetbrains, ui-monospace), Consolas, monospace;
+ }
++.op-auth input:focus-visible { border-color: var(--acc); }
+ .op .mapname { flex: 1; min-width: 0; padding: 6px 8px; }
+ .op .mapname.bad { border-color: var(--err); }
+ .op .pad { display: grid; grid-template-columns: repeat(3, 46px); gap: 6px; justify-content: center; margin-top: 10px; }
+ .op .pad button { height: 40px; background: var(--inset); border: 1px solid var(--edge); color: var(--tx); border-radius: 8px; font-size: 16px; cursor: pointer; }
+-.op .pad button:active { background: var(--acc); color: #000; }
++.op .pad button:active { background: var(--grad); color: #fff; }
+ .op .pad button:disabled { opacity: .35; cursor: not-allowed; }
+ .op .help { color: var(--dim); font-size: 12px; margin-top: 8px; }
+ 
+@@ -133,12 +148,15 @@
+ .op .bar i { display: block; height: 100%; border-radius: 3px; }
+ .op .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+ 
+-.op .btn { background: var(--acc); color: #00222f; font-weight: 700; border: 0; border-radius: 7px; padding: 7px 16px; cursor: pointer; font-size: 13px; }
++.op .btn {
++  background: var(--grad); color: #fff; font-weight: 700; border: 0; border-radius: 999px;
++  padding: 7px 16px; cursor: pointer; font-size: 13px;
++}
+ .op .btn.stop { background: var(--warn); color: #2b1a00; }
+ .op .btn:disabled, .op .btn[aria-disabled="true"] { opacity: .35; cursor: not-allowed; }
+ .op .btn.full { width: 100%; height: 40px; }
+ .op .btn.ghost { background: transparent; color: var(--tx); border: 1px solid var(--edge); }
+-.op .link { background: none; border: 0; color: var(--acc); cursor: pointer; padding: 0; font-size: 13px; text-decoration: underline; }
++.op .link { background: none; border: 0; color: #d9ccff; cursor: pointer; padding: 0; font-size: 13px; text-decoration: underline; }
+ .op .textbtn { background: none; border: 0; color: var(--dim); cursor: pointer; padding: 0; font-size: 13px; }
+ .op .textbtn:hover { color: var(--tx); }
+ 
+@@ -148,67 +166,67 @@
+ .op .tool label { font-size: 12px; color: var(--dim); }
+ .op .tool input { width: 70px; }
+ .op .tool input.bad { border-color: var(--err); }
+-.op .running { display: flex; align-items: center; gap: 10px; background: #1d1430; border: 1px solid var(--run); border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; font-size: 13px; color: var(--run); }
++.op .running { display: flex; align-items: center; gap: 10px; background: rgba(232, 28, 176, 0.12); border: 1px solid var(--run); border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; font-size: 13px; color: var(--run); }
+ 
+-.op .ln { font: 12px/1.6 ui-monospace, Consolas, monospace; }
++.op .ln { font: 12px/1.6 var(--font-jetbrains, ui-monospace), Consolas, monospace; }
+ .op .ln .t { color: var(--dim); margin-right: 8px; }
+ .op .ln.info { color: var(--tx); }
+ .op .ln.error { color: var(--err); }
+ .op .ln.run { color: var(--run); }
+-.op .ln-tool { color: #9fb8cc; }
++.op .ln-tool { color: #b57bff; }
+ .op .logbox { background: var(--inset); border: 1px solid var(--edge); border-radius: 8px; height: 230px; overflow-y: auto; padding: 8px 10px; }
+ .op #console { grid-column: 1 / -1; }
+ 
+ .op .sq-in { width: 62px; }
+ .op .seqlist { display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto; margin-bottom: 8px; }
+-.op .sq-item { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; background: var(--inset); border: 1px solid var(--edge); font-size: 12px; font-family: ui-monospace, Consolas, monospace; }
+-.op .sq-item.active { border-color: var(--ok); background: #0d2216; }
++.op .sq-item { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; background: var(--inset); border: 1px solid var(--edge); font-size: 12px; font-family: var(--font-jetbrains, ui-monospace), Consolas, monospace; }
++.op .sq-item.active { border-color: var(--ok); background: rgba(94, 230, 168, 0.1); }
+ .op .sq-item.done { opacity: .4; }
+-.op .sq-num { min-width: 22px; font-weight: 700; color: var(--acc); }
++.op .sq-num { min-width: 22px; font-weight: 700; color: #d9ccff; }
+ .op .sq-item.active .sq-num { color: var(--ok); }
+ 
+ .op .cam { width: 100%; border-radius: 8px; background: var(--inset); display: block; max-height: 220px; object-fit: contain; }
+ .op .camwrap { position: relative; }
+-.op .camchip { position: absolute; left: 8px; bottom: 8px; font: 11px ui-monospace, Consolas, monospace; background: rgba(10,15,20,.8); color: var(--acc); padding: 2px 6px; border-radius: 6px; }
++.op .camchip { position: absolute; left: 8px; bottom: 8px; font: 11px var(--font-jetbrains, ui-monospace), Consolas, monospace; background: rgba(5,5,7,.8); color: #d9ccff; padding: 2px 6px; border-radius: 6px; }
+ .op .muted { color: var(--dim); font-size: 12px; text-align: center; padding: 10px 0; }
+ 
+ .op .who { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+-.op .av { width: 28px; height: 28px; border-radius: 50%; background: var(--inset); border: 1px solid var(--edge); display: grid; place-items: center; color: var(--acc); font-weight: 700; font-size: 13px; }
++.op .av { width: 28px; height: 28px; border-radius: 50%; background: var(--inset); border: 1px solid var(--edge); display: grid; place-items: center; color: #d9ccff; font-weight: 700; font-size: 13px; }
+ .op .av.driving { border: 2px solid var(--ok); }
+-.op .menu { position: absolute; right: 0; top: 36px; background: var(--card); border: 1px solid var(--edge); border-radius: 10px; padding: 8px; min-width: 200px; z-index: 6; }
+-.op .menu p { font: 12px ui-monospace, Consolas, monospace; color: var(--dim); margin-bottom: 8px; word-break: break-all; }
++.op .menu { position: absolute; right: 0; top: 36px; background: var(--card); border: 1px solid var(--edge); border-radius: 16px; padding: 8px; min-width: 200px; z-index: 6; }
++.op .menu p { font: 12px var(--font-jetbrains, ui-monospace), Consolas, monospace; color: var(--dim); margin-bottom: 8px; word-break: break-all; }
+ 
+-.op .banner { background: var(--card); border: 1px solid var(--edge); border-left: 3px solid var(--dim); border-radius: 12px; padding: 12px 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
++.op .banner { background: var(--card); border: 1px solid var(--edge); border-left: 3px solid var(--dim); border-radius: 16px; padding: 12px 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+ .op .banner.warn { border-left-color: var(--warn); }
+ .op .banner.ok { border-left-color: var(--ok); color: var(--ok); }
+ .op .banner .fill { flex: 1; min-width: 160px; }
+ .op .cbar { height: 3px; background: var(--bar-track); border-radius: 3px; margin-top: 6px; overflow: hidden; }
+-.op .cbar i { display: block; height: 100%; background: var(--acc); }
++.op .cbar i { display: block; height: 100%; background: var(--grad); }
+ .op .cbar.warn i { background: var(--warn); }
+ .op .count.warn { color: var(--warn); background: transparent; }
+ .op .waitline { display: flex; gap: 8px; align-items: baseline; }
+ 
+ .op .prompt {
+   position: static; width: 100%;
+-  background: var(--card); border: 1px solid var(--run); border-radius: 12px; padding: 14px;
++  background: var(--card); border: 1px solid var(--run); border-radius: 16px; padding: 14px;
+ }
+ .op .helpdlg {
+   position: fixed; right: 14px; top: 80px; width: 360px; max-width: calc(100vw - 28px);
+-  background: var(--card); border: 1px solid var(--edge); border-radius: 12px; padding: 14px; z-index: 8;
++  background: var(--card); border: 1px solid var(--edge); border-radius: 16px; padding: 14px; z-index: 8;
+ }
+ .op .helpdlg h3 { font-size: 14px; font-weight: 700; }
+ .op .helpdlg p { color: var(--dim); font-size: 13px; margin: 4px 0 8px; }
+ .op .prompt + .prompt { margin-top: 8px; }
+ .op .prompt h3 { font-size: 14px; font-weight: 700; }
+ .op .prompt p { color: var(--dim); font-size: 13px; margin: 4px 0 8px; }
+-.op .count { font-family: ui-monospace, Consolas, monospace; font-size: 14px; }
++.op .count { font-family: var(--font-jetbrains, ui-monospace), Consolas, monospace; font-size: 14px; }
+ .op .stack { position: fixed; right: 14px; top: 118px; z-index: 8; display: flex; flex-direction: column; gap: 8px; width: 360px; max-width: calc(100vw - 28px); }
+ /* Header plus the status-sign row. The latched bar adds 40px. */
+ .op:has(.op-estop-bar) .stack { top: 158px; }
+ .op .chip { background: var(--inset); color: var(--dim); border-radius: 99px; padding: 2px 8px; font-size: 12px; }
+ 
+ .op .toasts { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 9; }
+-.op .toast { background: var(--card); border: 1px solid var(--edge); border-radius: 12px; padding: 10px 14px; font-size: 13px; }
++.op .toast { background: var(--card); border: 1px solid var(--edge); border-radius: 16px; padding: 10px 14px; font-size: 13px; }
+ 
+ .op .offline { border: 1px solid var(--edge); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; color: var(--dim); font-size: 13px; }
+ .op .err { color: var(--err); font-size: 13px; display: flex; gap: 6px; align-items: flex-start; }
+@@ -219,21 +237,25 @@
+ .op-auth-page { min-height: 100dvh; display: grid; place-items: center; padding: 24px; }
+ .op-auth {
+   width: 400px; max-width: 100%; background: var(--card); border: 1px solid var(--edge);
+-  border-radius: 12px; padding: 28px;
++  border-radius: 16px; padding: 28px;
++  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
++}
++.op-auth h1 {
++  font-family: var(--font-unbounded, system-ui), system-ui, sans-serif;
++  font-size: 1.35rem; letter-spacing: .02em; margin: 10px 0 6px; font-weight: 700;
+ }
+-.op-auth h1 { font-size: 17px; letter-spacing: .4px; margin: 8px 0 4px; }
+ .op-auth .sub { color: var(--dim); font-size: 13px; margin-bottom: 16px; }
+-.op-auth label { display: block; font-size: 13px; margin: 10px 0 4px; }
++.op-auth label { display: block; font-size: 13px; margin: 10px 0 4px; color: var(--dim); }
+ .op-auth input { width: 100%; height: 40px; padding: 0 10px; }
+ .op-auth .field { position: relative; }
+ .op-auth .field input { padding-right: 64px; }
+-.op-auth .field button { position: absolute; right: 8px; top: 8px; background: none; border: 0; color: var(--acc); cursor: pointer; font-size: 12px; }
++.op-auth .field button { position: absolute; right: 8px; top: 8px; background: none; border: 0; color: #d9ccff; cursor: pointer; font-size: 12px; }
+ .op-auth .foot { color: var(--dim); font-size: 12px; margin-top: 16px; }
+ .op-auth .rules { list-style: none; margin: 8px 0; font-size: 13px; color: var(--dim); }
+ .op-auth .rules li.ok { color: var(--ok); }
+ .op-auth .segs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-top: 6px; }
+ .op-auth .segs i { height: 4px; border-radius: 3px; background: var(--bar-track); display: block; }
+-.op-auth .segs i.on { background: var(--acc); }
++.op-auth .segs i.on { background: var(--grad); }
+ .op .pulse { animation: op-pulse .4s ease; }
+ @keyframes op-pulse { from { transform: scale(.98); } to { transform: scale(1); } }
+ 
+-- 
+2.43.0
+
