@@ -1,0 +1,215 @@
+diff --git a/src/components/control/XboxController.tsx b/src/components/control/XboxController.tsx
+index 6d61551..0aa969a 100644
+--- a/src/components/control/XboxController.tsx
++++ b/src/components/control/XboxController.tsx
+@@ -154,33 +154,21 @@ export function XboxController({ open, onClose, canEdit, padLabel, physical, vir
+           ) : null}
+         </div>
+ 
+-        <div className={`xb-body ${canEdit ? '' : 'locked'}`} aria-disabled={!canEdit}>
+-          <div className="xb-triggers">
+-            <button type="button" className={`xb-trig ${lt > 0.1 ? 'on' : ''}`} style={{ ['--p' as string]: `${lt * 100}%` }} onPointerDown={() => setTrigger('LT', 1)} onPointerUp={() => setTrigger('LT', 0)} onPointerLeave={() => setTrigger('LT', 0)}>LT</button>
+-            <button type="button" className={`xb-trig ${rt > 0.1 ? 'on' : ''}`} style={{ ['--p' as string]: `${rt * 100}%` }} onPointerDown={() => setTrigger('RT', 1)} onPointerUp={() => setTrigger('RT', 0)} onPointerLeave={() => setTrigger('RT', 0)}>RT</button>
+-          </div>
+-
+-          <div className="xb-bumpers">
+-            <Face label="LB" on={pressed(BIT.LB)} onDown={() => setBit(BIT.LB, true)} onUp={() => setBit(BIT.LB, false)} wide />
+-            <Face label="RB" on={pressed(BIT.RB)} onDown={() => setBit(BIT.RB, true)} onUp={() => setBit(BIT.RB, false)} wide />
+-          </div>
+-
+-          <div className="xb-core">
+-            <Stick refEl={leftRef} ox={lk.x} oy={lk.y} label="LS" onDown={(e) => onStickDown('L', leftRef.current, e)} onMove={onStickMove} onUp={onStickUp} />
+-            <div className="xb-center">
+-              <Face label="⧉" on={pressed(BIT.View)} onDown={() => setBit(BIT.View, true)} onUp={() => setBit(BIT.View, false)} tiny />
+-              <div className="xb-logo" aria-hidden />
+-              <Face label="☰" on={pressed(BIT.Menu)} onDown={() => setBit(BIT.Menu, true)} onUp={() => setBit(BIT.Menu, false)} tiny />
++        <div className={`xb-body ${variant === 'page' ? 'xb-body-page' : ''} ${canEdit ? '' : 'locked'}`} aria-disabled={!canEdit}>
++          {/* Top shoulders — one row in landscape page mode */}
++          <div className="xb-shoulders">
++            <div className="xb-triggers">
++              <button type="button" className={`xb-trig ${lt > 0.1 ? 'on' : ''}`} style={{ ['--p' as string]: `${lt * 100}%` }} onPointerDown={() => setTrigger('LT', 1)} onPointerUp={() => setTrigger('LT', 0)} onPointerLeave={() => setTrigger('LT', 0)}>LT</button>
++              <button type="button" className={`xb-trig ${rt > 0.1 ? 'on' : ''}`} style={{ ['--p' as string]: `${rt * 100}%` }} onPointerDown={() => setTrigger('RT', 1)} onPointerUp={() => setTrigger('RT', 0)} onPointerLeave={() => setTrigger('RT', 0)}>RT</button>
+             </div>
+-            <div className="xb-face">
+-              <Face label="Y" on={pressed(BIT.Y)} onDown={() => setBit(BIT.Y, true)} onUp={() => setBit(BIT.Y, false)} className="xb-y" />
+-              <Face label="X" on={pressed(BIT.X)} onDown={() => setBit(BIT.X, true)} onUp={() => setBit(BIT.X, false)} className="xb-x" />
+-              <Face label="B" on={pressed(BIT.B)} onDown={() => setBit(BIT.B, true)} onUp={() => setBit(BIT.B, false)} className="xb-b" />
+-              <Face label="A" on={pressed(BIT.A)} onDown={() => setBit(BIT.A, true)} onUp={() => setBit(BIT.A, false)} className="xb-a" />
++            <div className="xb-bumpers">
++              <Face label="LB" on={pressed(BIT.LB)} onDown={() => setBit(BIT.LB, true)} onUp={() => setBit(BIT.LB, false)} wide />
++              <Face label="RB" on={pressed(BIT.RB)} onDown={() => setBit(BIT.RB, true)} onUp={() => setBit(BIT.RB, false)} wide />
+             </div>
+           </div>
+ 
+-          <div className="xb-lower">
++          {/* Main playfield: dpad · LS · mid · face · RS (single row in landscape) */}
++          <div className="xb-play">
+             <Dpad
+               up={(live.a[7] ?? 0) > 0.5}
+               down={(live.a[7] ?? 0) < -0.5}
+@@ -195,6 +183,20 @@ export function XboxController({ open, onClose, canEdit, padLabel, physical, vir
+                 });
+               }}
+             />
++            <Stick refEl={leftRef} ox={lk.x} oy={lk.y} label="LS" onDown={(e) => onStickDown('L', leftRef.current, e)} onMove={onStickMove} onUp={onStickUp} />
++            <div className="xb-mid">
++              <div className="xb-center">
++                <Face label="⧉" on={pressed(BIT.View)} onDown={() => setBit(BIT.View, true)} onUp={() => setBit(BIT.View, false)} tiny />
++                <div className="xb-logo" aria-hidden />
++                <Face label="☰" on={pressed(BIT.Menu)} onDown={() => setBit(BIT.Menu, true)} onUp={() => setBit(BIT.Menu, false)} tiny />
++              </div>
++              <div className="xb-face">
++                <Face label="Y" on={pressed(BIT.Y)} onDown={() => setBit(BIT.Y, true)} onUp={() => setBit(BIT.Y, false)} className="xb-y" />
++                <Face label="X" on={pressed(BIT.X)} onDown={() => setBit(BIT.X, true)} onUp={() => setBit(BIT.X, false)} className="xb-x" />
++                <Face label="B" on={pressed(BIT.B)} onDown={() => setBit(BIT.B, true)} onUp={() => setBit(BIT.B, false)} className="xb-b" />
++                <Face label="A" on={pressed(BIT.A)} onDown={() => setBit(BIT.A, true)} onUp={() => setBit(BIT.A, false)} className="xb-a" />
++              </div>
++            </div>
+             <Stick refEl={rightRef} ox={rk.x} oy={rk.y} label="RS" onDown={(e) => onStickDown('R', rightRef.current, e)} onMove={onStickMove} onUp={onStickUp} />
+           </div>
+         </div>
+diff --git a/src/components/control/dashboard.css b/src/components/control/dashboard.css
+index 84605fb..4806d77 100644
+--- a/src/components/control/dashboard.css
++++ b/src/components/control/dashboard.css
+@@ -280,12 +280,24 @@
+ .xb-page-root {
+   position: relative; z-index: 1;
+   flex: 1; display: grid; place-items: start center;
+-  padding: 8px 12px 24px;
++  padding: 8px 12px 24px; min-height: 0;
+ }
+ .xb-panel.xb-page {
+   width: min(560px, 100%);
+   margin: 0;
+ }
++/* Page-mode body: portrait stacks shoulders then playfield */
++.xb-shoulders { display: flex; flex-direction: column; gap: 10px; }
++.xb-play {
++  display: grid;
++  grid-template-columns: auto 1fr auto 1fr;
++  grid-template-areas: "dpad stickL mid stickR";
++  gap: 12px; align-items: center; justify-items: center;
++}
++.xb-play .xb-dpad { grid-area: dpad; }
++.xb-play .xb-stick:first-of-type { grid-area: stickL; }
++.xb-play .xb-mid { grid-area: mid; display: flex; flex-direction: column; align-items: center; gap: 10px; }
++.xb-play .xb-stick:last-of-type { grid-area: stickR; }
+ 
+ .op-pair {
+   display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+@@ -562,6 +574,7 @@
+ .xb-status { color: var(--dim); font-size: 12px; margin-top: 4px; }
+ .xb-body { display: flex; flex-direction: column; gap: 10px; user-select: none; touch-action: none; }
+ .xb-triggers, .xb-bumpers { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
++.xb-mid { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+ .xb-trig {
+   height: 28px; border-radius: 10px 10px 6px 6px; border: 1px solid var(--edge);
+   background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
+@@ -635,10 +648,102 @@
+ .xb-d-mid { border-radius: 4px; background: rgba(255,255,255,0.04); border: 1px solid var(--edge-soft); }
+ .xb-hint { color: var(--dim); font-size: 11px; margin-top: 12px; text-align: center; }
+ 
+-@media (max-width: 560px) {
+-  .xb-core { grid-template-columns: 1fr; justify-items: center; }
+-  .xb-face { justify-self: center; }
+-  .xb-lower { flex-direction: column; }
++@media (max-width: 560px) and (orientation: portrait) {
++  .xb-play {
++    grid-template-columns: 1fr;
++    grid-template-areas:
++      "stickL"
++      "mid"
++      "dpad"
++      "stickR";
++    justify-items: center;
++  }
++}
++
++/*
++ * Complete controller must fit in one phone landscape window — no scroll.
++ * Typical phone landscape ~667–932 × 320–430; keep chrome tiny and playfield one row.
++ */
++@media (orientation: landscape) and (max-height: 520px) {
++  html:has(.op-pad-page),
++  body.op-pad-page {
++    height: 100%; max-height: 100dvh; overflow: hidden;
++  }
++  .op-pad-page {
++    height: 100dvh; max-height: 100dvh; min-height: 0;
++    overflow: hidden; box-sizing: border-box;
++  }
++  .op-pad-page .op-bg { opacity: 0.35; }
++  .op-pad-note,
++  .xb-page .xb-hint,
++  .xb-page .xb-status { display: none; }
++  .op-pad-head {
++    flex-wrap: nowrap; gap: 6px; align-items: center;
++    padding: 2px 8px; min-height: 32px;
++  }
++  .op-pad-head.op-header { /* override sticky chrome */ position: relative; }
++  .op-pad-head h1 { font-size: 12px; gap: 4px; }
++  .op-pad-head .op-bot-label { display: none; }
++  .op-pad-head .op-home { padding: 2px 8px; font-size: 11px; }
++  .op-pad-head .op-switch button { padding: 2px 8px; font-size: 10px; height: 26px; }
++  .op-pad-head .op-grow { gap: 6px; flex-wrap: nowrap; }
++  .op-pad-head .pill { height: 22px; font-size: 10px; padding: 2px 8px; }
++  .op-pad-head .btn { padding: 4px 10px; font-size: 11px; }
++  .op-pad-head .btn.ghost { padding: 4px 8px; }
++  .op-pad-head .op-estop {
++    height: 28px; min-width: 72px; padding: 0 10px; font-size: 11px;
++  }
++  .xb-page-root {
++    flex: 1; min-height: 0; padding: 2px 8px 4px;
++    display: flex; align-items: stretch; justify-content: center;
++    overflow: hidden;
++  }
++  .xb-panel.xb-page {
++    width: 100%; max-width: none;
++    flex: 1; min-height: 0; height: auto; max-height: 100%;
++    margin: 0; padding: 2px 8px 4px;
++    border-radius: 12px; display: flex; flex-direction: column;
++    overflow: hidden; box-sizing: border-box;
++  }
++  .xb-page .xb-head { margin-bottom: 0; flex: none; }
++  .xb-page .xb-head h3 { font-size: 10px; letter-spacing: 0.08em; }
++  .xb-page .xb-body {
++    flex: 1; min-height: 0; gap: 2px;
++    display: flex; flex-direction: column;
++  }
++  .xb-page .xb-shoulders {
++    flex: none; flex-direction: row; gap: 8px;
++  }
++  .xb-page .xb-shoulders .xb-triggers,
++  .xb-page .xb-shoulders .xb-bumpers {
++    flex: 1; grid-template-columns: 1fr 1fr; gap: 6px;
++  }
++  .xb-page .xb-trig { height: 22px; border-radius: 8px 8px 4px 4px; font-size: 9px; }
++  .xb-page .xb-btn.wide { width: 100%; height: 24px; border-radius: 8px; font-size: 9px; }
++  .xb-page .xb-play {
++    flex: 1; min-height: 0;
++    grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr);
++    grid-template-areas: "dpad stickL mid stickR";
++    gap: 8px; align-items: center;
++  }
++  .xb-page .xb-mid { flex-direction: row; gap: 10px; align-items: center; }
++  .xb-page .xb-stick {
++    width: min(88px, 20vw, 26vh); height: min(88px, 20vw, 26vh);
++  }
++  .xb-page .xb-stick i {
++    /* Keep left/top 50% + negative margin centering so inline translate(ox,oy) still works */
++    width: 34%; height: 34%;
++    margin-left: -17%; margin-top: -17%;
++  }
++  .xb-page .xb-face {
++    grid-template-columns: 30px 30px 30px; grid-template-rows: 30px 30px 30px; gap: 2px;
++  }
++  .xb-page .xb-btn { width: 30px; height: 30px; font-size: 10px; }
++  .xb-page .xb-btn.tiny { width: 24px; height: 24px; font-size: 11px; }
++  .xb-page .xb-logo { width: 22px; height: 22px; }
++  .xb-page .xb-dpad {
++    grid-template-columns: 28px 28px 28px; grid-template-rows: 28px 28px 28px;
++  }
+ }
+ .op-auth h1 {
+   font-family: var(--font-unbounded, system-ui), system-ui, sans-serif;
