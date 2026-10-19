@@ -1,0 +1,56 @@
+\usepackage[margin=0.95in]{geometry}
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs,tabularx,longtable,array,multirow}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{listings}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,calc}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{navy}{HTML}{1B3A4B}
+\definecolor{teal}{HTML}{0E6B66}
+\definecolor{tealfaint}{HTML}{E5F3F1}
+\definecolor{gold}{HTML}{A56B10}
+\definecolor{goldfaint}{HTML}{FBF3E0}
+\definecolor{brick}{HTML}{8E3A3A}
+\definecolor{brickfaint}{HTML}{F8E8E6}
+\definecolor{leaf}{HTML}{2F6F4E}
+\definecolor{leaffaint}{HTML}{E5F2EA}
+\definecolor{slate}{HTML}{5E6A75}
+\definecolor{linec}{HTML}{243140}
+\definecolor{paper}{HTML}{F7F4EF}
+\definecolor{unk}{HTML}{E4E1DA}
+\definecolor{freec}{HTML}{F7F7F5}
+\definecolor{occ}{HTML}{2C333A}
+\definecolor{enc}{HTML}{C45C4A}
+\definecolor{frcell}{HTML}{2A9D8F}
+\definecolor{codebg}{HTML}{F4F1EA}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{linec},
+  breaklines=true,
+  columns=fullflexible,
+  keepspaces=true,
+  xleftmargin=1em,
+  framexleftmargin=0.6em
+}
+
+\setlist[itemize]{leftmargin=1.2em, itemsep=0.2em, topsep=0.35em}
+\setlist[enumerate]{leftmargin=1.4em, itemsep=0.25em, topsep=0.35em}
+\captionsetup{font=small, labelfont=bf, skip=6pt}
+\setlength{\parskip}{0.35em}
+\setlength{\parindent}{1.15em}
+\setlength{\emergencystretch}{2em}
+\renewcommand{\arraystretch}{1.15}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\commit}[1]{\texttt{#1}}
