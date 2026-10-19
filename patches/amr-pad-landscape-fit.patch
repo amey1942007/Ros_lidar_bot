@@ -1,8 +1,8 @@
 diff --git a/src/components/control/XboxController.tsx b/src/components/control/XboxController.tsx
-index 6d61551..0bc507d 100644
+index 6d61551..283bb4b 100644
 --- a/src/components/control/XboxController.tsx
 +++ b/src/components/control/XboxController.tsx
-@@ -154,33 +154,14 @@ export function XboxController({ open, onClose, canEdit, padLabel, physical, vir
+@@ -154,53 +154,90 @@ export function XboxController({ open, onClose, canEdit, padLabel, physical, vir
            ) : null}
          </div>
  
@@ -10,56 +10,16 @@ index 6d61551..0bc507d 100644
 -          <div className="xb-triggers">
 -            <button type="button" className={`xb-trig ${lt > 0.1 ? 'on' : ''}`} style={{ ['--p' as string]: `${lt * 100}%` }} onPointerDown={() => setTrigger('LT', 1)} onPointerUp={() => setTrigger('LT', 0)} onPointerLeave={() => setTrigger('LT', 0)}>LT</button>
 -            <button type="button" className={`xb-trig ${rt > 0.1 ? 'on' : ''}`} style={{ ['--p' as string]: `${rt * 100}%` }} onPointerDown={() => setTrigger('RT', 1)} onPointerUp={() => setTrigger('RT', 0)} onPointerLeave={() => setTrigger('RT', 0)}>RT</button>
--          </div>
--
--          <div className="xb-bumpers">
--            <Face label="LB" on={pressed(BIT.LB)} onDown={() => setBit(BIT.LB, true)} onUp={() => setBit(BIT.LB, false)} wide />
--            <Face label="RB" on={pressed(BIT.RB)} onDown={() => setBit(BIT.RB, true)} onUp={() => setBit(BIT.RB, false)} wide />
--          </div>
--
--          <div className="xb-core">
--            <Stick refEl={leftRef} ox={lk.x} oy={lk.y} label="LS" onDown={(e) => onStickDown('L', leftRef.current, e)} onMove={onStickMove} onUp={onStickUp} />
--            <div className="xb-center">
--              <Face label="⧉" on={pressed(BIT.View)} onDown={() => setBit(BIT.View, true)} onUp={() => setBit(BIT.View, false)} tiny />
--              <div className="xb-logo" aria-hidden />
--              <Face label="☰" on={pressed(BIT.Menu)} onDown={() => setBit(BIT.Menu, true)} onUp={() => setBit(BIT.Menu, false)} tiny />
--            </div>
--            <div className="xb-face">
--              <Face label="Y" on={pressed(BIT.Y)} onDown={() => setBit(BIT.Y, true)} onUp={() => setBit(BIT.Y, false)} className="xb-y" />
--              <Face label="X" on={pressed(BIT.X)} onDown={() => setBit(BIT.X, true)} onUp={() => setBit(BIT.X, false)} className="xb-x" />
--              <Face label="B" on={pressed(BIT.B)} onDown={() => setBit(BIT.B, true)} onUp={() => setBit(BIT.B, false)} className="xb-b" />
--              <Face label="A" on={pressed(BIT.A)} onDown={() => setBit(BIT.A, true)} onUp={() => setBit(BIT.A, false)} className="xb-a" />
--            </div>
--          </div>
--
--          <div className="xb-lower">
 +        {/*
-+          Wireframe landscape layout:
-+            Left  — D-pad, LS, RS (stacked)
-+            Center — View · Logo · Menu (vertical)
-+            Right — LT/LB (−Spd/−Ang), face diamond, RT/RB (+Spd/+Ang)
++          Corrected landscape wireframe (un-rotated):
++            Top   — LT/LB (−Spd/−Ang) …… RT/RB (+Spd/+Ang)
++            Left  — LS above D-pad
++            Center — View · Logo · Menu (horizontal)
++            Right — face diamond above RS
 +        */}
 +        <div className={`xb-body xb-wire ${variant === 'page' ? 'xb-body-page' : ''} ${canEdit ? '' : 'locked'}`} aria-disabled={!canEdit}>
-+          <div className="xb-col xb-col-left">
-             <Dpad
-               up={(live.a[7] ?? 0) > 0.5}
-               down={(live.a[7] ?? 0) < -0.5}
-@@ -195,12 +176,62 @@ export function XboxController({ open, onClose, canEdit, padLabel, physical, vir
-                 });
-               }}
-             />
-+            <Stick refEl={leftRef} ox={lk.x} oy={lk.y} label="LS" onDown={(e) => onStickDown('L', leftRef.current, e)} onMove={onStickMove} onUp={onStickUp} />
-             <Stick refEl={rightRef} ox={rk.x} oy={rk.y} label="RS" onDown={(e) => onStickDown('R', rightRef.current, e)} onMove={onStickMove} onUp={onStickUp} />
-           </div>
-+
-+          <div className="xb-col xb-col-mid" aria-label="System">
-+            <Face label="⧉" on={pressed(BIT.View)} onDown={() => setBit(BIT.View, true)} onUp={() => setBit(BIT.View, false)} tiny />
-+            <div className="xb-logo" aria-hidden />
-+            <Face label="☰" on={pressed(BIT.Menu)} onDown={() => setBit(BIT.Menu, true)} onUp={() => setBit(BIT.Menu, false)} tiny />
-+          </div>
-+
-+          <div className="xb-col xb-col-right">
-+            <div className="xb-adj-stack">
++          <div className="xb-shoulders">
++            <div className="xb-adj-stack xb-adj-left">
 +              <Adj
 +                code="LT"
 +                lab="− Spd"
@@ -76,13 +36,7 @@ index 6d61551..0bc507d 100644
 +                onUp={() => setBit(BIT.LB, false)}
 +              />
 +            </div>
-+            <div className="xb-face">
-+              <Face label="Y" on={pressed(BIT.Y)} onDown={() => setBit(BIT.Y, true)} onUp={() => setBit(BIT.Y, false)} className="xb-y" />
-+              <Face label="X" on={pressed(BIT.X)} onDown={() => setBit(BIT.X, true)} onUp={() => setBit(BIT.X, false)} className="xb-x" />
-+              <Face label="B" on={pressed(BIT.B)} onDown={() => setBit(BIT.B, true)} onUp={() => setBit(BIT.B, false)} className="xb-b" />
-+              <Face label="A" on={pressed(BIT.A)} onDown={() => setBit(BIT.A, true)} onUp={() => setBit(BIT.A, false)} className="xb-a" />
-+            </div>
-+            <div className="xb-adj-stack">
++            <div className="xb-adj-stack xb-adj-right">
 +              <Adj
 +                code="RT"
 +                lab="+ Spd"
@@ -99,7 +53,73 @@ index 6d61551..0bc507d 100644
 +                onUp={() => setBit(BIT.RB, false)}
 +              />
 +            </div>
-+          </div>
+           </div>
+ 
+-          <div className="xb-bumpers">
+-            <Face label="LB" on={pressed(BIT.LB)} onDown={() => setBit(BIT.LB, true)} onUp={() => setBit(BIT.LB, false)} wide />
+-            <Face label="RB" on={pressed(BIT.RB)} onDown={() => setBit(BIT.RB, true)} onUp={() => setBit(BIT.RB, false)} wide />
+-          </div>
++          <div className="xb-play">
++            <div className="xb-col xb-col-left">
++              <Stick refEl={leftRef} ox={lk.x} oy={lk.y} label="LS" onDown={(e) => onStickDown('L', leftRef.current, e)} onMove={onStickMove} onUp={onStickUp} />
++              <Dpad
++                up={(live.a[7] ?? 0) > 0.5}
++                down={(live.a[7] ?? 0) < -0.5}
++                left={(live.a[6] ?? 0) > 0.5}
++                right={(live.a[6] ?? 0) < -0.5}
++                on={(dir, on) => {
++                  patchAxes((a) => {
++                    if (dir === 'up') a[7] = on ? 1 : 0;
++                    if (dir === 'down') a[7] = on ? -1 : 0;
++                    if (dir === 'left') a[6] = on ? 1 : 0;
++                    if (dir === 'right') a[6] = on ? -1 : 0;
++                  });
++                }}
++              />
++            </div>
+ 
+-          <div className="xb-core">
+-            <Stick refEl={leftRef} ox={lk.x} oy={lk.y} label="LS" onDown={(e) => onStickDown('L', leftRef.current, e)} onMove={onStickMove} onUp={onStickUp} />
+-            <div className="xb-center">
++            <div className="xb-col xb-col-mid" aria-label="System">
+               <Face label="⧉" on={pressed(BIT.View)} onDown={() => setBit(BIT.View, true)} onUp={() => setBit(BIT.View, false)} tiny />
+               <div className="xb-logo" aria-hidden />
+               <Face label="☰" on={pressed(BIT.Menu)} onDown={() => setBit(BIT.Menu, true)} onUp={() => setBit(BIT.Menu, false)} tiny />
+             </div>
+-            <div className="xb-face">
+-              <Face label="Y" on={pressed(BIT.Y)} onDown={() => setBit(BIT.Y, true)} onUp={() => setBit(BIT.Y, false)} className="xb-y" />
+-              <Face label="X" on={pressed(BIT.X)} onDown={() => setBit(BIT.X, true)} onUp={() => setBit(BIT.X, false)} className="xb-x" />
+-              <Face label="B" on={pressed(BIT.B)} onDown={() => setBit(BIT.B, true)} onUp={() => setBit(BIT.B, false)} className="xb-b" />
+-              <Face label="A" on={pressed(BIT.A)} onDown={() => setBit(BIT.A, true)} onUp={() => setBit(BIT.A, false)} className="xb-a" />
+-            </div>
+-          </div>
+ 
+-          <div className="xb-lower">
+-            <Dpad
+-              up={(live.a[7] ?? 0) > 0.5}
+-              down={(live.a[7] ?? 0) < -0.5}
+-              left={(live.a[6] ?? 0) > 0.5}
+-              right={(live.a[6] ?? 0) < -0.5}
+-              on={(dir, on) => {
+-                patchAxes((a) => {
+-                  if (dir === 'up') a[7] = on ? 1 : 0;
+-                  if (dir === 'down') a[7] = on ? -1 : 0;
+-                  if (dir === 'left') a[6] = on ? 1 : 0;
+-                  if (dir === 'right') a[6] = on ? -1 : 0;
+-                });
+-              }}
+-            />
+-            <Stick refEl={rightRef} ox={rk.x} oy={rk.y} label="RS" onDown={(e) => onStickDown('R', rightRef.current, e)} onMove={onStickMove} onUp={onStickUp} />
++            <div className="xb-col xb-col-right">
++              <div className="xb-face">
++                <Face label="Y" on={pressed(BIT.Y)} onDown={() => setBit(BIT.Y, true)} onUp={() => setBit(BIT.Y, false)} className="xb-y" />
++                <Face label="X" on={pressed(BIT.X)} onDown={() => setBit(BIT.X, true)} onUp={() => setBit(BIT.X, false)} className="xb-x" />
++                <Face label="B" on={pressed(BIT.B)} onDown={() => setBit(BIT.B, true)} onUp={() => setBit(BIT.B, false)} className="xb-b" />
++                <Face label="A" on={pressed(BIT.A)} onDown={() => setBit(BIT.A, true)} onUp={() => setBit(BIT.A, false)} className="xb-a" />
++              </div>
++              <Stick refEl={rightRef} ox={rk.x} oy={rk.y} label="RS" onDown={(e) => onStickDown('R', rightRef.current, e)} onMove={onStickMove} onUp={onStickUp} />
++            </div>
+           </div>
          </div>
  
          <p className="xb-hint">
@@ -108,7 +128,7 @@ index 6d61551..0bc507d 100644
          </p>
        </div>
    );
-@@ -234,6 +265,29 @@ function Face({
+@@ -234,6 +271,29 @@ function Face({
    );
  }
  
@@ -139,10 +159,10 @@ index 6d61551..0bc507d 100644
    refEl, ox, oy, label, onDown, onMove, onUp,
  }: {
 diff --git a/src/components/control/dashboard.css b/src/components/control/dashboard.css
-index 84605fb..50a0afd 100644
+index 84605fb..8b75283 100644
 --- a/src/components/control/dashboard.css
 +++ b/src/components/control/dashboard.css
-@@ -280,12 +280,60 @@
+@@ -280,12 +280,72 @@
  .xb-page-root {
    position: relative; z-index: 1;
    flex: 1; display: grid; place-items: start center;
@@ -157,28 +177,41 @@ index 84605fb..50a0afd 100644
 +}
 +.xb-page .xb-wire { flex: 1; min-height: 0; }
 +/*
-+ * Wireframe pad (landscape phone):
-+ *   left  = D-pad + LS + RS stacked
-+ *   mid   = View / Logo / Menu vertical
-+ *   right = LT/LB (−Spd/−Ang) · face · RT/RB (+Spd/+Ang)
++ * Corrected landscape wireframe (Xbox-like):
++ *   top   = LT/LB (−Spd/−Ang) …… RT/RB (+Spd/+Ang)
++ *   left  = LS above D-pad
++ *   mid   = View · Logo · Menu (horizontal)
++ *   right = face above RS
 + */
 +.xb-wire {
-+  display: grid;
-+  grid-template-columns: minmax(0, 1.1fr) auto minmax(0, 1.2fr);
-+  gap: 12px 16px;
-+  align-items: stretch;
++  display: flex; flex-direction: column; gap: 10px;
 +  min-height: 0;
++}
++.xb-shoulders {
++  display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
++  flex: none;
++}
++.xb-adj-stack {
++  display: flex; flex-direction: column; gap: 6px; width: 100%;
+ }
++.xb-adj-left .xb-adj { flex-direction: row; }
++.xb-adj-right .xb-adj { flex-direction: row-reverse; text-align: right; }
++.xb-play {
++  flex: 1; min-height: 0;
++  display: grid;
++  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
++  gap: 12px 16px;
++  align-items: center;
 +}
 +.xb-col {
 +  display: flex; flex-direction: column; align-items: center;
-+  justify-content: space-between; gap: 8px; min-height: 0;
++  justify-content: space-evenly; gap: 10px; min-height: 0; height: 100%;
 +}
-+.xb-col-left { justify-content: space-evenly; }
-+.xb-col-mid { justify-content: center; gap: 14px; padding: 4px 0; }
-+.xb-col-right { align-items: stretch; justify-content: space-between; }
-+.xb-adj-stack {
-+  display: flex; flex-direction: column; gap: 6px; width: 100%;
++.xb-col-mid {
++  flex-direction: row; justify-content: center; gap: 12px;
++  align-self: center; height: auto; padding: 0 4px;
 +}
++.xb-col-right { justify-content: space-evenly; }
 +.xb-adj {
 +  display: flex; align-items: center; justify-content: space-between; gap: 8px;
 +  width: 100%; min-height: 34px; padding: 6px 10px;
@@ -198,14 +231,13 @@ index 84605fb..50a0afd 100644
 +.xb-adj-lab {
 +  position: relative; z-index: 1;
 +  font-size: 12px; font-weight: 600; color: var(--dim); white-space: nowrap;
- }
++}
 +.xb-adj.on { border-color: rgba(185, 120, 255, 0.55); }
 +.xb-adj.on .xb-adj-lab { color: #fff; }
-+.xb-col-right .xb-face { align-self: center; margin: 4px 0; }
  
  .op-pair {
    display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
-@@ -549,7 +597,7 @@
+@@ -549,7 +609,7 @@
  }
  .xb-panel {
    position: relative; overflow: hidden;
@@ -214,7 +246,7 @@ index 84605fb..50a0afd 100644
    border-radius: 20px;
    padding: 14px 16px 16px;
    margin-bottom: 8px;
-@@ -560,32 +608,16 @@
+@@ -560,32 +620,16 @@
    font-size: 14px; letter-spacing: 0.06em; text-transform: uppercase; margin: 0;
  }
  .xb-status { color: var(--dim); font-size: 12px; margin-top: 4px; }
@@ -250,7 +282,7 @@ index 84605fb..50a0afd 100644
  }
  .xb-y { grid-area: y; } .xb-x { grid-area: x; } .xb-b { grid-area: b; } .xb-a { grid-area: a; }
  .xb-btn {
-@@ -604,12 +636,12 @@
+@@ -604,12 +648,12 @@
  .xb-x.on, .xb-x:active { background: #4fc3f7; color: #050507; box-shadow: 0 0 14px rgba(79,195,247,.4); }
  .xb-y.on, .xb-y:active { background: #ffb74d; color: #050507; box-shadow: 0 0 14px rgba(255,183,77,.4); }
  .xb-stick {
@@ -265,7 +297,7 @@ index 84605fb..50a0afd 100644
  }
  .xb-stick:active { cursor: grabbing; }
  .xb-stick i {
-@@ -635,10 +667,98 @@
+@@ -635,10 +679,100 @@
  .xb-d-mid { border-radius: 4px; background: rgba(255,255,255,0.04); border: 1px solid var(--edge-soft); }
  .xb-hint { color: var(--dim); font-size: 11px; margin-top: 12px; text-align: center; }
  
@@ -273,12 +305,11 @@ index 84605fb..50a0afd 100644
 -  .xb-core { grid-template-columns: 1fr; justify-items: center; }
 -  .xb-face { justify-self: center; }
 -  .xb-lower { flex-direction: column; }
-+/* Portrait: keep three columns but compress sticks so the pad still fits. */
++/* Portrait: compress so the full pad still fits. */
 +@media (max-width: 560px) and (orientation: portrait) {
-+  .xb-wire {
-+    grid-template-columns: 1fr auto 1fr;
-+    gap: 8px;
-+  }
++  .xb-wire { gap: 8px; }
++  .xb-shoulders { gap: 8px; }
++  .xb-play { gap: 8px; }
 +  .xb-stick { width: 72px; height: 72px; }
 +  .xb-stick i { width: 28px; height: 28px; margin: -14px 0 0 -14px; }
 +  .xb-adj { min-height: 30px; padding: 4px 8px; }
@@ -287,11 +318,12 @@ index 84605fb..50a0afd 100644
 +    grid-template-columns: 32px 32px 32px; grid-template-rows: 32px 32px 32px;
 +  }
 +  .xb-btn { width: 32px; height: 32px; }
++  .xb-col-mid { gap: 8px; }
 +}
 +
 +/*
 + * Complete controller must fit in one phone landscape window — no scroll.
-+ * Layout matches the operator wireframe (left sticks, mid system, right adj+face).
++ * Corrected wireframe: shoulders top L/R, LS+dpad left, system mid, face+RS right.
 + */
 +@media (orientation: landscape) and (max-height: 520px) {
 +  html:has(.op-pad-page),
@@ -337,14 +369,22 @@ index 84605fb..50a0afd 100644
 +  .xb-page .xb-head { margin-bottom: 0; flex: none; }
 +  .xb-page .xb-head h3 { font-size: 10px; letter-spacing: 0.08em; }
 +  .xb-page .xb-wire {
-+    flex: 1; min-height: 0;
-+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.15fr);
-+    gap: 6px 12px;
++    flex: 1; min-height: 0; gap: 4px;
 +  }
-+  .xb-page .xb-col { gap: 4px; }
-+  .xb-page .xb-col-mid { gap: 10px; }
++  .xb-page .xb-shoulders { gap: 10px; }
++  .xb-page .xb-adj-stack { gap: 3px; }
++  .xb-page .xb-adj {
++    min-height: 24px; padding: 3px 8px; border-radius: 8px;
++  }
++  .xb-page .xb-adj-code { font-size: 10px; }
++  .xb-page .xb-adj-lab { font-size: 11px; }
++  .xb-page .xb-play {
++    gap: 8px 14px;
++  }
++  .xb-page .xb-col { gap: 6px; }
++  .xb-page .xb-col-mid { gap: 10px; flex-direction: row; }
 +  .xb-page .xb-stick {
-+    width: min(78px, 18vw, 24vh); height: min(78px, 18vw, 24vh);
++    width: min(78px, 18vw, 28vh); height: min(78px, 18vw, 28vh);
 +  }
 +  .xb-page .xb-stick i {
 +    width: 34%; height: 34%;
@@ -353,12 +393,6 @@ index 84605fb..50a0afd 100644
 +  .xb-page .xb-dpad {
 +    grid-template-columns: 26px 26px 26px; grid-template-rows: 26px 26px 26px;
 +  }
-+  .xb-page .xb-adj {
-+    min-height: 28px; padding: 4px 8px; border-radius: 8px;
-+  }
-+  .xb-page .xb-adj-code { font-size: 10px; }
-+  .xb-page .xb-adj-lab { font-size: 11px; }
-+  .xb-page .xb-adj-stack { gap: 4px; }
 +  .xb-page .xb-face {
 +    grid-template-columns: 30px 30px 30px; grid-template-rows: 30px 30px 30px; gap: 2px;
 +  }

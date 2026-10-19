@@ -6,7 +6,7 @@ This Cloud Agent cannot push to `amey1942007/AMR`. Apply these on that repo.
 
 **File:** `amr-pad-landscape-fit.patch`
 
-Complete controller (`/control/pad/`) fits in **one phone landscape window** with no scroll — wireframe layout: left D-pad+LS+RS, center View/Logo/Menu, right LT/LB (−Spd/−Ang) · face · RT/RB (+Spd/+Ang).
+Complete controller (`/control/pad/`) fits in **one phone landscape window** with no scroll — wireframe layout (un-rotated): LT/LB + RT/RB on top, LS above D-pad left, View/Logo/Menu center, face above RS right.
 
 ```powershell
 cd D:\AMR
