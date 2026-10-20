@@ -1,0 +1,118 @@
+diff --git a/.env.example b/.env.example
+index 83abba4..f0c8b2c 100644
+--- a/.env.example
++++ b/.env.example
+@@ -11,7 +11,8 @@ NEXT_PUBLIC_BASE_PATH=
+ NEXT_PUBLIC_CONTROL_PANEL_URL=          # empty → /sign-in/ → /control/ when auth is live
+ # Private Realtime topics. Leave UNSET until cut-over. 1|true|on|yes → bot:<id>:status|:ctl|:cmd and user:<uid>:notify.
+ # Unset (default) keeps the public amr-bot-* channel the current Pi bridge uses. See docs/private-control.md.
+-NEXT_PUBLIC_PRIVATE_CONTROL=
++# Production Pages sets 1. Required when the Pi has AMR_PUBLIC_CHANNEL=0.
++NEXT_PUBLIC_PRIVATE_CONTROL=1
+ # Pi bridge (amr-bridge/) uses AMR_* vars on the robot — never put the service role in NEXT_PUBLIC_*
+ 
+ # Auth (login-spec §1.6–1.7). Default: supabase if URL+key exist, else none in production / mock in dev.
+diff --git a/.github/workflows/pages.yml b/.github/workflows/pages.yml
+index 2ad1fee..0b9a80b 100644
+--- a/.github/workflows/pages.yml
++++ b/.github/workflows/pages.yml
+@@ -37,6 +37,8 @@ jobs:
+           NEXT_PUBLIC_CONTACT_ADAPTER: supabase
+           NEXT_PUBLIC_CONTACT_ENDPOINT: ${{ vars.NEXT_PUBLIC_CONTACT_ENDPOINT }}
+           NEXT_PUBLIC_CONTROL_PANEL_URL: ${{ vars.NEXT_PUBLIC_CONTROL_PANEL_URL }}
++          # Pi bridge uses AMR_PUBLIC_CHANNEL=0; commands must go on bot:<id>:cmd.
++          NEXT_PUBLIC_PRIVATE_CONTROL: "1"
+       - name: Stamp out/
+         run: |
+           touch out/.nojekyll
+diff --git a/README.md b/README.md
+index 2d18044..c537013 100644
+--- a/README.md
++++ b/README.md
+@@ -48,7 +48,7 @@ Production Pages builds bake in the project URL + **publishable** key (safe for
+ | Contact form | `public.contact_submissions` (anon insert-only) |
+ | Simulation video | `public.site_videos` row `id = 'simulation'`; set `youtube_id` / `vimeo_id` / file `sources`, then `published = true` |
+ 
+-**Control panel flow:** nav **Control panel** → `/sign-in/` (email + password; `/login/` is the same page) → `/control/` (instrument dashboard for both bots). Invite and recovery links land on `/set-password`. Hosted on **amrslam.tech/control**. Dashboard → **Authentication → URL configuration**: Site URL `https://amrslam.tech`, redirect allow `https://amrslam.tech/**`. Paste `docs/operator-invite-email.html` into the invite and recovery templates. The flag `NEXT_PUBLIC_PRIVATE_CONTROL` stays unset so the live site keeps the public `amr-bot-*` channel until cut-over; see `docs/private-control.md`.
++**Control panel flow:** nav **Control panel** → `/sign-in/` (email + password; `/login/` is the same page) → `/control/` (instrument dashboard for both bots). Invite and recovery links land on `/set-password`. Hosted on **amrslam.tech/control**. Dashboard → **Authentication → URL configuration**: Site URL `https://amrslam.tech`, redirect allow `https://amrslam.tech/**`. Paste `docs/operator-invite-email.html` into the invite and recovery templates. The flag `NEXT_PUBLIC_PRIVATE_CONTROL=1` is set in the Pages build so drive/nav use private `bot:<id>:cmd` (matches `AMR_PUBLIC_CHANNEL=0` on the Pi); see `docs/private-control.md`.
+ 
+ **Remote ops (amr-bridge):** operator profiles are in `supabase/migrations/20261015131105_operator_profiles_and_bots.sql`. Run `amr-bridge/` on each Pi (Tailscale + optional Cloudflare Tunnel for camera). See `amr-bridge/README.md`. Who may drive is the control lease (`join_bot` / `bot_heartbeat`), not `authority_rank`.
+ 
+diff --git a/amr-bridge/AGENT_SETUP_AND_INTEGRATION.md b/amr-bridge/AGENT_SETUP_AND_INTEGRATION.md
+index 5009d58..e8c5406 100644
+--- a/amr-bridge/AGENT_SETUP_AND_INTEGRATION.md
++++ b/amr-bridge/AGENT_SETUP_AND_INTEGRATION.md
+@@ -319,7 +319,7 @@ running so `/joy` is published at 30 Hz into the existing teleop stack.
+ 
+ Agents integrating the **robot** should not change these unless explicitly asked.
+ 
+-The website sign-in is email + password (`/sign-in`, `/set-password`). The `operator-auth` edge function source has been removed from this repo and must not be redeployed; the site does not call it and does not use Presence. `NEXT_PUBLIC_PRIVATE_CONTROL` is off by default, so the live site still subscribes to the public channels below. The private topics (`bot:<id>:status`, `:ctl`, `:cmd`, `user:<uid>:notify`) are implemented but not the cut-over. See `docs/private-control.md` in the website repo. This bridge still requires `from.rank` ≥ 1 on commands other than `set_rate`; the website no longer sends a rank.
++The website sign-in is email + password (`/sign-in`, `/set-password`). The `operator-auth` edge function source has been removed from this repo and must not be redeployed; the site does not call it and does not use Presence. Production sets `NEXT_PUBLIC_PRIVATE_CONTROL=1` so drive/nav use private `bot:<id>:cmd` (Pi keeps `AMR_PUBLIC_CHANNEL=0`). See `docs/private-control.md` in the website repo. Public-path commands still require `from.rank` ≥ 1; the website no longer sends a rank on that path.
+ 
+ - Channels: `amr-bot-amr4`, `amr-bot-hardware-bot`
+ - Events: `telemetry`, `map`, `hb`, `log`, `command`
+diff --git a/docs/private-control.md b/docs/private-control.md
+index fa8668d..02897d6 100644
+--- a/docs/private-control.md
++++ b/docs/private-control.md
+@@ -11,7 +11,7 @@ Operator sign-in is email and password. Driving rights come from the control lea
+ | unset, `0`, `false`, `off`, anything else | Public channel `amr-bot-<id>` (events `telemetry`, `map`, `log`, `hb`, `command`). This is the default so the live site keeps working with the current Pi bridge. |
+ | `1`, `true`, `on`, `yes` | Private topics `bot:<id>:status`, `bot:<id>:ctl`, `bot:<id>:cmd`, and `user:<uid>:notify`. |
+ 
+-Do not set the flag in the production Pages build until Review & Debugger OKs the cut-over and the bridge is subscribed to the private topics. The lease RPCs run in both modes. The control token is sent only on the private `:cmd` topic. The public `command` broadcast never includes it.
++Production Pages sets `NEXT_PUBLIC_PRIVATE_CONTROL=1` because the Pi bridge keeps `AMR_PUBLIC_CHANNEL=0` and only accepts drive/nav on private `:cmd`. Leave the flag unset only for local public-path checks. The lease RPCs run in both modes. The control token is sent only on the private `:cmd` topic. The public `command` broadcast never includes it.
+ 
+ The project Realtime setup has no message partitions, so a database push on `:ctl`, `:cmdq`, or `user:<uid>:notify` is dropped. The panel does not depend on those. Control state comes from `bot_heartbeat` (every 5 seconds, every 2 seconds while a request is pending). With the flag on, every command type — including discrete ones such as `nav_goal` and `run_tool` — is a client broadcast on `bot:<id>:cmd`, carrying the lease token and the shared time-based `seq`. The `:cmd` channel is created with `broadcast.ack` so the server confirms it accepted the frame. That server ack is not delivery. The bridge replies with a `cmd_ack` broadcast on `bot:<id>:status`, payload `{seq, ok, reason?}`. The panel marks a command delivered only when that ack is `ok` for the same seq. A rejection shows `reason` (bad token, stale epoch, lower seq, sanitize, and the rest). If no ack arrives within about 1.5 seconds, the command is not confirmed. E-STOP keeps retrying both `:cmd` and `send_command` until an ok ack. `send_command` never counts as delivery, because the bridge cannot see that row, so an RPC-only E-STOP stays on "E-STOP not confirmed, use the physical stop" and does not latch. With the flag off, commands stay on the public channel and latch from the broadcast result, because that bridge does not send `cmd_ack`.
+ 
+diff --git a/src/lib/telemetry/link-status.ts b/src/lib/telemetry/link-status.ts
+index d0f668d..46c05db 100644
+--- a/src/lib/telemetry/link-status.ts
++++ b/src/lib/telemetry/link-status.ts
+@@ -10,7 +10,7 @@ import { HEARTBEAT_OFFLINE_MS } from './protocol';
+  * about every 5s). The first read is not a change.
+  *
+  * Anon cannot SELECT `amr_bots` (RLS is `authenticated` only). A failed read
+- * is not a heartbeat. `NEXT_PUBLIC_PRIVATE_CONTROL` stays off unless it is "1".
++ * is not a heartbeat. `NEXT_PUBLIC_PRIVATE_CONTROL` is on in the Pages build (`"1"`).
+  */
+ 
+ /** Bridge `_presence_touch_loop` waits 5s between `touch_amr_bot` calls. */
+diff --git a/src/lib/telemetry/protocol.ts b/src/lib/telemetry/protocol.ts
+index 160aad2..6223a47 100644
+--- a/src/lib/telemetry/protocol.ts
++++ b/src/lib/telemetry/protocol.ts
+@@ -9,8 +9,8 @@ export const BOTS: { id: BotId; label: string }[] = [
+ 
+ /** No telemetry for this long → OFFLINE pill (access-flow spec). */
+ export const HEARTBEAT_OFFLINE_MS = 10_000;
+-/** Canvas stale veil. */
+-export const STALE_VEIL_MS = 2_000;
++/** Canvas stale veil — long enough that brief lag does not flash “no data”. */
++export const STALE_VEIL_MS = 6_000;
+ export const FULL_RATE_HZ = 10;
+ export const BOARD_RATE_HZ = 1;
+ /** Mean inter-frame lag above this → status-board fallback. */
+diff --git a/tests/telemetry.test.ts b/tests/telemetry.test.ts
+index e30ee24..c33a45a 100644
+--- a/tests/telemetry.test.ts
++++ b/tests/telemetry.test.ts
+@@ -7,6 +7,7 @@ import {
+   HEARTBEAT_OFFLINE_MS,
+   LAG_FALLBACK_MS,
+   LAG_RECOVER_MS,
++  STALE_VEIL_MS,
+ } from '@/lib/telemetry/protocol';
+ 
+ describe('telemetry protocol', () => {
+@@ -15,6 +16,11 @@ describe('telemetry protocol', () => {
+     expect(channelName('hardware-bot')).toBe('amr-bot-hardware-bot');
+   });
+ 
++  it('keeps the canvas stale veil at ~6s so brief lag does not flash no-data', () => {
++    expect(STALE_VEIL_MS).toBe(6_000);
++    expect(STALE_VEIL_MS).toBeLessThan(HEARTBEAT_OFFLINE_MS);
++  });
++
+   it('marks bot offline after the 10s heartbeat timeout', () => {
+     const now = 1_000_000;
+     expect(isBotOffline(null, now)).toBe(true);
