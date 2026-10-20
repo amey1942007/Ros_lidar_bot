@@ -1462,6 +1462,8 @@ class Bridge:
         if not self.public_channel and not self.private_channel:
             log.warning("no Realtime channel is enabled; telemetry will not be published")
         self.dash = DashboardClient(dashboard_url) if self.source == "dashboard" else None
+        # Always own an HTTP client so /api/joy works when AMR_SOURCE=ros (dash is None).
+        self._http = httpx.AsyncClient(timeout=8.0)
         self._ros: RosSource | None = None
         self.camera_url = camera_url
         self.camera_jpeg_max_kb = camera_jpeg_max_kb
@@ -1949,15 +1951,7 @@ class Bridge:
             )
 
         async def _zero_joy() -> None:
-            gamepad = os.environ.get("AMR_GAMEPAD_URL", "").rstrip("/")
-            if not gamepad or self.dash is None:
-                return
-            response = await self.dash._http.post(
-                f"{gamepad}/api/joy",
-                json={"a": [0.0] * 8, "b": 0},
-                timeout=timeout,
-            )
-            response.raise_for_status()
+            await self._post_gamepad_joy([0.0] * 8, 0, timeout)
 
         results = await asyncio.gather(
             _stop_primary(), _zero_nudge(), _zero_joy(), return_exceptions=True,
@@ -2049,9 +2043,38 @@ class Bridge:
             return
         await self._post_joy(cmd, timeout)
 
+    def _joy_http(self):
+        """HTTP client for web_gamepad. Works when ``AMR_SOURCE=ros`` (no dashboard)."""
+        if self.dash is not None:
+            return self.dash._http
+        return self._http
+
+    async def _post_gamepad_joy(self, axes: list, buttons: int, timeout: float) -> bool:
+        """POST ``{a,b}`` to ``AMR_GAMEPAD_URL/api/joy``. False when gamepad URL is unset."""
+        gamepad = os.environ.get("AMR_GAMEPAD_URL", "").rstrip("/")
+        if not gamepad:
+            return False
+        padded = [float(v) for v in list(axes)[:8]]
+        while len(padded) < 8:
+            padded.append(0.0)
+        response = await self._joy_http().post(
+            f"{gamepad}/api/joy",
+            json={"a": padded, "b": int(buttons)},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return True
+
+    @staticmethod
+    def _joy_to_nudge(axes: list) -> tuple[float, float]:
+        """Left stick → lin/ang using web_gamepad / joy_teleop signs (up=+1, left=+1)."""
+        ax = list(axes) + [0.0] * 8
+        lin = max(-0.3, min(0.3, float(ax[1]) * 0.35))
+        ang = max(-1.0, min(1.0, float(ax[0]) * 0.9))
+        return lin, ang
+
     async def _post_joy(self, cmd: dict, timeout: float) -> None:
         """``a``/``b`` win over ``axes``/``buttons``. Does not take ``_io_lock``."""
-        gamepad = os.environ.get("AMR_GAMEPAD_URL", "").rstrip("/")
         if "a" in cmd and cmd.get("a") is not None:
             axes = list(cmd["a"])
         else:
@@ -2060,18 +2083,10 @@ class Bridge:
             buttons = int(cmd["b"])
         else:
             buttons = int(cmd["buttons"]) if cmd.get("buttons") is not None else 0
-        if gamepad and self.dash is not None:
-            response = await self.dash._http.post(
-                f"{gamepad}/api/joy",
-                json={"a": axes[:8], "b": buttons},
-                timeout=timeout,
-            )
-            response.raise_for_status()
+        if await self._post_gamepad_joy(axes, buttons, timeout):
             return
-        # Differential approx from left stick: axes[1]=fwd, axes[0]=yaw.
-        ax = axes + [0.0] * 8
-        lin = max(-0.3, min(0.3, -float(ax[1]) * 0.35))
-        ang = max(-1.0, min(1.0, -float(ax[0]) * 0.9))
+        # No web_gamepad: differential approx from left stick (same signs as /joy).
+        lin, ang = self._joy_to_nudge(axes)
         if abs(lin) > 0.02 or abs(ang) > 0.02:
             if self._ros is not None:
                 await asyncio.to_thread(self._ros.nudge, lin, ang)
@@ -2096,16 +2111,8 @@ class Bridge:
         except Exception as exc:
             log.warning("watchdog zero nudge failed: %s", exc)
             return False
-        gamepad = os.environ.get("AMR_GAMEPAD_URL", "").rstrip("/")
-        if not gamepad or self.dash is None:
-            return True
         try:
-            response = await self.dash._http.post(
-                f"{gamepad}/api/joy",
-                json={"a": [0.0] * 8, "b": 0},
-                timeout=timeout,
-            )
-            response.raise_for_status()
+            await self._post_gamepad_joy([0.0] * 8, 0, timeout)
         except Exception as exc:
             log.warning("watchdog zero joy failed: %s", exc)
             return False
@@ -2440,6 +2447,7 @@ class Bridge:
             self._ros = None
         if self.dash is not None:
             await self.dash.close()
+        await self._http.aclose()
         if self._hub:
             await asyncio.to_thread(self._hub.close)
 
