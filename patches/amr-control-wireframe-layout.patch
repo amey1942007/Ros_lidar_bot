@@ -1,0 +1,779 @@
+From 6e3dcad36d9e8e2c6425efff04cde075b8e9aeb8 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 19 Oct 2026 12:53:06 +0000
+Subject: [PATCH] Control panel wireframe layout + controller window.
+
+Grid: Live view (camera PiP) | System status+System, Tools full-width,
+Waypoint sequence | Console. Controller opens /control/pad/ for mobile
+complete control.
+---
+ src/app/control/pad/page.tsx              |  16 ++
+ src/components/auth/PadStub.tsx           |  26 +++
+ src/components/control/Dashboard.tsx      | 262 +++++++++++-----------
+ src/components/control/PadPage.tsx        | 135 +++++++++++
+ src/components/control/XboxController.tsx |  26 ++-
+ src/components/control/dashboard.css      | 116 ++++++++--
+ src/lib/control/bot-persist.ts            |   2 +-
+ 7 files changed, 433 insertions(+), 150 deletions(-)
+ create mode 100644 src/app/control/pad/page.tsx
+ create mode 100644 src/components/auth/PadStub.tsx
+ create mode 100644 src/components/control/PadPage.tsx
+
+diff --git a/src/app/control/pad/page.tsx b/src/app/control/pad/page.tsx
+new file mode 100644
+index 0000000..b784747
+--- /dev/null
++++ b/src/app/control/pad/page.tsx
+@@ -0,0 +1,16 @@
++import type { Metadata } from 'next';
++import { PadStub } from '@/components/auth/PadStub';
++
++export const metadata: Metadata = {
++  title: 'Controller | AMR',
++  robots: { index: false, follow: false },
++};
++
++export default function Page() {
++  return (
++    <>
++      <style>{'@view-transition { navigation: none; }'}</style>
++      <PadStub />
++    </>
++  );
++}
+diff --git a/src/components/auth/PadStub.tsx b/src/components/auth/PadStub.tsx
+new file mode 100644
+index 0000000..aaf0508
+--- /dev/null
++++ b/src/components/auth/PadStub.tsx
+@@ -0,0 +1,26 @@
++'use client';
++
++import dynamic from 'next/dynamic';
++import { AuthGuard } from './AuthGuard';
++import { SignalLoader } from '@/components/utility/SignalLoader';
++
++const Pad = dynamic(
++  () => import('@/components/control/PadPage').then((m) => m.PadPage),
++  {
++    ssr: false,
++    loading: () => (
++      <div className="grid min-h-[40vh] place-items-center">
++        <SignalLoader />
++      </div>
++    ),
++  },
++);
++
++/** /control/pad — full-window Xbox controller for mobile / complete control. */
++export function PadStub() {
++  return (
++    <AuthGuard>
++      <Pad />
++    </AuthGuard>
++  );
++}
+diff --git a/src/components/control/Dashboard.tsx b/src/components/control/Dashboard.tsx
+index 46e1875..1077ac1 100644
+--- a/src/components/control/Dashboard.tsx
++++ b/src/components/control/Dashboard.tsx
+@@ -16,7 +16,7 @@ import { persistBot, readStoredBot } from '@/lib/control/bot-persist';
+ import type { NormState } from '@/lib/telemetry/normalize';
+ import { WaveLines } from '@/components/effects/WaveLines';
+ import { LiveCanvas } from './LiveCanvas';
+-import { XboxController, readPhysicalGamepad, type JoyReading } from './XboxController';
++import { readPhysicalGamepad, type JoyReading } from './XboxController';
+ import '@/components/effects/effects.css';
+ import './dashboard.css';
+ 
+@@ -53,9 +53,8 @@ export function Dashboard() {
+   const [account, setAccount] = useState(false);
+   const [help, setHelp] = useState(false);
+   const [padLabel, setPadLabel] = useState<'none' | 'connected' | 'idle'>('none');
+-  const [padOpen, setPadOpen] = useState(false);
+-  const [physicalPad, setPhysicalPad] = useState<JoyReading | null>(null);
+   const virtualPadRef = useRef<JoyReading | null>(null);
++  const padWin = useRef<Window | null>(null);
+   const [toasts, setToasts] = useState<{ id: number; text: string; until: number }[]>([]);
+   const [now, setNow] = useState(() => Date.now());
+   const [flash, setFlash] = useState<'granted' | 'denied' | 'timeout' | null>(null);
+@@ -251,7 +250,6 @@ export function Dashboard() {
+       timer = window.setTimeout(tick, 1000 / JOY_HZ);
+       if (!alive) return;
+       const physical = readPhysicalGamepad();
+-      setPhysicalPad(physical);
+       const reading = virtualPadRef.current ?? physical;
+       const next = !physical && !virtualPadRef.current
+         ? 'none'
+@@ -385,10 +383,27 @@ export function Dashboard() {
+             )}
+             <button
+               type="button"
+-              className={`btn ghost xb-open ${padOpen ? 'on' : ''}`}
+-              aria-pressed={padOpen}
+-              onClick={() => setPadOpen((v) => !v)}
+-              title="Open Xbox controller"
++              className="btn ghost xb-open"
++              onClick={() => {
++                const url = asset(`/control/pad/?bot=${botId}`);
++                try {
++                  if (padWin.current && !padWin.current.closed) {
++                    padWin.current.focus();
++                    padWin.current.location.href = url;
++                    return;
++                  }
++                } catch { /* cross-origin */ }
++                padWin.current = window.open(
++                  url,
++                  'amr-controller',
++                  'popup=yes,width=440,height=820,menubar=no,toolbar=no,location=no,status=no',
++                );
++                if (!padWin.current) {
++                  // Popup blocked — navigate same tab (mobile Safari often blocks popups).
++                  window.location.assign(url);
++                }
++              }}
++              title="Open controller in a new window (mobile complete control)"
+             >
+               Controller
+             </button>
+@@ -477,116 +492,117 @@ export function Dashboard() {
+           />
+         )}
+ 
+-        <section className="card" aria-label="Live view">
+-          <h2>Live view · odom · wheel-zoom · click = nav goal</h2>
+-          {tel.link.phase === 'offline' && (
+-            <div className="offline">
+-              <p style={{ color: 'var(--tx)', fontWeight: 700 }}>
+-                {tel.link.unreadable ? tel.link.label : `${bot.label} is offline`}
+-              </p>
+-              <p>
+-                {tel.link.unreadable
+-                  ? tel.link.offlineDetail
+-                  : offlineMessage(tel.link.offlineDetail ?? '', tel.link.lastSeenAtMs, now)}
+-              </p>
++        <div className="op-layout">
++          <section className="card op-live" aria-label="Live view">
++            <h2>Live view · odom · wheel-zoom · click = nav goal</h2>
++            {tel.link.phase === 'offline' && (
++              <div className="offline">
++                <p style={{ color: 'var(--tx)', fontWeight: 700 }}>
++                  {tel.link.unreadable ? tel.link.label : `${bot.label} is offline`}
++                </p>
++                <p>
++                  {tel.link.unreadable
++                    ? tel.link.offlineDetail
++                    : offlineMessage(tel.link.offlineDetail ?? '', tel.link.lastSeenAtMs, now)}
++                </p>
++              </div>
++            )}
++            {!robotLive && <p className="help">Waiting for robot…</p>}
++            <div className="op-live-stage">
++              <LiveCanvas state={tel.frame} map={tel.map} scale={scale} onScale={setScale} canEdit={canEdit} mode={mode} showSlam={showSlam} lastAt={tel.lastTelemetryAt} placeholder={tel.link.mapPlaceholder} onNav={(x, y) => void send({ type: 'nav_goal', x, y })} onBlacklist={(x, y, radius) => void send({ type: 'blacklist', action: 'add', x, y, radius, duration })} />
++              <CameraPip frame={tel.frame} phase={tel.link.phase} lastAt={tel.lastTelemetryAt} now={now} />
+             </div>
+-          )}
+-          {!robotLive && <p className="help">Waiting for robot…</p>}
+-          <LiveCanvas state={tel.frame} map={tel.map} scale={scale} onScale={setScale} canEdit={canEdit} mode={mode} showSlam={showSlam} lastAt={tel.lastTelemetryAt} placeholder={tel.link.mapPlaceholder} onNav={(x, y) => void send({ type: 'nav_goal', x, y })} onBlacklist={(x, y, radius) => void send({ type: 'blacklist', action: 'add', x, y, radius, duration })} />
+-          <div className="readouts">
+-            <Tile k="x (odom)" v={fmt(tel.frame?.pose?.[0], 2)} />
+-            <Tile k="y (odom)" v={fmt(tel.frame?.pose?.[1], 2)} />
+-            <Tile k="yaw°" v={tel.frame?.pose ? (tel.frame.pose[2] * 57.2958).toFixed(1) : '–'} />
+-            <Tile k="v m/s" v={fmt(tel.frame?.vel[0], 2)} />
+-            <Tile k="ω rad/s" v={fmt(tel.frame?.vel[1], 2)} />
+-            <Tile k="gyro z" v={tel.frame ? tel.frame.imu.gz.toFixed(3) : '–'} />
+-            <Tile k="cmd v" v={fmt(tel.frame?.cmd[0], 2)} />
+-            <Tile k="cmd ω" v={fmt(tel.frame?.cmd[1], 2)} />
+-            <Tile k="map pose" v={tel.frame?.mapPose ? `${tel.frame.mapPose[0].toFixed(2)}, ${tel.frame.mapPose[1].toFixed(2)}` : '–'} />
+-          </div>
+-          <div className="op-controls" style={{ marginTop: 10 }}>
+-            <div className="pad" aria-disabled={!canEdit}>
+-              <span />
+-              <PadButton label="Forward" glyph="▲" disabled={!canEdit} onDown={() => startNudge(0.15, 0)} onUp={stopNudge} />
+-              <span />
+-              <PadButton label="Rotate left" glyph="◀" disabled={!canEdit} onDown={() => startNudge(0, 0.6)} onUp={stopNudge} />
+-              <button type="button" aria-label="E-STOP" disabled={!canEstop} onClick={() => { if (estop === 'ready') fireEstop(); }}>■</button>
+-              <PadButton label="Rotate right" glyph="▶" disabled={!canEdit} onDown={() => startNudge(0, -0.6)} onUp={stopNudge} />
+-              <span />
+-              <PadButton label="Back" glyph="▼" disabled={!canEdit} onDown={() => startNudge(-0.15, 0)} onUp={stopNudge} />
+-              <span />
++            <div className="readouts">
++              <Tile k="x (odom)" v={fmt(tel.frame?.pose?.[0], 2)} />
++              <Tile k="y (odom)" v={fmt(tel.frame?.pose?.[1], 2)} />
++              <Tile k="yaw°" v={tel.frame?.pose ? (tel.frame.pose[2] * 57.2958).toFixed(1) : '–'} />
++              <Tile k="v m/s" v={fmt(tel.frame?.vel[0], 2)} />
++              <Tile k="ω rad/s" v={fmt(tel.frame?.vel[1], 2)} />
++              <Tile k="gyro z" v={tel.frame ? tel.frame.imu.gz.toFixed(3) : '–'} />
++              <Tile k="cmd v" v={fmt(tel.frame?.cmd[0], 2)} />
++              <Tile k="cmd ω" v={fmt(tel.frame?.cmd[1], 2)} />
++              <Tile k="map pose" v={tel.frame?.mapPose ? `${tel.frame.mapPose[0].toFixed(2)}, ${tel.frame.mapPose[1].toFixed(2)}` : '–'} />
+             </div>
+-            <div className={`navmode ${canEdit ? '' : 'locked'}`} aria-disabled={!canEdit}>
+-              <label><input type="checkbox" checked={mode === 'nav'} onChange={() => setExclusive('nav')} /> Nav-goal</label>
+-              <button type="button" className="btn stop" style={{ padding: '4px 12px' }} onClick={() => void send({ type: 'nav_cancel' })}>Cancel goal</button>
+-              <label title="Waypoint sequences aren't available remotely yet."><input type="checkbox" disabled /> Seq-add</label>
+-              <label><input type="checkbox" checked={mode === 'nogo'} onChange={() => setExclusive('nogo')} /> No-go</label>
+-              <select aria-label="No-go duration" value={duration} onChange={(e) => setDuration(Number(e.target.value))}>
+-                <option value={60}>1 min</option>
+-                <option value={300}>5 min</option>
+-                <option value={900}>15 min</option>
+-                <option value={0}>permanent</option>
+-              </select>
+-              <button type="button" className="btn stop" onClick={() => void send({ type: 'blacklist', action: 'clear' })}>Clear zones</button>
+-              {tel.map && <label><input type="checkbox" checked={showSlam} onChange={(e) => setShowSlam(e.target.checked)} /> SLAM map</label>}
+-              {!controller && <p className="help">Only the driver can emergency-stop.</p>}
++            <div className="op-controls" style={{ marginTop: 10 }}>
++              <div className="pad" aria-disabled={!canEdit}>
++                <span />
++                <PadButton label="Forward" glyph="▲" disabled={!canEdit} onDown={() => startNudge(0.15, 0)} onUp={stopNudge} />
++                <span />
++                <PadButton label="Rotate left" glyph="◀" disabled={!canEdit} onDown={() => startNudge(0, 0.6)} onUp={stopNudge} />
++                <button type="button" aria-label="E-STOP" disabled={!canEstop} onClick={() => { if (estop === 'ready') fireEstop(); }}>■</button>
++                <PadButton label="Rotate right" glyph="▶" disabled={!canEdit} onDown={() => startNudge(0, -0.6)} onUp={stopNudge} />
++                <span />
++                <PadButton label="Back" glyph="▼" disabled={!canEdit} onDown={() => startNudge(-0.15, 0)} onUp={stopNudge} />
++                <span />
++              </div>
++              <div className={`navmode ${canEdit ? '' : 'locked'}`} aria-disabled={!canEdit}>
++                <label><input type="checkbox" checked={mode === 'nav'} onChange={() => setExclusive('nav')} /> Nav-goal</label>
++                <button type="button" className="btn stop" style={{ padding: '4px 12px' }} onClick={() => void send({ type: 'nav_cancel' })}>Cancel goal</button>
++                <label title="Waypoint sequences aren't available remotely yet."><input type="checkbox" disabled /> Seq-add</label>
++                <label><input type="checkbox" checked={mode === 'nogo'} onChange={() => setExclusive('nogo')} /> No-go</label>
++                <select aria-label="No-go duration" value={duration} onChange={(e) => setDuration(Number(e.target.value))}>
++                  <option value={60}>1 min</option>
++                  <option value={300}>5 min</option>
++                  <option value={900}>15 min</option>
++                  <option value={0}>permanent</option>
++                </select>
++                <button type="button" className="btn stop" onClick={() => void send({ type: 'blacklist', action: 'clear' })}>Clear zones</button>
++                {tel.map && <label><input type="checkbox" checked={showSlam} onChange={(e) => setShowSlam(e.target.checked)} /> SLAM map</label>}
++                {!controller && <p className="help">Only the driver can emergency-stop.</p>}
++              </div>
+             </div>
++          </section>
++
++          <aside className="op-sysrail" aria-label="System status and system">
++            <StatusCard frame={tel.frame} />
++            <SystemCard frame={tel.frame} canEdit={canEdit} mapName={mapName} setMapName={setMapName} onSave={() => { if (mapNameError(mapName)) return; void send({ type: 'save_map', name: mapName || undefined }); }} />
++          </aside>
++
++          <div className="op-tools">
++            <ToolsCard
++              frame={tel.frame}
++              canEdit={canEdit}
++              toolBusy={toolBusy}
++              padLabel={padLabel}
++              areaClear={areaClear}
++              setAreaClear={setAreaClear}
++              imu={imu}
++              setImu={setImu}
++              drive={drive}
++              setDrive={setDrive}
++              imuOk={imuOk}
++              driveOk={driveOk}
++              onRun={(tool, params) => void send({ type: 'run_tool', tool, params })}
++              onStop={() => void send({ type: 'stop_tool' })}
++              onVision={() => {
++                if (now - visionAt < 4000) return;
++                setVisionAt(now);
++                void send({ type: 'vision', on: !tel.frame?.vision });
++              }}
++            />
+           </div>
+-        </section>
+ 
+-        <div className="op-pair">
+-          <SystemCard frame={tel.frame} canEdit={canEdit} mapName={mapName} setMapName={setMapName} onSave={() => { if (mapNameError(mapName)) return; void send({ type: 'save_map', name: mapName || undefined }); }} />
+-          <StatusCard frame={tel.frame} />
+-        </div>
++          <div className="op-way">
++            <WaypointCard seq={tel.frame?.seq ?? null} />
++          </div>
+ 
+-        <ToolsCard
+-          frame={tel.frame}
+-          canEdit={canEdit}
+-          toolBusy={toolBusy}
+-          padLabel={padLabel}
+-          areaClear={areaClear}
+-          setAreaClear={setAreaClear}
+-          imu={imu}
+-          setImu={setImu}
+-          drive={drive}
+-          setDrive={setDrive}
+-          imuOk={imuOk}
+-          driveOk={driveOk}
+-          onRun={(tool, params) => void send({ type: 'run_tool', tool, params })}
+-          onStop={() => void send({ type: 'stop_tool' })}
+-          onVision={() => {
+-            if (now - visionAt < 4000) return;
+-            setVisionAt(now);
+-            void send({ type: 'vision', on: !tel.frame?.vision });
+-          }}
+-        />
+-
+-        <div className="op-pair">
+-          <CameraCard frame={tel.frame} phase={tel.link.phase} lastAt={tel.lastTelemetryAt} now={now} />
+-          <WaypointCard seq={tel.frame?.seq ?? null} />
++          <section className="card op-console" id="console" aria-label="Console">
++            <h2>Console</h2>
++            <div className="logbox" tabIndex={0} ref={(el) => { if (el) el.scrollTop = el.scrollHeight; }}>
++              {tel.logs.map((ln, i) => (
++                <div key={i} className={ln.level === 'tool' ? 'ln ln-tool' : `ln ${ln.level === 'error' || ln.level === 'run' || ln.level === 'info' ? ln.level : 'info'}`}>
++                  <span className="t">{ln.time}</span>{ln.text}
++                </div>
++              ))}
++            </div>
++            <div className="op-console-line" aria-hidden>
++              <span className="mono">amr@{bot.label.toLowerCase().replace(/\s+/g, '-')}</span>
++              <span className="op-console-cursor" />
++            </div>
++          </section>
+         </div>
+-
+-        <section className="card" id="console" aria-label="Console">
+-          <h2>Console</h2>
+-          <div className="logbox" tabIndex={0} ref={(el) => { if (el) el.scrollTop = el.scrollHeight; }}>
+-            {tel.logs.map((ln, i) => (
+-              <div key={i} className={ln.level === 'tool' ? 'ln ln-tool' : `ln ${ln.level === 'error' || ln.level === 'run' || ln.level === 'info' ? ln.level : 'info'}`}>
+-                <span className="t">{ln.time}</span>{ln.text}
+-              </div>
+-            ))}
+-          </div>
+-        </section>
+       </div>
+ 
+-      <XboxController
+-        open={padOpen}
+-        onClose={() => setPadOpen(false)}
+-        canEdit={canEdit}
+-        padLabel={padLabel}
+-        physical={physicalPad}
+-        virtualRef={virtualPadRef}
+-      />
+-
+       <div className="toasts" aria-live="polite">{toasts[0] && <div className="toast" role="status">{toasts[0].text}</div>}</div>
+       {help && (
+         <div className="helpdlg glass-liquid" role="dialog" aria-label="Keyboard shortcuts">
+@@ -837,31 +853,27 @@ function WaypointCard({ seq }: { seq: { goals: [number, number][]; idx: number }
+   );
+ }
+ 
+-function CameraCard({ frame, phase, lastAt, now }: { frame: NormState | null; phase: LinkPhase; lastAt: number | null; now: number }) {
+-  const src = phase === 'live' && frame?.vision && frame.camera
++/** Picture-in-picture camera inside Live view when vision is on. */
++function CameraPip({ frame, phase, lastAt, now }: { frame: NormState | null; phase: LinkPhase; lastAt: number | null; now: number }) {
++  const on = phase === 'live' && !!frame?.vision;
++  if (!on) return null;
++  const src = frame?.camera
+     ? (frame.camera.startsWith('data:') ? frame.camera : `data:image/jpeg;base64,${frame.camera}`)
+     : null;
+   const age = lastAt == null ? null : (now - lastAt) / 1000;
+-  const copy = phase === 'live' && frame?.vision && !src
+-    ? 'Waiting for camera…'
+-    : phase === 'live' && !frame?.vision
+-      ? 'Vision off — start vision to see camera feed'
+-      : phase === 'connecting' || phase === 'live'
+-        ? 'Waiting for camera…'
+-        : 'Camera unavailable until the robot is live';
+   return (
+-    <section className="card" aria-label="Camera feed">
+-      <h2>Camera feed</h2>
++    <aside className="op-cam-pip glass-liquid" aria-label="Camera feed">
++      <span className="op-cam-pip-label">Camera feed</span>
+       {src ? (
+-        <div className="camwrap">
++        <>
+           {/* eslint-disable-next-line @next/next/no-img-element */}
+           <img className="cam" alt="Robot camera" src={src} />
+-          <span className="camchip">{age != null && age > 3 ? `last frame ${age.toFixed(0)}s ago` : 'LIVE · ~1 fps'}</span>
+-        </div>
++          <span className="camchip">{age != null && age > 3 ? `${age.toFixed(0)}s ago` : 'LIVE'}</span>
++        </>
+       ) : (
+-        <p className="muted">{copy}</p>
++        <p className="muted">Waiting for camera…</p>
+       )}
+-    </section>
++    </aside>
+   );
+ }
+ 
+diff --git a/src/components/control/PadPage.tsx b/src/components/control/PadPage.tsx
+new file mode 100644
+index 0000000..98e92f9
+--- /dev/null
++++ b/src/components/control/PadPage.tsx
+@@ -0,0 +1,135 @@
++'use client';
++
++import { useCallback, useEffect, useRef, useState } from 'react';
++import type { SupabaseClient } from '@supabase/supabase-js';
++import { useAuth } from '@/lib/useAuth';
++import { readConfig } from '@/lib/config';
++import { asset } from '@/lib/asset';
++import { getAuthClient, getBroadcastClient } from '@/services/supabase-client';
++import { BOTS, type BotId } from '@/lib/telemetry/protocol';
++import { JOY_HZ } from '@/lib/telemetry/commands';
++import { persistBot, readStoredBot, isBotId } from '@/lib/control/bot-persist';
++import { useControlSession } from '@/lib/telemetry/useControlSession';
++import { WaveLines } from '@/components/effects/WaveLines';
++import { XboxController, readPhysicalGamepad, type JoyReading } from './XboxController';
++import '@/components/effects/effects.css';
++import './dashboard.css';
++
++/** Standalone mobile/complete-control window opened from the control panel. */
++export function PadPage() {
++  const { session, signOut } = useAuth();
++  const cfg = readConfig();
++  const [client, setClient] = useState<SupabaseClient | null>(null);
++  const [broadcastClient, setBroadcastClient] = useState<SupabaseClient | null>(null);
++  const [botId, setBotId] = useState<BotId>(() => {
++    if (typeof window === 'undefined') return 'hardware-bot';
++    const q = new URLSearchParams(window.location.search).get('bot');
++    return isBotId(q) ? q : readStoredBot('hardware-bot');
++  });
++  const userId = session?.userId ?? null;
++  const tel = useControlSession(client, userId, botId, broadcastClient);
++  const [padLabel, setPadLabel] = useState<'none' | 'connected' | 'idle'>('none');
++  const [physicalPad, setPhysicalPad] = useState<JoyReading | null>(null);
++  const virtualPadRef = useRef<JoyReading | null>(null);
++  const joined = useRef(false);
++
++  useEffect(() => { persistBot(botId); }, [botId]);
++
++  useEffect(() => {
++    if (!cfg.supabaseUrl || !cfg.supabaseKey) return;
++    let live = true;
++    Promise.all([
++      getAuthClient(cfg.supabaseUrl, cfg.supabaseKey),
++      getBroadcastClient(cfg.supabaseUrl, cfg.supabaseKey),
++    ]).then(([auth, broadcast]) => {
++      if (!live) return;
++      setClient(auth);
++      setBroadcastClient(broadcast);
++    });
++    return () => { live = false; };
++  }, [cfg.supabaseUrl, cfg.supabaseKey]);
++
++  const controller = tel.role === 'controller';
++  const robotLive = tel.link.phase === 'live';
++  const canEdit = controller && robotLive && !tel.heartbeatStale && !tel.realtimeDown;
++  const bot = BOTS.find((b) => b.id === botId)!;
++  const sendRef = useRef(tel.sendCommand);
++  const padRef = useRef(padLabel);
++  useEffect(() => { sendRef.current = tel.sendCommand; });
++
++  useEffect(() => {
++    if (joined.current || tel.joining || !tel.role) return;
++    joined.current = true;
++  }, [tel.joining, tel.role]);
++
++  useEffect(() => {
++    let timer = 0;
++    let alive = true;
++    const tick = () => {
++      timer = window.setTimeout(tick, 1000 / JOY_HZ);
++      if (!alive) return;
++      const physical = readPhysicalGamepad();
++      setPhysicalPad(physical);
++      const reading = virtualPadRef.current ?? physical;
++      const next = !physical && !virtualPadRef.current
++        ? 'none'
++        : (!controller || document.hidden ? 'idle' : 'connected');
++      if (padRef.current !== next) { padRef.current = next; setPadLabel(next); }
++      if (!reading || !controller || document.hidden || !canEdit) return;
++      void sendRef.current({ type: 'joy', a: reading.a, b: reading.b });
++    };
++    timer = window.setTimeout(tick, 1000 / JOY_HZ);
++    const stop = () => { if (controller) void sendRef.current({ type: 'joy', a: [0, 0, 0, 0, 0, 0, 0, 0], b: 0 }); };
++    window.addEventListener('blur', stop);
++    return () => { alive = false; window.clearTimeout(timer); window.removeEventListener('blur', stop); stop(); };
++  }, [controller, canEdit]);
++
++  const fireEstop = useCallback(() => {
++    if (!controller) return;
++    void tel.sendCommand({ type: 'estop' });
++  }, [controller, tel]);
++
++  return (
++    <div className="op op-pad-page">
++      <div className="op-bg" aria-hidden><WaveLines lines={4} /></div>
++      <header className="op-header op-pad-head">
++        <a className="op-home" href={asset('/control/')} title="Back to control panel">← Panel</a>
++        <h1>
++          <span className="op-brand">AMR</span>
++          <span className="op-bot-label">{bot.label}</span>
++        </h1>
++        <div className="op-switch" role="group" aria-label="Bot">
++          {BOTS.map((b) => (
++            <button key={b.id} type="button" aria-pressed={b.id === botId} onClick={() => { setBotId(b.id); joined.current = false; }}>{b.label}</button>
++          ))}
++        </div>
++        <div className="op-grow">
++          {controller ? (
++            <span className="pill ok">In control</span>
++          ) : (
++            <button type="button" className="btn" disabled={tel.joining || !!tel.myRequest} onClick={() => void tel.requestControl()}>
++              {tel.myRequest ? 'Waiting…' : 'Take control'}
++            </button>
++          )}
++          {controller && (
++            <button type="button" className="op-estop" onClick={fireEstop}>E-STOP</button>
++          )}
++          <button type="button" className="btn ghost" onClick={() => { void signOut().then(() => window.location.replace(asset('/sign-in/'))); }}>Sign out</button>
++        </div>
++      </header>
++      <p className="op-pad-note">
++        {tel.link.phase === 'offline' ? `${bot.label} offline` : tel.link.label}
++        {' · '}
++        Mobile complete control — keep this window open while driving
++      </p>
++      <XboxController
++        open
++        variant="page"
++        canEdit={canEdit}
++        padLabel={padLabel}
++        physical={physicalPad}
++        virtualRef={virtualPadRef}
++      />
++    </div>
++  );
++}
+diff --git a/src/components/control/XboxController.tsx b/src/components/control/XboxController.tsx
+index c2618cd..6d61551 100644
+--- a/src/components/control/XboxController.tsx
++++ b/src/components/control/XboxController.tsx
+@@ -18,15 +18,17 @@ const BIT = { A: 0, B: 1, X: 2, Y: 3, LB: 4, RB: 5, View: 6, Menu: 7 } as const;
+ 
+ type Props = {
+   open: boolean;
+-  onClose: () => void;
++  onClose?: () => void;
+   canEdit: boolean;
+   padLabel: 'none' | 'connected' | 'idle';
+   physical: JoyReading | null;
+   /** Written while the on-screen pad is driving; null when idle so a real pad can take over. */
+   virtualRef: MutableRefObject<JoyReading | null>;
++  /** `page` = full-window mobile controller (no scrim). */
++  variant?: 'overlay' | 'page';
+ };
+ 
+-export function XboxController({ open, onClose, canEdit, padLabel, physical, virtualRef }: Props) {
++export function XboxController({ open, onClose, canEdit, padLabel, physical, virtualRef, variant = 'overlay' }: Props) {
+   const [virt, setVirt] = useState<JoyReading>(ZERO);
+   const [wasOpen, setWasOpen] = useState(open);
+   const drag = useRef<{ stick: 'L' | 'R'; pointerId: number } | null>(null);
+@@ -48,7 +50,7 @@ export function XboxController({ open, onClose, canEdit, padLabel, physical, vir
+   }, [open, virtualRef]);
+ 
+   useEffect(() => {
+-    if (!open) return;
++    if (!open || !onClose) return;
+     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+     window.addEventListener('keydown', onKey);
+     return () => window.removeEventListener('keydown', onKey);
+@@ -140,15 +142,16 @@ export function XboxController({ open, onClose, canEdit, padLabel, physical, vir
+       : padLabel === 'connected' ? 'Streaming joy → web_gamepad / bridge'
+         : 'Touch sticks to stream joy commands';
+ 
+-  return (
+-    <div className="xb-scrim" role="dialog" aria-modal="true" aria-label="Xbox controller" onClick={onClose}>
+-      <div className="xb-panel glass-liquid" onClick={(e) => e.stopPropagation()}>
++  const panel = (
++      <div className={`xb-panel glass-liquid ${variant === 'page' ? 'xb-page' : ''}`} onClick={variant === 'overlay' ? (e) => e.stopPropagation() : undefined}>
+         <div className="xb-head">
+           <div>
+             <h3>Xbox controller</h3>
+             <p className="xb-status">{status}</p>
+           </div>
+-          <button type="button" className="btn ghost" onClick={onClose}>Close</button>
++          {variant === 'overlay' && onClose ? (
++            <button type="button" className="btn ghost" onClick={onClose}>Close</button>
++          ) : null}
+         </div>
+ 
+         <div className={`xb-body ${canEdit ? '' : 'locked'}`} aria-disabled={!canEdit}>
+@@ -200,6 +203,15 @@ export function XboxController({ open, onClose, canEdit, padLabel, physical, vir
+           Left stick → drive · A seq · B save map · X vision · Y / shoulders IMU · matches web_gamepad_node
+         </p>
+       </div>
++  );
++
++  if (variant === 'page') {
++    return <div className="xb-page-root" aria-label="Xbox controller">{panel}</div>;
++  }
++
++  return (
++    <div className="xb-scrim" role="dialog" aria-modal="true" aria-label="Xbox controller" onClick={onClose}>
++      {panel}
+     </div>
+   );
+ }
+diff --git a/src/components/control/dashboard.css b/src/components/control/dashboard.css
+index ca692eb..5277e36 100644
+--- a/src/components/control/dashboard.css
++++ b/src/components/control/dashboard.css
+@@ -213,30 +213,97 @@
+   text-align: center; padding: 5px 12px; font-size: 12px;
+ }
+ 
+-/* Long vertical scroll — one column, dense */
++/* Wireframe grid: Live | Status / Tools / Waypoints | Console */
+ .op-main {
+-  display: flex; flex-direction: column; gap: 10px;
+-  max-width: 1100px; margin: 0 auto;
++  max-width: 1280px; margin: 0 auto;
+   padding: 12px 14px 48px;
++  display: flex; flex-direction: column; gap: 10px;
++}
++.op-main > .banner {
++  animation: op-rise var(--dur-enter) var(--ease-expo) both;
+ }
+-.op-main > .card,
+-.op-main > .banner,
+-.op-main > .op-pair > .card {
++.op-layout {
++  display: grid;
++  grid-template-columns: minmax(0, 1fr) minmax(240px, 300px);
++  grid-template-areas:
++    "live status"
++    "tools tools"
++    "way console";
++  gap: 10px;
++  align-items: start;
++}
++.op-live { grid-area: live; }
++.op-sysrail {
++  grid-area: status;
++  display: flex; flex-direction: column; gap: 10px;
++  max-height: min(72vh, 780px); overflow: auto;
++  scrollbar-width: thin;
++}
++.op-tools { grid-area: tools; }
++.op-way { grid-area: way; min-width: 0; }
++.op-console { grid-area: console; min-width: 0; }
++.op-layout > .card,
++.op-layout > .op-sysrail > .card,
++.op-layout > .op-tools > .card,
++.op-layout > .op-way > .card {
+   animation: op-rise var(--dur-enter) var(--ease-expo) both;
+ }
+-.op-main > .card:nth-child(1) { animation-delay: 40ms; }
+-.op-main > .card:nth-child(2) { animation-delay: 90ms; }
+-.op-main > .card:nth-child(3),
+-.op-main > .op-pair { animation-delay: 130ms; }
+-.op-main > .card:nth-child(4) { animation-delay: 170ms; }
+-.op-main > .card:nth-child(5),
+-.op-main > .op-pair:nth-of-type(2) { animation-delay: 210ms; }
+-.op-main > #console { animation-delay: 250ms; }
++.op-live { animation-delay: 40ms; }
++.op-sysrail { animation-delay: 80ms; }
++.op-tools { animation-delay: 120ms; }
++.op-way, .op-console { animation-delay: 160ms; }
+ @keyframes op-rise {
+   from { opacity: 0; transform: translateY(18px); }
+   to { opacity: 1; transform: none; }
+ }
+ 
++.op-live-stage { position: relative; }
++.op-cam-pip {
++  position: absolute; right: 10px; bottom: 10px; z-index: 3;
++  width: min(220px, 42%); border-radius: 12px; padding: 6px;
++  overflow: hidden;
++  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
++}
++.op-cam-pip-label {
++  display: block; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase;
++  color: var(--dim); font-weight: 700; margin-bottom: 4px;
++}
++.op-cam-pip .cam { width: 100%; border-radius: 8px; display: block; aspect-ratio: 4 / 3; object-fit: cover; background: #050508; }
++.op-cam-pip .camchip {
++  position: absolute; left: 10px; bottom: 10px;
++  font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase;
++  background: rgba(5,5,7,0.75); color: #d9ccff; border-radius: 999px; padding: 2px 7px;
++}
++.op-cam-pip .muted { font-size: 11px; padding: 12px 6px; text-align: center; }
++
++.op-console-line {
++  display: flex; align-items: center; gap: 8px;
++  margin-top: 8px; padding: 7px 10px;
++  border-radius: 8px; border: 1px solid var(--edge); background: var(--inset);
++  color: var(--dim); font-size: 12px;
++}
++.op-console-cursor {
++  width: 7px; height: 14px; background: var(--acc);
++  animation: op-blink 1s steps(1) infinite;
++}
++@keyframes op-blink { 50% { opacity: 0; } }
++
++.op-pad-page { min-height: 100dvh; display: flex; flex-direction: column; }
++.op-pad-head { flex-wrap: wrap; }
++.op-pad-note {
++  position: relative; z-index: 1;
++  margin: 0 14px 8px; color: var(--dim); font-size: 12px;
++}
++.xb-page-root {
++  position: relative; z-index: 1;
++  flex: 1; display: grid; place-items: start center;
++  padding: 8px 12px 24px;
++}
++.xb-panel.xb-page {
++  width: min(560px, 100%);
++  margin: 0;
++}
++
+ .op-pair {
+   display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+ }
+@@ -591,6 +658,19 @@
+ .op .pulse { animation: op-pulse .4s ease; }
+ @keyframes op-pulse { from { transform: scale(.98); } to { transform: scale(1); } }
+ 
++@media (max-width: 960px) {
++  .op-layout {
++    grid-template-columns: 1fr;
++    grid-template-areas:
++      "live"
++      "status"
++      "tools"
++      "way"
++      "console";
++  }
++  .op-sysrail { max-height: none; }
++  .op-cam-pip { width: min(160px, 46%); }
++}
+ @media (max-width: 820px) {
+   .op-pair { grid-template-columns: 1fr; }
+   .op-controls { grid-template-columns: 1fr; justify-items: center; }
+@@ -600,8 +680,10 @@
+ }
+ @media (prefers-reduced-motion: reduce) {
+   .op .spin, .op .pulse, .op .status-ring, .op .status-live, .op-estop-bar,
+-  .op-sticky, .op-main > .card, .op-main > .banner, .op-main > .op-pair,
+-  .op .skel::after, .op .toast, .op .menu, .op .helpdlg, .op-auth { animation: none; }
++  .op-sticky, .op-main > .banner, .op-layout > .card, .op-layout > .op-sysrail > .card,
++  .op-layout > .op-tools > .card, .op-layout > .op-way > .card,
++  .op .skel::after, .op .toast, .op .menu, .op .helpdlg, .op-auth,
++  .op-console-cursor { animation: none; }
+   .op-estop:active, .op .btn:active:not(:disabled), .op .pad button:active { transform: none; }
+-  .op-main > .card, .op-main > .banner, .op-sticky, .op-auth { opacity: 1; transform: none; }
++  .op-main > .banner, .op-layout > .card, .op-sticky, .op-auth { opacity: 1; transform: none; }
+ }
+diff --git a/src/lib/control/bot-persist.ts b/src/lib/control/bot-persist.ts
+index 1d5a1a7..78903b8 100644
+--- a/src/lib/control/bot-persist.ts
++++ b/src/lib/control/bot-persist.ts
+@@ -3,7 +3,7 @@ import { BOTS, type BotId } from '@/lib/telemetry/protocol';
+ const KEY = 'amr-control-bot';
+ 
+ export function isBotId(v: string | null | undefined): v is BotId {
+-  return BOTS.some((b) => b.id === v);
++  return !!v && BOTS.some((b) => b.id === v);
+ }
+ 
+ /** URL `?bot=` wins, then localStorage, then Hardware bot. */
+-- 
+2.43.0
+

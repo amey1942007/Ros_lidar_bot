@@ -52,24 +52,29 @@ def _launch_setup(context, *args, **kwargs):
         # Soften CycloneDDS discovery chatter when RViz joins from another host.
         actions.append(SetEnvironmentVariable("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] [{name}]: {message}"))
 
-    # ── Web dashboard ───────────────────────────────────────────────────────
-    # Serves the interactive GUI at http://<pi-ip>:8080 — open it in a
-    # browser on the laptop (the Pi is headless over SSH, so no X11 needed).
-    # Status board + live robot/lidar view + on-demand tools (IMU test,
-    # IMU calibration, drive-distance) + click-to-send nav goals + E-STOP.
-    dashboard = Node(
-        package=package_name,
-        executable="robot_dashboard",
-        name="robot_dashboard",
-        output="screen",
-        emulate_tty=True,
-        respawn=True,
-        respawn_delay=3.0,
-        parameters=[{
-            "port": 8080,
-            "expect_frontier": expect_frontier,
-        }],
+    # ── Web dashboard (optional) ────────────────────────────────────────────
+    # Local Pi browser UI at :8080. Not required for amrslam.tech/control when
+    # the cloud bridge uses AMR_SOURCE=ros (reads /odom /scan /map directly).
+    # Keep it if you want the local GUI, tool runner, or a Tailscale relay that
+    # pulls SSE from the Pi over HTTP.
+    enable_robot_dashboard = LaunchConfiguration("enable_robot_dashboard").perform(context).lower() in (
+        "1", "true", "yes", "on",
     )
+    dashboard = None
+    if enable_robot_dashboard:
+        dashboard = Node(
+            package=package_name,
+            executable="robot_dashboard",
+            name="robot_dashboard",
+            output="screen",
+            emulate_tty=True,
+            respawn=True,
+            respawn_delay=3.0,
+            parameters=[{
+                "port": 8080,
+                "expect_frontier": expect_frontier,
+            }],
+        )
 
     # ── 1. Robot State Publisher ─────────────────────────────────────────────
     rsp = IncludeLaunchDescription(
@@ -356,7 +361,6 @@ def _launch_setup(context, *args, **kwargs):
     )
 
     actions.extend([
-        dashboard,
         # ── Stage 1 (T=0s): Hardware + EKF ─────────────────────────────────────
         rsp,
         imu_node,
@@ -368,6 +372,8 @@ def _launch_setup(context, *args, **kwargs):
         camera_servo,
         ekf_node,
     ])
+    if dashboard is not None:
+        actions.insert(0, dashboard)
     
     # Dynamic auto-detection for /dev/input/js* port.
     # web_gamepad publishes zeros on /joy when stale, so it is started only in
@@ -439,6 +445,15 @@ def generate_launch_description():
                 "curses/keyboard/terminal = keyboard teleop_interface; "
                 "0/false/no = force web gamepad even if a js device exists; "
                 "anything else (including auto) = web gamepad unless /dev/input/js* is found."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "enable_robot_dashboard",
+            default_value="false",
+            description=(
+                "If true, start the optional local robot_dashboard (:8080). "
+                "Default false: cloud /control uses AMR_SOURCE=ros on the Pi (or a Tailscale relay). "
+                "Set true only if you still want the Pi browser UI or an HTTP SSE front for a relay."
             ),
         ),
         DeclareLaunchArgument(

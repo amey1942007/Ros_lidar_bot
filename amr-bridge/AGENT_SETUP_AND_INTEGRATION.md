@@ -305,9 +305,11 @@ Layout matches `web_gamepad_node` (Xbox):
 
 **Best:** set `AMR_GAMEPAD_URL=http://127.0.0.1:8765` and keep `web_gamepad_node`
 running so `/joy` is published at 30 Hz into the existing teleop stack.
+`AMR_SOURCE=ros` still POSTs to that URL (it does not need `robot_dashboard`).
 
-**Fallback:** without gamepad URL, bridge maps left stick → `/api/nudge` only
-(no face buttons / shoulders).
+**Fallback:** without gamepad URL, bridge maps left stick → nudge/`/cmd_vel` only
+(no face buttons / shoulders). Signs match web_gamepad: axes[1]=+forward,
+axes[0]=+left yaw.
 
 ---
 
@@ -330,6 +332,7 @@ running so `/joy` is published at 30 Hz into the existing teleop stack.
 | SSE reconnect loop | Dashboard not on `AMR_DASHBOARD_URL` |
 | Online but Drive noop | Not controller lock holder; rank 0 Viewer |
 | Joy weak / no buttons | `AMR_GAMEPAD_URL` unset (nudge fallback) |
+| Stick / nav_goal noop from site | Site public cmds while `AMR_PUBLIC_CHANNEL=0`; set `NEXT_PUBLIC_PRIVATE_CONTROL=1` |
 | Camera empty | Vision off; no JPEG scrape; set `AMR_CAMERA_URL` |
 | `touch_amr_bot` errors in logs | Token mismatch vs `amr_bridge_config` |
 

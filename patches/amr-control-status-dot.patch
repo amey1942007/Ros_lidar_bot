@@ -1,0 +1,250 @@
+From f889d4fc2124a511978ed95a3ebdbe324145bd16 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 19 Oct 2026 15:01:06 +0000
+Subject: [PATCH] Simplify control link status to a color dot.
+
+Remove the secondary status strip (signs + telem). Replace Offline /
+Connecting / Connected text with a green / yellow / red dot.
+---
+ src/components/control/Dashboard.tsx | 73 +++++------------------
+ src/components/control/dashboard.css | 87 +++++++++++-----------------
+ 2 files changed, 50 insertions(+), 110 deletions(-)
+
+diff --git a/src/components/control/Dashboard.tsx b/src/components/control/Dashboard.tsx
+index 1077ac1..853e529 100644
+--- a/src/components/control/Dashboard.tsx
++++ b/src/components/control/Dashboard.tsx
+@@ -8,7 +8,6 @@ import { asset } from '@/lib/asset';
+ import { getAuthClient, getBroadcastClient } from '@/services/supabase-client';
+ import { BOTS, type BotId, type ControlCommand } from '@/lib/telemetry/protocol';
+ import { offlineMessage, type LinkPhase } from '@/lib/telemetry/link-status';
+-import { SIGN_DOWN, SIGN_ERROR, SIGN_NO_DATA, type StatusSignId } from '@/lib/telemetry/status-signs';
+ import { useControlSession } from '@/lib/telemetry/useControlSession';
+ import { clampLinAng, clampToolParams, commandRejectText, estopLatchAllowed, mapNameError, JOY_HZ, NUDGE_REPEAT_MS, ESTOP_RETRY_MS } from '@/lib/telemetry/commands';
+ import { COPY, countdownFraction, formatCountdown, initialOf, secondsRemaining } from '@/lib/control/access';
+@@ -133,7 +132,6 @@ export function Dashboard() {
+   const robotLive = tel.link.phase === 'live';
+   const canEstop = controller;
+   const canEdit = canEstop && estop === 'ready' && robotLive && !tel.heartbeatStale && !tel.realtimeDown;
+-  const highLag = robotLive && tel.slowLink;
+   const bot = BOTS.find((b) => b.id === botId)!;
+ 
+   const send = useCallback(async (cmd: ControlCommand) => {
+@@ -328,9 +326,6 @@ export function Dashboard() {
+     return () => window.clearTimeout(handle);
+   }, [firstRequest, controller, now, toast]);
+ 
+-  const nodes = tel.frame?.nodes ?? {};
+-  const nodeKeys = Object.keys(nodes);
+-  const allOk = nodeKeys.length > 0 && nodeKeys.every((k) => nodes[k]);
+   const driverName = tel.controllerId == null
+     ? null
+     : tel.controllerId === userId ? 'You' : (tel.controllerName || tel.names[tel.controllerId] || 'Someone');
+@@ -365,10 +360,7 @@ export function Dashboard() {
+               <button key={b.id} type="button" aria-pressed={b.id === botId} onClick={() => selectBot(b.id)}>{b.label}</button>
+             ))}
+           </div>
+-          <LinkStatus phase={tel.link.phase} label={tel.link.label} highLag={highLag} />
+-          {tel.link.showLag && (
+-            <span className="mono" style={{ color: 'var(--warn)' }} aria-hidden="true">lag {Math.round(tel.lagMs)} ms</span>
+-          )}
++          <LinkDot phase={tel.link.phase} label={tel.link.label} lagMs={tel.link.showLag ? tel.lagMs : null} />
+           <div className="op-grow">
+             {tel.joining ? <span className="skel" aria-hidden /> : (
+               <span className="who" title="Currently driving">
+@@ -425,23 +417,6 @@ export function Dashboard() {
+           </div>
+         </header>
+         {controller && estop === 'latched' && <div className="op-estop-bar" role="status">Emergency stop active</div>}
+-        <div className="op-status" aria-label="Status">
+-          <div className="op-status-row">
+-            <div className="op-signs">
+-              <Sign id="nodata" on={tel.signs.active === 'nodata'} label={SIGN_NO_DATA} />
+-              <Sign id="down" on={tel.signs.active === 'down'} label={SIGN_DOWN} />
+-              <Sign id="error" on={tel.signs.active === 'error'} label={SIGN_ERROR} detail={tel.signs.errorReason} />
+-            </div>
+-            {robotLive && <span className={`pill ${allOk ? 'ok' : 'bad'}`}>{allOk ? 'Systems go' : 'Degraded'}</span>}
+-            {robotLive && tel.frame?.tool && <span className="pill run">{tel.frame.tool}</span>}
+-            {robotLive && tel.frame?.vision && <span className="pill vision">Vision</span>}
+-            {robotLive && tel.frame?.saving && <span className="pill saving">Saving map</span>}
+-            {tel.channelNote && <span className="op-note">{tel.channelNote}</span>}
+-            <span className="op-telem mono" aria-label="Telemetry">
+-              x {fmt(tel.frame?.pose?.[0], 2)} · y {fmt(tel.frame?.pose?.[1], 2)} · yaw {tel.frame?.pose ? (tel.frame.pose[2] * 57.2958).toFixed(1) : '–'}° · v {fmt(tel.frame?.vel[0], 2)}
+-            </span>
+-          </div>
+-        </div>
+       </div>
+ 
+       {controller && requests.length > 0 && (
+@@ -877,43 +852,25 @@ function CameraPip({ frame, phase, lastAt, now }: { frame: NormState | null; pha
+   );
+ }
+ 
+-function Sign({ id, on, label, detail }: { id: StatusSignId; on: boolean; label: string; detail?: string | null }) {
++/** Link state as a single color dot: green=live, yellow=connecting/idle, red=offline. */
++function LinkDot({ phase, label, lagMs }: { phase: LinkPhase; label: string; lagMs: number | null }) {
++  const tone = phase === 'live' ? 'ok' : phase === 'offline' ? 'err' : 'warn';
++  const title = lagMs != null ? `${label} · lag ${Math.round(lagMs)} ms` : label;
+   return (
+-    <span className={`op-sign sign-${id}`} data-on={on ? 'true' : 'false'} aria-current={on ? 'true' : undefined}>
+-      <SignMark id={id} />
+-      <span>{label}</span>
+-      {on && detail && <span className="reason">{detail}</span>}
++    <span
++      className={`op-link-dot ${tone}`}
++      role="status"
++      aria-live="polite"
++      aria-atomic="true"
++      aria-label={title}
++      title={title}
++    >
++      <span className="op-link-dot-core" aria-hidden />
++      <span className="sr-only">{title}</span>
+     </span>
+   );
+ }
+ 
+-function SignMark({ id }: { id: StatusSignId }) {
+-  if (id === 'nodata') return <span className="sign-half" aria-hidden />;
+-  if (id === 'down') return <span className="sign-hollow" aria-hidden />;
+-  return (
+-    <svg className="sign-x" viewBox="0 0 12 12" aria-hidden>
+-      <path d="M2 2 L10 10 M10 2 L2 10" fill="none" stroke="currentColor" strokeWidth="1.6" />
+-    </svg>
+-  );
+-}
+-
+-function LinkStatus({ phase, label, highLag }: { phase: LinkPhase; label: string; highLag: boolean }) {
+-  return (
+-    <span className={`pill link ${phase}`} role="status" aria-live="polite" aria-atomic="true">
+-      <StatusMark phase={phase} />
+-      {label}
+-      {highLag && <span className="sr-only"> Slow connection</span>}
+-    </span>
+-  );
+-}
+-
+-function StatusMark({ phase }: { phase: LinkPhase }) {
+-  if (phase === 'connecting') return <span className="status-ring" aria-hidden />;
+-  if (phase === 'idle') return <span className="status-idle" aria-hidden />;
+-  if (phase === 'live') return <span className="status-live" aria-hidden />;
+-  return <span className="status-off" aria-hidden />;
+-}
+-
+ function Eye() {
+   return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></svg>;
+ }
+diff --git a/src/components/control/dashboard.css b/src/components/control/dashboard.css
+index 5277e36..b165019 100644
+--- a/src/components/control/dashboard.css
++++ b/src/components/control/dashboard.css
+@@ -129,63 +129,46 @@
+ .op .pill.vision { background: rgba(123, 47, 247, 0.18); color: #d9ccff; }
+ .op .pill.saving { background: rgba(123, 47, 247, 0.18); color: #d9ccff; }
+ .op .pill.viewer { background: transparent; color: var(--dim); border: 1px solid var(--edge); }
+-.op .pill.link.live { background: rgba(94, 230, 168, 0.14); color: var(--ok); }
+-.op .pill.link.idle { background: rgba(255, 183, 77, 0.14); color: var(--warn); }
+-.op .pill.link.connecting { background: transparent; color: var(--dim); border: 1px solid var(--edge); }
+-.op .pill.link.offline { background: rgba(255, 107, 139, 0.14); color: var(--err); }
+-.op .status-ring, .op .status-idle, .op .status-live, .op .status-off {
+-  width: 7px; height: 7px; flex: none; border-radius: 50%; display: inline-block;
+-}
+-.op .status-ring { border: 1.5px solid var(--dim); animation: control-status-pulse 1.6s var(--ease-out) infinite; }
+-.op .status-idle { border: 1px solid var(--warn); background: linear-gradient(90deg, var(--warn) 50%, transparent 50%); }
+-.op .status-live { background: var(--ok); box-shadow: 0 0 0 0 rgba(94, 230, 168, 0.5); animation: op-live-glow 2s ease-out infinite; }
+-.op .status-off { border: 1px solid var(--err); background: transparent; }
+-@keyframes control-status-pulse {
+-  0% { box-shadow: 0 0 0 0 rgba(125, 143, 161, 0.55); }
+-  100% { box-shadow: 0 0 0 6px rgba(125, 143, 161, 0); }
++/* Link state: single colored dot (green / yellow / red). Text lives in aria-label + title. */
++.op-link-dot {
++  display: inline-flex; align-items: center; justify-content: center;
++  width: 18px; height: 18px; flex: none; border-radius: 50%;
++  background: transparent;
++}
++.op-link-dot-core {
++  width: 10px; height: 10px; border-radius: 50%; display: block;
++}
++.op-link-dot.ok .op-link-dot-core {
++  background: var(--ok);
++  box-shadow: 0 0 0 0 rgba(94, 230, 168, 0.5);
++  animation: op-live-glow 2s ease-out infinite;
++}
++.op-link-dot.warn .op-link-dot-core {
++  background: var(--warn);
++  box-shadow: 0 0 0 0 rgba(255, 183, 77, 0.45);
++  animation: op-warn-glow 1.6s ease-out infinite;
++}
++.op-link-dot.err .op-link-dot-core {
++  background: var(--err);
++  box-shadow: 0 0 0 0 rgba(255, 107, 139, 0.4);
++  animation: op-err-glow 1.8s ease-out infinite;
+ }
+ @keyframes op-live-glow {
+   0% { box-shadow: 0 0 0 0 rgba(94, 230, 168, 0.45); }
+   100% { box-shadow: 0 0 0 8px rgba(94, 230, 168, 0); }
+ }
+-
+-/* Status strip — primary compartment, always on top */
+-.op-status {
+-  display: grid;
+-  grid-template-columns: 1fr;
+-  gap: 6px;
+-  padding: 8px 14px 10px;
+-  border-top: 1px solid rgba(255,255,255,0.06);
+-}
+-.op-status-row {
+-  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px;
+-}
+-.op-signs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0; background: transparent; border: 0; }
+-.op-sign {
+-  display: inline-flex; align-items: center; gap: 6px; min-height: 26px;
+-  padding: 2px 8px; border: 1px solid transparent; border-radius: 8px;
+-  color: var(--dim); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+-  background: rgba(255,255,255,0.03); transition: border-color 200ms, color 200ms, background 200ms;
+-}
+-.op-sign[data-on="true"] { border-color: currentColor; color: var(--tx); background: rgba(255,255,255,0.06); }
+-.op-sign.sign-nodata[data-on="true"] { color: var(--warn); }
+-.op-sign.sign-down[data-on="true"] { color: var(--err); }
+-.op-sign.sign-error[data-on="true"] { color: var(--err); }
+-.op-sign .reason { font-weight: 500; color: var(--dim); text-transform: none; letter-spacing: 0; }
+-.op-sign .sign-half, .op-sign .sign-hollow, .op-sign .sign-x { width: 10px; height: 10px; flex: none; }
+-.op-sign .sign-half {
+-  border-radius: 50%; border: 1.5px solid currentColor;
+-  background: linear-gradient(90deg, currentColor 50%, transparent 50%);
+-}
+-.op-sign .sign-hollow { border-radius: 50%; border: 1.5px solid currentColor; background: transparent; }
+-.op-sign .sign-x { display: block; }
+-.op-note { font-size: 12px; font-weight: 500; color: var(--dim); }
+-.op-telem {
+-  margin-left: auto; font-size: 12px; color: #d9ccff;
+-  padding: 4px 10px; border-radius: 8px;
+-  background: rgba(123, 47, 247, 0.12); border: 1px solid rgba(123, 47, 247, 0.25);
++@keyframes op-warn-glow {
++  0% { box-shadow: 0 0 0 0 rgba(255, 183, 77, 0.5); }
++  100% { box-shadow: 0 0 0 7px rgba(255, 183, 77, 0); }
++}
++@keyframes op-err-glow {
++  0% { box-shadow: 0 0 0 0 rgba(255, 107, 139, 0.45); }
++  100% { box-shadow: 0 0 0 7px rgba(255, 107, 139, 0); }
++}
++.op .sr-only {
++  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
++  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+ }
+-
+ .op-grow { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+ .op-estop {
+   background: var(--err); color: #050507; border: 0; border-radius: 10px;
+@@ -679,7 +662,7 @@
+   .op .telem { margin-left: 0; width: 100%; }
+ }
+ @media (prefers-reduced-motion: reduce) {
+-  .op .spin, .op .pulse, .op .status-ring, .op .status-live, .op-estop-bar,
++  .op .spin, .op .pulse, .op-link-dot-core, .op-estop-bar,
+   .op-sticky, .op-main > .banner, .op-layout > .card, .op-layout > .op-sysrail > .card,
+   .op-layout > .op-tools > .card, .op-layout > .op-way > .card,
+   .op .skel::after, .op .toast, .op .menu, .op .helpdlg, .op-auth,
+-- 
+2.43.0
+

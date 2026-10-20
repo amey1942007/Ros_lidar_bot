@@ -45,6 +45,7 @@ from amr_telemetry_bridge.protocol import (  # noqa: E402
     channel_name,
     private_topic,
 )
+from amr_telemetry_bridge.ros_source import resolve_source  # noqa: E402
 
 
 def _load_env_file(path: Path) -> dict[str, str]:
@@ -73,6 +74,18 @@ def _missing_required(env: dict[str, str]) -> list[str]:
     if not env.get("AMR_BRIDGE_TOKEN"):
         missing.append("AMR_BRIDGE_TOKEN")
     return missing
+
+
+class SourceModeTests(unittest.TestCase):
+    def test_resolve_source_default_ros(self):
+        self.assertEqual(resolve_source(None), "ros")
+        self.assertEqual(resolve_source(""), "ros")
+        self.assertEqual(resolve_source("ROS"), "ros")
+
+    def test_resolve_source_dashboard_aliases(self):
+        self.assertEqual(resolve_source("dashboard"), "dashboard")
+        self.assertEqual(resolve_source("http"), "dashboard")
+        self.assertEqual(resolve_source("sse"), "dashboard")
 
 
 class ProtocolTests(unittest.TestCase):
@@ -1014,6 +1027,9 @@ class _FakeHttp:
         self.posts.append(("http", url, json, timeout))
         return _FakeResponse()
 
+    async def aclose(self):
+        return None
+
 
 class _FakeDash:
     def __init__(self):
@@ -1119,15 +1135,19 @@ async def _stop_loops(bridge, motion_task, original_http, old_gamepad, estop_tas
         os.environ.pop("AMR_GAMEPAD_URL", None)
     else:
         os.environ["AMR_GAMEPAD_URL"] = old_gamepad
-    bridge.dash._http = original_http
-    await bridge.dash.close()
+    if bridge.dash is not None:
+        bridge.dash._http = original_http
+        await bridge.dash.close()
+    await bridge._http.aclose()
 
 
 def _close_bridge(bridge) -> None:
     import asyncio
 
     async def _close():
-        await bridge.dash.close()
+        if bridge.dash is not None:
+            await bridge.dash.close()
+        await bridge._http.aclose()
 
     asyncio.run(_close())
 
@@ -1242,8 +1262,62 @@ class BridgeDispatchTests(unittest.TestCase):
                     os.environ["AMR_GAMEPAD_URL"] = old_gamepad
                 bridge.dash._http = original_http
                 await bridge.dash.close()
+                await bridge._http.aclose()
 
         asyncio.run(run())
+
+    def test_ros_source_posts_joy_to_gamepad_without_dashboard(self):
+        """AMR_SOURCE=ros must still hit web_gamepad /api/joy (dash is None)."""
+        import asyncio
+
+        from amr_telemetry_bridge.bridge import COMMAND_HTTP_TIMEOUT_S, Bridge
+
+        async def run():
+            bridge = Bridge(
+                bot_id="hardware-bot",
+                supabase_url="https://example.supabase.co",
+                api_key="sb_publishable_example",
+                bridge_token="tok",
+                dashboard_url="http://127.0.0.1:8080",
+                camera_url=None,
+                camera_jpeg_max_kb=24,
+                public_channel=False,
+                private_channel=False,
+                source="ros",
+            )
+            self.assertIsNone(bridge.dash)
+            posts: list = []
+            bridge._http = _FakeHttp(posts)
+            old_gamepad = os.environ.get("AMR_GAMEPAD_URL")
+            os.environ["AMR_GAMEPAD_URL"] = "http://127.0.0.1:8765"
+            try:
+                await bridge._post_joy(
+                    {"type": "joy", "a": [0.0, 0.8, 0, 0, 0, 0, 0, 0], "b": 0},
+                    COMMAND_HTTP_TIMEOUT_S,
+                )
+                self.assertEqual(len(posts), 1)
+                self.assertEqual(posts[0][1], "http://127.0.0.1:8765/api/joy")
+                self.assertEqual(posts[0][2]["a"][1], 0.8)
+                self.assertEqual(posts[0][2]["b"], 0)
+            finally:
+                if old_gamepad is None:
+                    os.environ.pop("AMR_GAMEPAD_URL", None)
+                else:
+                    os.environ["AMR_GAMEPAD_URL"] = old_gamepad
+                await bridge._http.aclose()
+
+        asyncio.run(run())
+
+    def test_joy_nudge_fallback_keeps_web_gamepad_signs(self):
+        """Without AMR_GAMEPAD_URL, up=+lin and left=+ang (no double negate)."""
+        from amr_telemetry_bridge.bridge import Bridge
+
+        lin, ang = Bridge._joy_to_nudge([0.5, 0.8, 0, 0, 0, 0, 0, 0])
+        self.assertAlmostEqual(lin, 0.8 * 0.35)
+        self.assertAlmostEqual(ang, 0.5 * 0.9)
+        lin_r, ang_r = Bridge._joy_to_nudge([-0.5, -0.8, 0, 0, 0, 0, 0, 0])
+        self.assertAlmostEqual(lin_r, -0.8 * 0.35)
+        self.assertAlmostEqual(ang_r, -0.5 * 0.9)
 
     def test_schedule_cap_closes_extra_coroutines(self):
         import asyncio
@@ -1291,6 +1365,7 @@ class BridgeDispatchTests(unittest.TestCase):
             finally:
                 release.set()
                 await bridge.dash.close()
+                await bridge._http.aclose()
 
         asyncio.run(run())
 
@@ -1428,6 +1503,7 @@ class BridgeDispatchTests(unittest.TestCase):
                     os.environ["AMR_GAMEPAD_URL"] = old_gamepad
                 bridge.dash._http = original_http
                 await bridge.dash.close()
+                await bridge._http.aclose()
 
         asyncio.run(run())
 
@@ -1493,6 +1569,7 @@ class BridgeDispatchTests(unittest.TestCase):
                 release.set()
                 await asyncio.sleep(0.05)
                 await bridge.dash.close()
+                await bridge._http.aclose()
 
         asyncio.run(run())
 

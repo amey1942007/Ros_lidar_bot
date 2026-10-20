@@ -19,6 +19,15 @@ Cloud telemetry bridge for [Ros_lidar_bot](https://github.com/amey1942007/Ros_li
 
 Same-origin auth with the marketing site, existing AuthGuard + Supabase session, one CSP surface. Camera can still be a separate Cloudflare Tunnel URL when the browser cannot reach the Pi over Tailscale.
 
+## Do you need `robot_dashboard`?
+
+**No for the website.** `/control` only sees Supabase Realtime. The dashboard is an optional local Pi UI (`enable_robot_dashboard` defaults to **false**).
+
+- Recommended on the Pi (campus Wi‑Fi + Tailscale for SSH): `AMR_SOURCE=ros` — bridge reads ROS topics, no `:8080` UI.
+- `AMR_SOURCE=dashboard` only if you turn the local UI back on.
+
+See [`TAILSCALE_RELAY.md`](./TAILSCALE_RELAY.md). Cloud smoke test: `scripts/demo_cloud_telemetry.py` (full hb/telemetry/map/log suite).
+
 ## Include in ROS launch
 
 **Yes.** Use `launch/amr_bridge.launch.py` from your bringup (after the local dashboard is up). See [`launch/INCLUDE_IN_ROSLIDAR.md`](launch/INCLUDE_IN_ROSLIDAR.md).
