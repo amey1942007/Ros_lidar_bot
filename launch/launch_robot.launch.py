@@ -440,7 +440,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "use_joystick",
-            default_value="auto",
+            default_value="true",
             description=(
                 "Joystick teleop: 1/true/yes = physical controller; "
                 "curses/keyboard/terminal = keyboard teleop_interface; "
@@ -450,7 +450,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "enable_robot_dashboard",
-            default_value="false",
+            default_value="true",
             description=(
                 "If true, start the optional local robot_dashboard (:8080). "
                 "Default false: cloud /control uses AMR_SOURCE=ros on the Pi (or a Tailscale relay). "
