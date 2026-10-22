@@ -81,7 +81,7 @@ def generate_launch_description():
         output="screen",
         parameters=[{
             "min_safe_distance": 0.25,    # stop if obstacle within 25 cm
-            "front_opening_deg": 180.0,   # ±90° covers sides — prevents sideways clipping
+            "front_opening_deg": 90.0,    # ±45° — only direct frontal obstacles block
             "rear_opening_deg": 60.0,     # rear safety arc (±30° from tail)
         }],
     )
