@@ -31,14 +31,15 @@ def _launch_setup(context, *args, **kwargs):
         "true",
         "yes",
     )
-    enable_amr_bridge = LaunchConfiguration("enable_amr_bridge").perform(context).lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    amr_bot_id = LaunchConfiguration("amr_bot_id").perform(context)
-    amr_bridge_python = LaunchConfiguration("amr_bridge_python").perform(context)
-    amr_bridge_env = LaunchConfiguration("amr_bridge_env").perform(context)
+    # ── AMR bridge disabled — keeping code for later use ──────────────────
+    # enable_amr_bridge = LaunchConfiguration("enable_amr_bridge").perform(context).lower() in (
+    #     "1",
+    #     "true",
+    #     "yes",
+    # )
+    # amr_bot_id = LaunchConfiguration("amr_bot_id").perform(context)
+    # amr_bridge_python = LaunchConfiguration("amr_bridge_python").perform(context)
+    # amr_bridge_env = LaunchConfiguration("amr_bridge_env").perform(context)
 
     out = "screen" if verbose else "log"
     # FATAL = only crashes; keeps the dashboard TTY quiet.
@@ -406,21 +407,21 @@ def _launch_setup(context, *args, **kwargs):
     ])
 
     # ── Cloud bridge → https://amrslam.tech/control (after dashboard :8080) ─
-    # Skips cleanly if /etc/amr-bridge.env is missing secrets.
-    if enable_amr_bridge:
-        bridge = IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(
-                os.path.join(pkg_share, "launch", "amr_bridge.launch.py")
-            ),
-            launch_arguments={
-                "bot_id": amr_bot_id,
-                "env_file": amr_bridge_env,
-                "dashboard": "http://127.0.0.1:8080",
-                "gamepad": "http://127.0.0.1:8765" if web_gamepad_started else "none",
-                "python": amr_bridge_python,
-            }.items(),
-        )
-        actions.append(TimerAction(period=5.0, actions=[bridge]))
+    # AMR bridge disabled — keeping code for later use.
+    # if enable_amr_bridge:
+    #     bridge = IncludeLaunchDescription(
+    #         PythonLaunchDescriptionSource(
+    #             os.path.join(pkg_share, "launch", "amr_bridge.launch.py")
+    #         ),
+    #         launch_arguments={
+    #             "bot_id": amr_bot_id,
+    #             "env_file": amr_bridge_env,
+    #             "dashboard": "http://127.0.0.1:8080",
+    #             "gamepad": "http://127.0.0.1:8765" if web_gamepad_started else "none",
+    #             "python": amr_bridge_python,
+    #         }.items(),
+    #     )
+    #     actions.append(TimerAction(period=5.0, actions=[bridge]))
 
     return actions
 
@@ -456,28 +457,29 @@ def generate_launch_description():
                 "Set true only if you still want the Pi browser UI or an HTTP SSE front for a relay."
             ),
         ),
+        # AMR bridge disabled — keeping code for later use.
         DeclareLaunchArgument(
             "enable_amr_bridge",
-            default_value="true",
+            default_value="false",
             description="If true, start amr_telemetry_bridge (cloud → amrslam.tech/control).",
         ),
-        DeclareLaunchArgument(
-            "amr_bot_id",
-            default_value="hardware-bot",
-            description="Supabase /control bot id: hardware-bot | amr4",
-        ),
-        DeclareLaunchArgument(
-            "amr_bridge_env",
-            default_value="/etc/amr-bridge.env",
-            description="Pi secrets file for the cloud bridge (chmod 600).",
-        ),
-        DeclareLaunchArgument(
-            "amr_bridge_python",
-            default_value="auto",
-            description=(
-                "auto = <repo>/amr-bridge/.venv/bin/python if present, else python3; "
-                "or give an explicit interpreter path"
-            ),
-        ),
+        # DeclareLaunchArgument(
+        #     "amr_bot_id",
+        #     default_value="hardware-bot",
+        #     description="Supabase /control bot id: hardware-bot | amr4",
+        # ),
+        # DeclareLaunchArgument(
+        #     "amr_bridge_env",
+        #     default_value="/etc/amr-bridge.env",
+        #     description="Pi secrets file for the cloud bridge (chmod 600).",
+        # ),
+        # DeclareLaunchArgument(
+        #     "amr_bridge_python",
+        #     default_value="auto",
+        #     description=(
+        #         "auto = <repo>/amr-bridge/.venv/bin/python if present, else python3; "
+        #         "or give an explicit interpreter path"
+        #     ),
+        # ),
         OpaqueFunction(function=_launch_setup),
     ])
