@@ -7,9 +7,12 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    ExecuteProcess,
+    RegisterEventHandler,
     SetEnvironmentVariable,
     TimerAction,
 )
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -101,6 +104,22 @@ def generate_launch_description():
         output="screen",
     )
 
+    # Wait (up to 120 s) until Gazebo's world "create" service exists. A fixed
+    # timer is racy: `create` only waits 5 s for the service, so on a slow start
+    # (cold shader cache, heavy world) it times out and the robot never spawns.
+    wait_for_gz = ExecuteProcess(
+        cmd=[
+            "bash", "-c",
+            "for i in $(seq 1 120); do "
+            "ign service -l 2>/dev/null | grep -q '/world/default/create' && exit 0; "
+            "sleep 1; done; echo 'Gazebo create service not available' >&2; exit 1",
+        ],
+        output="screen",
+    )
+    spawn_after_gz_ready = RegisterEventHandler(
+        OnProcessExit(target_action=wait_for_gz, on_exit=[spawn_entity])
+    )
+
     # ── EKF: fuses wheel odometry + IMU → clean /odom ────────────────────────
     ekf_node = Node(
         package="robot_localization",
@@ -165,9 +184,9 @@ def generate_launch_description():
         gz_sim,
         bridge,
         safety_stop,
-        # Stage 2 (T=5s): spawn robot — increased from 3s to give heavier worlds
-        #   (warehouse, office) time to fully load before the robot is inserted.
-        TimerAction(period=5.0, actions=[spawn_entity]),
+        # Stage 2: spawn robot once Gazebo's create service is actually up
+        wait_for_gz,
+        spawn_after_gz_ready,
         # Stage 3 (T=8s): EKF + SLAM after robot is spawned and sensors publishing
         TimerAction(period=8.0, actions=[ekf_node, slam_toolbox]),
         # Stage 4 (T=18s): Nav2 after SLAM has had time to build initial map

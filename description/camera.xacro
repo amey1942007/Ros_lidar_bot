@@ -10,9 +10,9 @@
          - Y: distance left from the center of the chassis bottom (positive left, negative right).
          - Z: height upwards from the center of the chassis bottom face.
        ======================================================================= -->
-  <xacro:property name="cam_x"  value="0.0"/>  <!-- forward/back  -->
+  <xacro:property name="cam_x"  value="${chassis_length/2 + 0.0125}"/>  <!-- default: on front face (must be outside chassis) -->
   <xacro:property name="cam_y"  value="0.0"/>  <!-- left/right    -->
-  <xacro:property name="cam_z"  value="0.0"/>  <!-- height        -->
+  <xacro:property name="cam_z"  value="${chassis_height*0.6}"/>  <!-- height        -->
 
   <!-- Camera box size  -->
   <xacro:property name="cam_size_x" value="0.025"/>  <!-- depth         -->
@@ -63,5 +63,29 @@
   </joint>
 
   <link name="camera_link_optical"/>
+
+  <!-- Gazebo camera -> Gazebo topics camera/image_raw + camera/camera_info -->
+  <gazebo reference="camera_link">
+    <sensor name="camera" type="camera">
+      <pose>0 0 0 0 0 0</pose>
+      <topic>camera/image_raw</topic>
+      <ignition_frame_id>camera_link_optical</ignition_frame_id>
+      <update_rate>15</update_rate>
+      <visualize>true</visualize>
+      <always_on>true</always_on>
+      <camera>
+        <horizontal_fov>1.089</horizontal_fov>
+        <image>
+          <format>R8G8B8</format>
+          <width>640</width>
+          <height>480</height>
+        </image>
+        <clip>
+          <near>0.05</near>
+          <far>8.0</far>
+        </clip>
+      </camera>
+    </sensor>
+  </gazebo>
 
 </robot>

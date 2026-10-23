@@ -12,11 +12,14 @@
        ======================================================================= -->
   <xacro:property name="laser_x"      value="0.0"/>  <!-- forward/back  -->
   <xacro:property name="laser_y"      value="0.0"/>  <!-- left/right    -->
-  <xacro:property name="laser_z"      value="0.0"/>  <!-- height above base_link (e.g. 2nd floor height) -->
 
   <!-- Lidar cylinder dimensions (default ~RPLidar A1) -->
   <xacro:property name="laser_radius" value="0.035"/> <!-- 70 mm diameter -->
   <xacro:property name="laser_height" value="0.040"/> <!-- 40 mm tall     -->
+
+  <!-- Default: mounted ON TOP of the chassis. Must be above the chassis top
+       (chassis_height) or the chassis blocks every ray and /scan is empty. -->
+  <xacro:property name="laser_z"      value="${chassis_height + laser_height/2}"/>
 
   <!-- ============================================================
        LIDAR JOINT & LINK
@@ -53,5 +56,37 @@
         ixy="0" iyz="0" ixz="0"/>
     </inertial>
   </link>
+
+  <!-- Gazebo GPU lidar -> Gazebo topic "scan" (bridged to ROS /scan) -->
+  <gazebo reference="laser_frame">
+    <sensor name="gpu_lidar" type="gpu_lidar">
+      <pose>0 0 0 0 0 0</pose>
+      <topic>scan</topic>
+      <ignition_frame_id>laser_frame</ignition_frame_id>
+      <update_rate>15</update_rate>
+      <visualize>true</visualize>
+      <always_on>true</always_on>
+      <ray>
+        <scan>
+          <horizontal>
+            <samples>360</samples>
+            <resolution>1</resolution>
+            <min_angle>-3.14159</min_angle>
+            <max_angle>3.14159</max_angle>
+          </horizontal>
+        </scan>
+        <range>
+          <min>0.15</min>
+          <max>12.0</max>
+          <resolution>0.01</resolution>
+        </range>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.01</stddev>
+        </noise>
+      </ray>
+    </sensor>
+  </gazebo>
 
 </robot>
