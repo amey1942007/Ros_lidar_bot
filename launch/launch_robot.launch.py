@@ -110,7 +110,7 @@ def _launch_setup(context, *args, **kwargs):
     )
 
     # ── 3. Motor Driver Node (DDSM115 via UART) ──────────────────────────────
-    # Filtered path: Nav2 / teleop → /cmd_vel → safety_stop → /cmd_vel_safe → driver.
+    # Direct path: Nav2 / teleop → /cmd_vel → driver (safety_stop is disabled).
     driver_node = Node(
         package=package_name,
         executable="driver_node",
@@ -126,8 +126,8 @@ def _launch_setup(context, *args, **kwargs):
             "poll_rate": 20.0,
             # False: teleop W / ROS +X = physical forward on this chassis.
             "invert_drive": False,
-            # Only consume safety-filtered commands — never raw /cmd_vel.
-            "cmd_vel_topic": "/cmd_vel_safe",
+            # safety_stop is disabled, so the driver reads /cmd_vel directly.
+            "cmd_vel_topic": "/cmd_vel",
         }],
     )
 
@@ -194,7 +194,7 @@ def _launch_setup(context, *args, **kwargs):
         }],
     )
 
-    # Drop returns within 0.30 m of the lidar (chassis/mast frame hits).
+    # Drop returns within 0.35 m of the lidar (chassis/mast frame hits).
     # Without this, RViz /scan still shows the body even if Nav2 ignores it.
     scan_filter = Node(
         package=package_name,
@@ -205,42 +205,18 @@ def _launch_setup(context, *args, **kwargs):
         respawn=True,
         respawn_delay=2.0,
         parameters=[{
-            "min_range": 0.30,  # per user: nothing within 30 cm of the bot
+            # Measured 2026-10-23: chassis/pillar hits sit at 0.15-0.23 m, plus a
+            # persistent pillar at 0.304-0.310 m (~85 deg in laser frame) that
+            # slipped through the old 0.30 cutoff. 0.35 clears it with margin.
+            "min_range": 0.35,
         }],
     )
 
-    # ── 6. Safety Stop Node ──────────────────────────────────────────────────
-    # Scan-based velocity filter between Nav2/teleop and the motor driver
-    # (same wiring as the main-branch sim pipeline):
-    #   Nav2 / teleop → /cmd_vel → safety_stop → /cmd_vel_safe → driver
-    # Also publishes /safety_blocked, which frontier_explorer uses to abort
-    # goals that keep the robot pinned against an obstacle.
-    safety_stop = Node(
-        package=package_name,
-        executable="safety_stop_node",
-        name="safety_stop",
-        output=out,
-        arguments=log_args,
-        # If this node dies the driver gets no commands at all (fail-safe:
-        # robot stops) — respawn it so the pipeline recovers on its own.
-        respawn=True,
-        respawn_delay=2.0,
-        parameters=[{
-            # Stop for real obstacles just past the filtered near field.
-            "min_safe_distance": 0.35,
-            # /scan is already clipped at 0.30 m; keep ignore in sync.
-            "ignore_below": 0.30,
-            # 50° (was 90°): only a head-on obstacle blocks forward drive, so a
-            # crowd standing beside the robot no longer freezes it.
-            "front_opening_deg": 50.0,
-            "rear_opening_deg": 50.0,
-            # Hysteresis: release only once clear past 0.35 + 0.10 m — kills the
-            # stop-go chatter at the threshold in a crowd.
-            "clear_margin": 0.10,
-            # Hard-stop if wheel odometry dies (prevents Nav2 circle-on-stale-pose).
-            "odom_raw_timeout_sec": 0.5,
-        }],
-    )
+    # ── 6. Safety Stop Node — DISABLED ───────────────────────────────────────
+    # Removed from the launch on user request; driver_node now reads /cmd_vel
+    # directly. To re-enable: restore the safety_stop Node (safety_stop_node,
+    # see git history), add it to `actions`, and set driver_node's
+    # cmd_vel_topic back to /cmd_vel_safe.
 
     # ── 6b. Gamepad teleop ────────────────────────────────────────────────────
     # web_gamepad_node hosts a virtual Xbox controller webpage on the RPi5
@@ -345,7 +321,7 @@ def _launch_setup(context, *args, **kwargs):
     )
 
     # ── 9. Nav2 Navigation Stack ────────────────────────────────────────────
-    # Nav2 publishes /cmd_vel → safety_stop → /cmd_vel_safe → driver_node.
+    # Nav2 publishes /cmd_vel → driver_node (safety_stop is disabled).
     nav2 = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
@@ -366,7 +342,6 @@ def _launch_setup(context, *args, **kwargs):
         rsp,
         imu_node,
         driver_node,
-        safety_stop,
         odom_node,
         lidar_node,
         scan_filter,

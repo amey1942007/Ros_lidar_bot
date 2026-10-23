@@ -16,7 +16,7 @@ Bluetooth gamepad, and a cloud telemetry bridge.
 
 ```
 DDSM115 ←RS485→ driver_node  → /encoder
-                         ← /cmd_vel_safe
+                         ← /cmd_vel
 BNO055 ←Arduino Mega→ imu_node → /imu
 RPLidar S2E ←UDP→ sllidar_node → /scan_raw → scan_min_range_filter → /scan
 
@@ -24,19 +24,16 @@ odom_node ← /encoder → /odom_raw          (no TF)
 ekf_node  ← /odom_raw + /imu → /odom and TF odom → base_footprint
 slam_toolbox ← /scan → /map and TF map → odom
 nav2 ← /map + /scan + /odom → /cmd_vel
-safety_stop ← /cmd_vel + /scan → /cmd_vel_safe → driver_node
-             also publishes /safety_blocked
 ```
 
 Nav2, the gamepad, the keyboard teleop, and the dashboard all publish
-`/cmd_vel`. Only `safety_stop` publishes `/cmd_vel_safe`, and the driver
-subscribes to that. Forward and reverse are blocked when a return inside the
-front or rear opening is closer than `min_safe_distance` (0.35 m in
-`launch_robot.launch.py`). Ranges closer than `ignore_below` (0.30 m) are
-treated as the robot body. Rotation is not blocked.
+`/cmd_vel`, and the driver subscribes to it directly. `safety_stop` is
+disabled in `launch_robot.launch.py` (the node is still in the package; to
+re-enable it, add it back to the launch and set the driver's `cmd_vel_topic`
+to `/cmd_vel_safe`).
 
 `/scan` is not the raw lidar topic. The driver publishes `/scan_raw`;
-`scan_min_range_filter` drops returns inside 0.30 m and republishes `/scan`.
+`scan_min_range_filter` drops returns inside 0.35 m and republishes `/scan`.
 
 ---
 
