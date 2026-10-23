@@ -1,0 +1,12 @@
+/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/CMakeFiles/uninstall.dir
+/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/CMakeFiles/Ros_lidar_bot_uninstall.dir
+/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/CMakeFiles/ament_cmake_python_copy_Ros_lidar_bot.dir
+/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/CMakeFiles/ament_cmake_python_copy_Ros_lidar_bot_setup.dir
+/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/CMakeFiles/ament_cmake_python_build_Ros_lidar_bot_egg.dir
+/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/CMakeFiles/test.dir
+/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/CMakeFiles/edit_cache.dir
+/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/CMakeFiles/rebuild_cache.dir
+/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/CMakeFiles/list_install_components.dir
+/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/CMakeFiles/install.dir
+/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/CMakeFiles/install/local.dir
+/home/amey/Desktop/ros2_ws/src/Ros_lidar_bot/build/CMakeFiles/install/strip.dir
