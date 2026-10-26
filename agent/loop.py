@@ -23,7 +23,7 @@ Tools:
 {catalogue}
 
 Reply with ONE JSON object only: {{"observation": "...", "plan": [{{"tool": "...", "args": {{...}}, "why": "..."}}]}}
-At most 8 steps. End with finish {{"answer": "..."}}. Put snapshot last if you need a new image."""
+Plans can have any number of steps. End with finish {{"answer": "..."}}. Put snapshot last if you need a new image."""
 
 
 def extract_json(text):
@@ -55,7 +55,7 @@ class JsonlLog:
 class AgentRunner:
     def __init__(self, cfg, model, robot, estop_sender, on_event=None, log=None):
         a = cfg["agent"]
-        self.max_steps = a.get("max_steps", 40)
+        self.max_steps = a.get("max_steps")  # None = no cap on total tool steps
         self.max_task_s = a.get("max_task_s", 900)
         self.max_retries = a.get("max_parse_retries", 2)
         self.model = model
@@ -229,7 +229,7 @@ class AgentRunner:
             need_image = False
             for st in seq:
                 steps += 1
-                if steps > self.max_steps:
+                if self.max_steps is not None and steps > self.max_steps:
                     self._emit("limit", message=f"step limit {self.max_steps} reached")
                     return "limit"
                 w = self._wait_if_paused(depth)

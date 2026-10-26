@@ -100,6 +100,18 @@ class TestLoop(unittest.TestCase):
         self.assertTrue(wait_idle(r))
         self.assertTrue(any(e["type"] == "finished" for e in ev))
 
+    def test_long_plan_runs_in_order_with_results(self):
+        r, _, _, ev = make([plan(*[("snapshot", {})] * 11, ("finish", {"answer": "ok"}))], tool_delay=0.0)
+        r.max_steps = None
+        r.submit("x")
+        self.assertTrue(wait_idle(r))
+        p = [e for e in ev if e["type"] == "plan"][0]
+        self.assertEqual(len(p["steps"]), 12)
+        done = [e for e in ev if e["type"] == "step" and e["status"] == "done"]
+        self.assertGreaterEqual(len(done), 11)
+        self.assertTrue(all("result" in e for e in done))
+        self.assertTrue(any(e["type"] == "finished" for e in ev))
+
     def test_step_limit(self):
         r, _, _, ev = make([plan(*[("stop", {})] * 8)] * 3, tool_delay=0.0)
         r.submit("x")

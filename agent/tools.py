@@ -121,7 +121,7 @@ STEP_SCHEMA = {
     "required": ["plan"],
     "properties": {
         "observation": {"type": "string"},
-        "plan": {"type": "array", "minItems": 1, "maxItems": 8,
+        "plan": {"type": "array", "minItems": 1,
                  "items": {"type": "object", "required": ["tool", "args"],
                            "properties": {"tool": {"enum": sorted(TOOLS)},
                                           "args": {"type": "object"},

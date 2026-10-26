@@ -31,7 +31,7 @@ robot:
   pan_home_deg: null     # Amey supplies this later; `look pan home` is refused while null
 
 agent:
-  max_steps: 40
+  max_steps: null        # null = no cap on tool steps (max_task_s still applies)
   max_task_s: 900
   max_parse_retries: 2   # the "two-retry parse rule"
   tool_timeout_s: 30
