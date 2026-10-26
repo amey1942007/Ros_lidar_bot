@@ -3,6 +3,21 @@
 These scripts are for the **hardware bot only** (Raspberry Pi 5, ROS 2 Jazzy).
 They are not for AMR4.
 
+## `check_cmd_vel_chain.py`
+
+Run it on the Pi while `launch_robot.launch.py` (or `autonomous_robot.launch.py`)
+is already up, from a shell that has sourced ROS 2 Jazzy and the workspace:
+
+```bash
+python3 scripts/check_cmd_vel_chain.py
+```
+
+It reads the live graph. It exits 0 only when `driver_node` subscribes to a
+single Twist topic and `safety_stop` is the only publisher of that topic.
+Anything else publishing the motor command (a node aimed at `/cmd_vel_safe`,
+or the driver pointed back at `/cmd_vel`) is a failure. Exit 2 means `rclpy`
+is not importable.
+
 ## `setup_amr_bridge.sh`
 
 Run it on the Pi as your normal user (not root, and not with `sudo`):

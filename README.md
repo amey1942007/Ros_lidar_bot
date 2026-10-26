@@ -24,13 +24,16 @@ odom_node ← /encoder → /odom_raw          (no TF)
 ekf_node  ← /odom_raw + /imu → /odom and TF odom → base_footprint
 slam_toolbox ← /scan → /map and TF map → odom
 nav2 ← /map + /scan + /odom → /cmd_vel
-safety_stop ← /cmd_vel + /scan → /cmd_vel_safe → driver_node
+safety_stop ← /cmd_vel + /scan + /emergency_stop → /cmd_vel_safe → driver_node
              also publishes /safety_blocked
 ```
 
-Nav2, the gamepad, the keyboard teleop, and the dashboard all publish
-`/cmd_vel`. Only `safety_stop` publishes `/cmd_vel_safe`, and the driver
-subscribes to that. Forward and reverse are blocked when a return inside the
+Nav2, the gamepad, the keyboard teleop, the dashboard (nudge and
+click-to-goal), drive-distance, and IMU calibration all publish `/cmd_vel`.
+Frontier exploration sends Nav2 goals and does not publish velocity itself.
+Only `safety_stop` publishes `/cmd_vel_safe`, and the driver subscribes to
+that. Dashboard E-STOP latches `/emergency_stop` so the safety node zeros
+the motor command even if another `/cmd_vel` publisher is still writing. Forward and reverse are blocked when a return inside the
 front or rear opening is closer than `min_safe_distance` (0.35 m in
 `launch_robot.launch.py`). Ranges closer than `ignore_below` (0.30 m) are
 treated as the robot body. Rotation is not blocked.
@@ -266,8 +269,10 @@ labels, frontier queue, click-to-send a Nav2 goal, no-go circles for the
 frontier explorer, CPU/RAM/temperature and Pi throttle flags, save map
 (`.pgm`/`.yaml` and a pose-graph under `~/maps/`), and on-demand IMU test,
 IMU calibration, and drive-distance. The vision toggle starts and stops
-`vision.launch.py`. E-STOP publishes zero `/cmd_vel`, cancels the nav goal,
-and kills the running tool. It leaves the vision pipeline up.
+`vision.launch.py`. E-STOP latches `/emergency_stop` for 1.5 s so
+`safety_stop` zeros `/cmd_vel_safe` ahead of Nav2 and teleop, publishes
+zero `/cmd_vel`, cancels the nav goal, and kills the running tool. It
+leaves the vision pipeline up. A nudge during that window is ignored.
 
 **SLAM.** `slam_toolbox` `online_async_launch.py` with
 `config/mapper_params_online_async.yaml`, started 5 s after bringup.
@@ -302,9 +307,10 @@ The longer bridge notes are `amr-bridge/PI_SETUP.md` and
 
 | Topic | Type | Path |
 |---|---|---|
-| `/cmd_vel` | Twist | Nav2, teleop, or dashboard → safety_stop |
-| `/cmd_vel_safe` | Twist | safety_stop → driver_node |
-| `/safety_blocked` | Bool | safety_stop → frontier explorer and dashboard |
+| `/cmd_vel` | Twist | Nav2, teleop, dashboard, drive-distance, IMU calibration → safety_stop |
+| `/cmd_vel_safe` | Twist | safety_stop only → driver_node |
+| `/emergency_stop` | Bool | dashboard E-STOP → safety_stop (zeros `/cmd_vel_safe` while true) |
+| `/safety_blocked` | Bool | safety_stop → frontier explorer |
 | `/encoder` | JointState | driver_node → odom_node and joint_state_publisher |
 | `/odom_raw` | Odometry | odom_node → EKF |
 | `/odom` | Odometry | EKF → Nav2 and dashboard |

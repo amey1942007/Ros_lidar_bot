@@ -2,7 +2,8 @@
 """
 drive_distance_node.py — Drive a precise distance with a trapezoidal/triangular velocity profile.
 
-Publishes to: /cmd_vel_safe (geometry_msgs/Twist)
+Publishes to: /cmd_vel (geometry_msgs/Twist), which safety_stop filters
+onto /cmd_vel_safe for the motor driver. Do not publish /cmd_vel_safe.
 Subscribes to: /odom (nav_msgs/Odometry) (optional, for logging / distance verification)
 """
 

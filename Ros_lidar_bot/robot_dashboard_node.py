@@ -24,7 +24,8 @@ Features
   • Nav goal mode: click the canvas to send a NavigateToPose goal (canvas
     point is transformed odom→map via TF); result/feedback logged.
   • Nudge pad (short cmd_vel pulses) and a big E-STOP that kills the tool,
-    cancels the nav goal, and streams zero cmd_vel.
+    cancels the nav goal, streams zero /cmd_vel, and latches /emergency_stop
+    so safety_stop zeros the motors ahead of every other motion source.
 
 Transport: Server-Sent Events for Pi→browser data (10 Hz state + log
 lines), plain POST for browser→Pi commands. Standard library only — no
@@ -54,9 +55,14 @@ from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import QoSDurabilityPolicy, QoSProfile, qos_profile_sensor_data
+from rclpy.qos import (
+    QoSDurabilityPolicy,
+    QoSProfile,
+    QoSReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sensor_msgs.msg import Imu, LaserScan
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 try:
     from visualization_msgs.msg import MarkerArray
@@ -117,6 +123,8 @@ def _tool_drive_distance(params):
     vel = _f(params, "max_vel", 0.3, 0.05, 0.5)
     return [
         "ros2", "run", "Ros_lidar_bot", "drive_distance", "--ros-args",
+        # /cmd_vel, never /cmd_vel_safe: safety_stop is the only motor publisher.
+        "-p", "topic:=/cmd_vel",
         "-p", f"distance:={dist}",
         "-p", f"max_vel:={vel}",
     ]
@@ -129,7 +137,7 @@ TOOLS = {
 }
 
 EXPECTED_NODES = [
-    "robot_state_publisher", "imu_node", "driver_node", "odom_node",
+    "robot_state_publisher", "imu_node", "driver_node", "safety_stop", "odom_node",
     "rplidar_node", "scan_min_range_filter", "ekf_filter_node", "slam_toolbox", "joy_node",
     "joy_teleop", "camera_servo", "bt_navigator", "controller_server", "planner_server",
     "behavior_server", "velocity_smoother", "collision_monitor",
@@ -238,6 +246,19 @@ class Dashboard(Node):
         self._map_worker = threading.Thread(target=self._map_compress_loop, daemon=True)
 
         self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        # Latched so safety_stop, even if it starts a moment later, sees the
+        # current E-STOP state. True outranks every other /cmd_vel publisher.
+        self._estop_pub = self.create_publisher(
+            Bool,
+            "/emergency_stop",
+            QoSProfile(
+                depth=1,
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            ),
+        )
+        self._estop_active = False
+        self._estop_pub.publish(Bool(data=False))
         self.create_subscription(Odometry, "/odom", self._odom_cb, 10, callback_group=cbg)
         self.create_subscription(Odometry, "/odom_raw", self._mk_rate_cb("/odom_raw"), 10, callback_group=cbg)
         self.create_subscription(Imu, "/imu", self._imu_cb, 20, callback_group=cbg)
@@ -745,11 +766,26 @@ class Dashboard(Node):
             self._cam_cond.notify_all()
 
     # ── Nudge / E-stop pulse publisher ───────────────────────────────────────
+    def _set_estop(self, active: bool) -> None:
+        """Publish the latched E-STOP flag safety_stop honors above /cmd_vel."""
+        active = bool(active)
+        # Repeat True so a late-joining safety_stop still sees the hold.
+        # False is edge-triggered; the 1.5 s window is not a sticky latch.
+        if active == self._estop_active and not active:
+            return
+        self._estop_active = active
+        self._estop_pub.publish(Bool(data=active))
+
     def _motion_tick(self):
         now = time.monotonic()
         if now < self._estop_until:
-            self._cmd_pub.publish(Twist())   # stream zeros
-        elif now < self._nudge_until:
+            self._cmd_pub.publish(Twist())   # stream zeros through safety_stop
+            return
+        if self._estop_active:
+            self._set_estop(False)
+            self._cmd_pub.publish(Twist())
+            return
+        if now < self._nudge_until:
             msg = Twist()
             msg.linear.x, msg.angular.z = self._nudge_cmd
             self._cmd_pub.publish(msg)
@@ -757,6 +793,11 @@ class Dashboard(Node):
             self._cmd_pub.publish(Twist())   # one trailing stop window
 
     def nudge(self, lin, ang):
+        # E-STOP wins over a nudge that arrives in the same moment (the cloud
+        # bridge posts a zero nudge in parallel with /api/estop). HTTP still
+        # succeeds so that parallel post is not reported as a failed stop.
+        if time.monotonic() < self._estop_until:
+            return {"ok": True, "ignored": "e-stop"}
         lin = max(-0.3, min(0.3, float(lin)))
         ang = max(-1.0, min(1.0, float(ang)))
         self._nudge_cmd = (lin, ang)
@@ -766,9 +807,15 @@ class Dashboard(Node):
     def estop(self):
         self._nudge_until = 0.0
         self._estop_until = time.monotonic() + 1.5
+        self._set_estop(True)
+        self._cmd_pub.publish(Twist())
         self.stop_tool()
         self.cancel_nav()
-        self.log("E-STOP — zero cmd_vel streamed, tool killed, nav goal cancelled", "error")
+        self.log(
+            "E-STOP — /emergency_stop latched, zero /cmd_vel streamed, "
+            "tool killed, nav goal cancelled",
+            "error",
+        )
         return {"ok": True}
 
     # ── Tool management ──────────────────────────────────────────────────────
