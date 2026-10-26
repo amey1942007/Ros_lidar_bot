@@ -76,3 +76,15 @@ D:\Vision-Pipeline\Scripts\python.exe -m unittest discover -s tests -t .
 D:\Vision-Pipeline\Scripts\python.exe scripts\test_snapshot.py            # webcam -> model
 D:\Vision-Pipeline\Scripts\python.exe gui\app.py                          # GUI
 ```
+
+## GUI (CustomTkinter, dark)
+Install the GUI dependency without letting pip resolve anything else (protects the venv's torch):
+`D:\Vision-Pipeline\Scripts\python.exe -m pip install --no-deps customtkinter darkdetect`
+
+Run (opens maximised):
+```powershell
+D:\Vision-Pipeline\Scripts\Activate.ps1
+cd D:\Vision-Pipeline\vlm-integration-windows
+python gui\app.py
+```
+Keys: F11 toggles fullscreen, Esc leaves fullscreen (neither touches the E-STOP), F12 = E-STOP. Enter sends the prompt.

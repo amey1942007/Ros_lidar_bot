@@ -8,4 +8,6 @@ pillow
 opencv-python
 numpy
 PyYAML
+customtkinter>=5.2   # install with --no-deps (+ darkdetect) so pip never touches torch
+darkdetect
 # Tkinter ships with CPython on Windows (no pip package needed).
