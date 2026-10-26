@@ -4,8 +4,12 @@ Scan-based safety stop — hardware-critical velocity filter.
 
 Sits between Nav2/teleop and the real robot driver:
 
-  Nav2 / teleop  →  /cmd_vel
-  safety_stop    →  /cmd_vel_safe  →  driver  →  robot
+  Nav2 / teleop / dashboard / tools  →  /cmd_vel
+  safety_stop                            →  /cmd_vel_safe  →  driver  →  robot
+
+Dashboard E-STOP also publishes /emergency_stop (latched Bool). While that
+is true this node zeros /cmd_vel_safe and ignores every other /cmd_vel, so
+a held stick or a Nav2 command cannot outvote the stop.
 
 When any laser reading in the forward arc falls below min_safe_distance the
 node zeroes linear.x (forward motion) while preserving angular.z so Nav2's
@@ -25,11 +29,18 @@ import time
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool
+
+from Ros_lidar_bot.cmd_vel_filter import (
+    CMD_VEL_IN,
+    CMD_VEL_OUT,
+    EMERGENCY_STOP_TOPIC,
+    filter_velocity,
+)
 
 
 class SafetyStop(Node):
@@ -66,6 +77,7 @@ class SafetyStop(Node):
         self._blocked_fwd = False
         self._blocked_bwd = False
         self._odom_stale = False
+        self._estop = False
         self._last_cmd = Twist()
         self._last_cmd_time: float = 0.0
         self._last_odom_raw_time: float = 0.0
@@ -76,10 +88,17 @@ class SafetyStop(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
         )
+        estop_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
         self.create_subscription(LaserScan, "/scan", self._scan_cb, scan_qos)
         self.create_subscription(Odometry, "/odom_raw", self._odom_raw_cb, 10)
-        self.create_subscription(Twist, "/cmd_vel", self._cmd_cb, 10)
-        self._pub = self.create_publisher(Twist, "/cmd_vel_safe", 10)
+        self.create_subscription(Twist, CMD_VEL_IN, self._cmd_cb, 10)
+        self.create_subscription(Bool, EMERGENCY_STOP_TOPIC, self._estop_cb, estop_qos)
+        self._pub = self.create_publisher(Twist, CMD_VEL_OUT, 10)
         self._blocked_pub = self.create_publisher(Bool, "/safety_blocked", 1)
         self.create_timer(0.1, self._watchdog_tick)
 
@@ -88,7 +107,8 @@ class SafetyStop(Node):
             f"release>{self._clear_dist:.2f} m, "
             f"ignore_self<{self._ignore_below:.2f} m, "
             f"front±{math.degrees(self._front_half):.0f}°, "
-            f"odom_raw_timeout={self._odom_timeout:.1f}s"
+            f"odom_raw_timeout={self._odom_timeout:.1f}s, "
+            f"estop topic {EMERGENCY_STOP_TOPIC} overrides {CMD_VEL_IN}"
         )
 
     def _odom_raw_cb(self, _msg: Odometry) -> None:
@@ -98,6 +118,10 @@ class SafetyStop(Node):
             self.get_logger().info("odom_raw restored — motion re-enabled")
 
     def _watchdog_tick(self) -> None:
+        # Keep a zero flowing for the whole E-STOP window so the driver's
+        # command timeout cannot revive the last pre-stop velocity.
+        if self._estop:
+            self._pub.publish(Twist())
         if self._last_odom_raw_time <= 0.0:
             return  # not seen yet at startup — wait for first sample
         age = time.monotonic() - self._last_odom_raw_time
@@ -151,26 +175,45 @@ class SafetyStop(Node):
         if time.monotonic() - self._last_cmd_time < 0.5:
             self._publish_safe(self._last_cmd)
 
+    def _estop_cb(self, msg: Bool) -> None:
+        active = bool(msg.data)
+        if active == self._estop:
+            if active:
+                self._pub.publish(Twist())
+            return
+        self._estop = active
+        if active:
+            # Drop the stored command so a later scan cannot replay it
+            # after the dashboard releases the stop.
+            self._last_cmd = Twist()
+            self._last_cmd_time = 0.0
+            self._pub.publish(Twist())
+            self.get_logger().error(
+                "E-STOP — zeroing /cmd_vel_safe (overrides /cmd_vel)"
+            )
+        else:
+            self.get_logger().info("E-STOP cleared — /cmd_vel is filtered again")
+
     def _cmd_cb(self, msg: Twist) -> None:
+        if self._estop:
+            self._pub.publish(Twist())
+            return
         self._last_cmd = msg
         self._last_cmd_time = time.monotonic()
         self._publish_safe(msg)
 
     def _publish_safe(self, cmd: Twist) -> None:
-        if self._odom_stale:
-            self._pub.publish(Twist())
-            return
-
+        linear_x, angular_z = filter_velocity(
+            cmd.linear.x,
+            cmd.angular.z,
+            estop=self._estop,
+            odom_stale=self._odom_stale,
+            blocked_fwd=self._blocked_fwd,
+            blocked_bwd=self._blocked_bwd,
+        )
         out = Twist()
-
-        if self._blocked_fwd and cmd.linear.x > 0.0:
-            out.linear.x = 0.0
-        elif self._blocked_bwd and cmd.linear.x < 0.0:
-            out.linear.x = 0.0
-        else:
-            out.linear.x = cmd.linear.x
-
-        out.angular.z = cmd.angular.z
+        out.linear.x = linear_x
+        out.angular.z = angular_z
         self._pub.publish(out)
 
 

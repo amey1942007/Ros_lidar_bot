@@ -104,7 +104,9 @@ def _launch_setup(context, *args, **kwargs):
     )
 
     # ── 3. Motor Driver Node (DDSM115 via UART) ──────────────────────────────
-    # Filtered path: Nav2 / teleop → /cmd_vel → safety_stop → /cmd_vel_safe → driver.
+    # Filtered path: every motion source → /cmd_vel → safety_stop → /cmd_vel_safe → driver.
+    # Dashboard E-STOP also latches /emergency_stop, which safety_stop honors
+    # ahead of /cmd_vel. Nothing else may publish /cmd_vel_safe.
     driver_node = Node(
         package=package_name,
         executable="driver_node",
@@ -204,9 +206,13 @@ def _launch_setup(context, *args, **kwargs):
     )
 
     # ── 6. Safety Stop Node ──────────────────────────────────────────────────
-    # Scan-based velocity filter between Nav2/teleop and the motor driver
-    # (same wiring as the main-branch sim pipeline):
-    #   Nav2 / teleop → /cmd_vel → safety_stop → /cmd_vel_safe → driver
+    # Scan-based velocity filter. Required: the driver subscribes only to
+    # /cmd_vel_safe, and this node is the only publisher of that topic.
+    #   Nav2, frontier (via Nav2), dashboard goals (via Nav2), dashboard
+    #   nudge, gamepad/keyboard teleop, drive_distance, imu_calibration
+    #     → /cmd_vel → safety_stop → /cmd_vel_safe → driver
+    # /emergency_stop (dashboard E-STOP) forces a zero output for the hold
+    # window, ahead of whatever else is on /cmd_vel.
     # Also publishes /safety_blocked, which frontier_explorer uses to abort
     # goals that keep the robot pinned against an obstacle.
     safety_stop = Node(
