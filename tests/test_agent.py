@@ -86,8 +86,15 @@ class TestLoop(unittest.TestCase):
         steps = [e for e in ev if e["type"] == "step" and e["status"] == "done"]
         self.assertTrue(steps[0]["result"]["data"]["stub"])
 
+    def test_plain_text_is_direct_answer(self):
+        r, _, _, ev = make(["It is a desk with a laptop on it."])
+        r.submit("what do you see?")
+        self.assertTrue(wait_idle(r))
+        self.assertEqual(r.model.calls, 1)
+        self.assertTrue(any(e["type"] == "finished" and "desk" in e["answer"] for e in ev))
+
     def test_two_retry_parse_rule(self):
-        r, _, _, ev = make(["garbage", "still garbage", "nope"])
+        r, _, _, ev = make(["{garbage", "{still garbage", "{\"plan\": 5}"])
         r.submit("x")
         self.assertTrue(wait_idle(r))
         self.assertEqual(r.model.calls, 3)            # 1 try + 2 retries
@@ -95,7 +102,7 @@ class TestLoop(unittest.TestCase):
         self.assertTrue(any(e["type"] == "failed" for e in ev))
 
     def test_retry_recovers(self):
-        r, _, _, ev = make(["bad", plan(("finish", {"answer": "ok"}))])
+        r, _, _, ev = make(["{bad", plan(("finish", {"answer": "ok"}))])
         r.submit("x")
         self.assertTrue(wait_idle(r))
         self.assertTrue(any(e["type"] == "finished" for e in ev))

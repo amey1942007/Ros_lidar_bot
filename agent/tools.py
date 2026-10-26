@@ -16,7 +16,7 @@ NUM = {"type": "number"}
 TOOLS = {
     "snapshot": {
         "runs_on": "laptop",
-        "description": "Fetch a fresh camera image (from the robot camera in bot mode, the laptop webcam in webcam mode). The image is attached to your next turn.",
+        "description": "Fetch a fresh image from the robot camera. The image is attached to your next turn.",
         "args": {"type": "object", "properties": {}, "additionalProperties": False},
         "timeout_s": 5,
     },
@@ -112,12 +112,13 @@ NEW_TOOLS = {
     },
     "feed": {
         "runs_on": "laptop",
-        "description": "Camera feed at an interval: take a frame every interval_s for up to max_s, describe each; stops early if 'goal' is seen. Use to search a region.",
-        "args": {"type": "object", "additionalProperties": False,
-                 "properties": {"goal": {"type": "string"},
+        "description": "Camera feed at an interval: take a frame every interval_s for up to max_s, describe each; stops early if 'goal' is seen. Use to search a region. Always say why in 'purpose'; it is echoed back so you can judge if the task is done.",
+        "args": {"type": "object", "required": ["purpose"], "additionalProperties": False,
+                 "properties": {"purpose": {"type": "string", "minLength": 1},
+                                "goal": {"type": "string"},
                                 "interval_s": {"type": "number", "minimum": 0.5, "maximum": 30},
                                 "max_s": {"type": "number", "minimum": 1, "maximum": 600}}},
-        "outputs": "{met: bool, frames: int, last: {found, description, bbox}, history: [descriptions], reason: goal|timeout}",
+        "outputs": "{purpose: str (why the feed was run), met: bool, frames: int, last: {found, description, bbox}, history: [descriptions], reason: goal|timeout}",
         "timeout_s": 660,
     },
     "watch_for": {
@@ -323,7 +324,5 @@ def validate_step(obj):
 def catalogue_text(stub_mode):
     lines = []
     for n, s in TOOLS.items():
-        where = {"pi": "runs on the Pi robot" + (" (STUBBED in webcam mode)" if stub_mode else ""),
-                 "laptop": "runs on the laptop", "estop": "separate E-STOP channel"}[s["runs_on"]]
-        lines.append(f"- {n} [{where}]: {s['description']}\n  args schema: {s['args']}")
+        lines.append(f"- {n}: {s['description']}\n  inputs: {s['args']}\n  outputs: {s.get('outputs', '')}")
     return "\n".join(lines)

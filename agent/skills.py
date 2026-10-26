@@ -169,7 +169,8 @@ class Skills:
         return self.look_once(c, target=a.get("target"))
 
     def t_feed(self, a, c):
-        return self._watch(c, a.get("goal"), a.get("interval_s", 2.0), a.get("max_s", 30), keep_history=True)
+        r = self._watch(c, a.get("goal"), a.get("interval_s", 2.0), a.get("max_s", 30), keep_history=True)
+        return {"purpose": a["purpose"], **r}
 
     def t_watch_for(self, a, c):
         r = self._watch(c, a["goal"], 1.0, a.get("max_s", 60))

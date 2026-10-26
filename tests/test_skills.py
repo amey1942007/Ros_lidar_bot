@@ -57,7 +57,8 @@ class TestSkills(unittest.TestCase):
 
     def test_feed_and_watch_for(self):
         s, _, _ = mk([seen(False), seen(False), seen(True, [0, 0, 50, 50])])
-        r = s.run("feed", {"goal": "cup", "interval_s": 0.5, "max_s": 100}, threading.Event())
+        r = s.run("feed", {"purpose": "find the cup in the kitchen", "goal": "cup", "interval_s": 0.5, "max_s": 100}, threading.Event())
+        self.assertEqual(r["data"]["purpose"], "find the cup in the kitchen")
         self.assertTrue(r["data"]["met"]); self.assertEqual(r["data"]["frames"], 3)
         s, _, _ = mk([seen(False)] * 100)
         r = s.run("watch_for", {"goal": "cup", "max_s": 3}, threading.Event())

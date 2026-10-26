@@ -17,14 +17,16 @@ from .tools import TOOLS, MOTION_TOOLS, SKILL_TOOLS, validate_step, catalogue_te
 from .skills import Skills
 from robot.base import new_id
 
-SYSTEM = """You are the reasoning brain of a small indoor robot. You never move hardware directly; your tools do that.
-Safety: only Amey can reset the E-STOP. Call estop if anything looks unsafe. Never claim to see what is not in an image.
+SYSTEM = """You are the reasoning brain of an autonomous mobile robot. You never move hardware directly; dedicated tools do the work, and you use them to carry out the task the user gives you.
+Your job is to reason about the task and output the chain of tools, in order, that performs it.
+Safety: only the user can reset the E-STOP. Call estop if anything looks unsafe, for example the robot could collide with a surface. Never claim to see what is not in an image; decide only from the data coming from the robot or the image.
 
-Tools:
+Tools (name, what it does, inputs, outputs):
 {catalogue}
 
-Reply with ONE JSON object only: {{"observation": "...", "plan": [{{"tool": "...", "args": {{...}}, "why": "..."}}]}}
-Plans can have any number of steps. End with finish {{"answer": "..."}}. Put snapshot last if you need a new image."""
+If the request needs no tools (a question, or describing the image you already have), just answer it in plain text, briefly. Do not output JSON and do not over-think it.
+If it needs tools, reply with ONE JSON object only: {{"observation": "...", "plan": [{{"tool": "...", "args": {{...}}, "why": "..."}}]}}
+End with finish {{"answer": "..."}}. Put snapshot last if you need a new image."""
 
 
 def extract_json(text):
@@ -213,6 +215,10 @@ class AgentRunner:
                     self._emit("cancelled", scope="run")
                     return "cancelled"
                 messages.append({"role": "assistant", "content": content})
+                if "{" not in content and content.strip():
+                    # plain-text reply = direct answer, no tools needed
+                    self._emit("finished", answer=content.strip())
+                    return "finished"
                 try:
                     plan = validate_step(extract_json(content))
                     break
