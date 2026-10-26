@@ -26,7 +26,9 @@ Tools (name, what it does, inputs, outputs):
 
 If the request needs no tools (a question, or describing the image you already have), answer directly in plain text, briefly. No plan is needed then.
 If it needs tools, reply with ONE JSON object only: {{"observation": "...", "plan": [{{"tool": "...", "args": {{...}}, "why": "..."}}]}}
-End with finish {{"answer": "..."}}. Put snapshot last if you need a new image."""
+End with finish {{"answer": "..."}}. Put snapshot last if you need a new image.
+BACKGROUND tools (feed, watch_for, start_exploring, record_video) return a job_id at once and run alongside the next steps. Use await to get their results (job_status to peek, cancel_job to stop). If you await, end the plan there; you get the results and finish next turn.
+Example, "is there a bottle anywhere?": snapshot, feed {{"purpose": "find a bottle", "goal": "bottle", "interval_s": 2, "max_s": 300}}, start_exploring {{"max_s": 300}}, await {{"mode": "any", "stop_others": true}}."""
 
 
 def extract_json(text):
@@ -88,6 +90,7 @@ class AgentRunner:
                 self._human_q.append(text)
             for ev in list(self.step_cancels.values()):
                 ev.set()                 # interrupt the in-flight tool; the task resumes later
+            self.skills.cancel_jobs()    # and stop background jobs
             self._emit("human_override", source="gui", text=text)
             return "queued_as_human_command"
         self.run_cancel.clear()
@@ -99,6 +102,7 @@ class AgentRunner:
         self.run_cancel.set()
         for ev in list(self.step_cancels.values()):
             ev.set()
+        self.skills.cancel_jobs()        # background jobs (feed, exploring, ...) stop too
 
     def hard_stop(self, reason="stop word"):
         """Stop word: cancel the plan and all tools now, then send robot stop() (stub in webcam mode).
@@ -144,6 +148,9 @@ class AgentRunner:
         except Exception as e:
             self._emit("error", message=repr(e))
         finally:
+            stopped = self.skills.cancel_jobs()   # no background job outlives the task
+            if stopped:
+                self._emit("info", message=f"background jobs stopped at task end: {stopped}")
             self._set_state("idle")
 
     def _wait_if_paused(self, depth):
@@ -152,6 +159,7 @@ class AgentRunner:
             if self.run_cancel.is_set():
                 return False
             if self.robot.estop_latched:
+                self.skills.cancel_jobs()
                 self._set_state("paused_estop", note="E-STOP latched. Reset only on the dashboard (:8080), then press Resume.")
                 self.resume_evt.clear()
                 while not self.run_cancel.is_set():

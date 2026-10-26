@@ -58,11 +58,15 @@ class TestSkills(unittest.TestCase):
     def test_feed_and_watch_for(self):
         s, _, _ = mk([seen(False), seen(False), seen(True, [0, 0, 50, 50])])
         r = s.run("feed", {"purpose": "find the cup in the kitchen", "goal": "cup", "interval_s": 0.5, "max_s": 100}, threading.Event())
-        self.assertEqual(r["data"]["purpose"], "find the cup in the kitchen")
-        self.assertTrue(r["data"]["met"]); self.assertEqual(r["data"]["frames"], 3)
+        self.assertEqual(r["data"]["status"], "running"); self.assertEqual(r["data"]["purpose"], "find the cup in the kitchen")
+        r = s.run("await", {"job_ids": [r["data"]["job_id"]]}, threading.Event())["data"]
+        res = r["jobs"][0]["result"]
+        self.assertEqual(res["purpose"], "find the cup in the kitchen")
+        self.assertTrue(res["met"]); self.assertEqual(res["frames"], 3)
         s, _, _ = mk([seen(False)] * 100)
-        r = s.run("watch_for", {"goal": "cup", "max_s": 3}, threading.Event())
-        self.assertFalse(r["data"]["met"]); self.assertEqual(r["data"]["reason"], "timeout")
+        s.run("watch_for", {"goal": "cup", "max_s": 3}, threading.Event())
+        res = s.run("await", {}, threading.Event())["data"]["jobs"][0]["result"]
+        self.assertFalse(res["met"]); self.assertEqual(res["reason"], "timeout")
 
     def test_cancel(self):
         s, _, _ = mk([seen(False)] * 1000)
@@ -77,12 +81,15 @@ class TestSkills(unittest.TestCase):
     def test_exploring(self):
         s, _, calls = mk([seen(False), seen(True, [0, 0, 9, 9])])
         r = s.run("start_exploring", {"until_seen": "door", "max_s": 100}, threading.Event())
-        self.assertEqual(r["data"]["stopped_because"], "seen")
+        self.assertTrue(r["data"]["exploring"])
+        r = s.run("await", {"job_ids": ["start_exploring"]}, threading.Event())["data"]
+        self.assertEqual(r["jobs"][0]["result"]["stopped_because"], "seen")
         self.assertEqual(calls[0], ("map", {"action": "explore", "enable": True, "max_s": 100}))
         self.assertEqual(calls[-1], ("map", {"action": "explore", "enable": False}))
         s, _, calls = mk()
         self.assertTrue(s.run("start_exploring", {}, threading.Event())["data"]["exploring"])
         self.assertTrue(s.run("stop_exploring", {}, threading.Event())["ok"])
+        s.cancel_jobs()
         self.assertEqual(calls[-1][1]["enable"], False)
 
     def test_save_map(self):
@@ -192,3 +199,112 @@ class TestLoopIntegration(unittest.TestCase):
         self.assertTrue(wait_idle(r))
         self.assertIn("Saved locations: desk", seen_msgs[-1])
         self.assertNotIn("laptop", seen_msgs[0].split("Tools:")[0].lower())
+
+
+class TestBackgroundJobs(unittest.TestCase):
+    def test_feed_and_exploring_found_stops_exploring(self):
+        # the search chain: feed(goal) + start_exploring run together; await any stops exploring when found
+        s, _, calls = mk([seen(False), seen(False), seen(True, [5, 5, 50, 50])])
+        ev = threading.Event()
+        f = s.run("feed", {"purpose": "find a bottle", "goal": "bottle", "interval_s": 0.5, "max_s": 300}, ev)["data"]
+        e = s.run("start_exploring", {"max_s": 300}, ev)["data"]
+        self.assertEqual(len(s.running_jobs()), 2)
+        r = s.run("await", {"mode": "any", "stop_others": True}, ev)["data"]
+        self.assertFalse(r["timed_out"])
+        self.assertEqual(r["finished"], [f["job_id"]]); self.assertEqual(r["stopped"], [e["job_id"]])
+        by = {j["job_id"]: j for j in r["jobs"]}
+        self.assertEqual(by[f["job_id"]]["result"]["purpose"], "find a bottle")
+        self.assertTrue(by[f["job_id"]]["result"]["met"]); self.assertEqual(by[f["job_id"]]["result"]["last"]["bbox"], [5, 5, 50, 50])
+        self.assertEqual(by[e["job_id"]]["status"], "cancelled")
+        self.assertEqual(calls[-1], ("map", {"action": "explore", "enable": False}))
+        self.assertEqual(s.running_jobs(), [])
+
+    def test_exploring_expires_first(self):
+        s, _, calls = mk([seen(False)] * 1000)
+        ev = threading.Event()
+        s.run("feed", {"purpose": "find a bottle", "goal": "bottle", "interval_s": 0.5, "max_s": 600}, ev)
+        e = s.run("start_exploring", {"max_s": 10}, ev)["data"]
+        r = s.run("await", {"mode": "any"}, ev)["data"]
+        self.assertEqual(r["finished"], [e["job_id"]])
+        self.assertEqual(len(r["stopped"]), 1)
+        self.assertEqual(s.running_jobs(), [])
+        self.assertIn(("map", {"action": "explore", "enable": False}), calls)
+
+    def test_await_timeout(self):
+        s, _, _ = mk([seen(False)] * 1000)
+        ev = threading.Event()
+        s.run("watch_for", {"goal": "cup", "max_s": 600}, ev)
+        r = s.run("await", {"timeout_s": 5, "stop_others": False}, ev)["data"]
+        self.assertTrue(r["timed_out"]); self.assertEqual(r["stopped"], [])
+        self.assertEqual(r["jobs"][0]["status"], "running")
+        self.assertEqual(s.run("job_status", {}, ev)["data"]["jobs"][0]["status"], "running")
+        r = s.run("cancel_job", {"job_ids": ["watch_for"]}, ev)["data"]
+        self.assertEqual(len(r["cancelled"]), 1); self.assertEqual(r["jobs"][0]["status"], "cancelled")
+        self.assertEqual(s.running_jobs(), [])
+
+    def test_await_all(self):
+        s, _, _ = mk([seen(False)] * 1000)
+        ev = threading.Event()
+        s.run("watch_for", {"goal": "cup", "max_s": 2}, ev)
+        s.run("feed", {"purpose": "look around", "interval_s": 0.5, "max_s": 4}, ev)
+        r = s.run("await", {"mode": "all"}, ev)["data"]
+        self.assertEqual(len(r["finished"]), 2); self.assertFalse(r["timed_out"])
+        self.assertTrue(all(j["status"] == "done" for j in r["jobs"]))
+        self.assertEqual(s.run("await", {}, ev)["error"]["code"], "NO_JOBS")
+
+    def test_estop_and_human_override_stop_jobs(self):
+        s, robot, _ = mk([seen(False)] * 1000)
+        ev = threading.Event()
+        e = s.run("start_exploring", {"max_s": 600}, ev)["data"]
+        robot.latch_estop()
+        r = s.run("await", {"job_ids": [e["job_id"]], "timeout_s": 600}, ev)["data"]
+        self.assertEqual(r["jobs"][0]["result"]["reason"], "estop_latched")
+        s, robot, _ = mk([seen(False)] * 1000)
+        s.run("feed", {"purpose": "p", "interval_s": 0.5, "max_s": 600}, ev)
+        robot.human_override = True
+        time.sleep(0.3)
+        self.assertEqual(s.running_jobs(), [])
+        robot.human_override = False
+
+
+class TestLoopJobs(unittest.TestCase):
+    def _runner(self, replies):
+        c = cfg()
+        robot = StubRobot(c, tool_delay_s=0.0)
+        ev = []
+        r = AgentRunner(c, FakeModel(replies), robot, EStopSender(None, local_latch=robot.latch_estop), on_event=ev.append)
+        r.skills.interval_scale = 0.01
+        return r, robot, ev
+
+    def test_search_chain_in_loop(self):
+        r, robot, ev = self._runner([
+            plan(("snapshot", {}), ("feed", {"purpose": "find a bottle", "goal": "bottle", "interval_s": 2, "max_s": 300}),
+                 ("start_exploring", {"max_s": 300}), ("await", {"mode": "any", "stop_others": True})),
+            seen(False), seen(True, [1, 1, 30, 30]),
+            plan(("finish", {"answer": "found a bottle"}))])
+        r.submit("Look around the room and tell me if there is a bottle anywhere")
+        self.assertTrue(wait_idle(r))
+        done = [e["tool"] for e in ev if e["type"] == "step" and e["status"] == "done"]
+        self.assertEqual(done, ["snapshot", "feed", "start_exploring", "await", "finish"])
+        aw = [e for e in ev if e["type"] == "step" and e["tool"] == "await" and e["status"] == "done"][0]
+        self.assertTrue(any(j.get("result", {}).get("met") for j in aw["result"]["data"]["jobs"]))
+        self.assertEqual(r.skills.running_jobs(), [])
+        self.assertFalse([t for t in threading.enumerate() if t.name.startswith("job-")])
+
+    def test_cancel_run_and_task_end_kill_jobs(self):
+        r, robot, ev = self._runner([plan(("feed", {"purpose": "p", "interval_s": 0.5, "max_s": 600}),
+                                          ("start_exploring", {}), ("wait", {"seconds": 300}))] + [seen(False)] * 2000)
+        r.submit("watch")
+        t0 = time.time()
+        while len(r.skills.running_jobs()) < 2 and time.time() - t0 < 5:
+            time.sleep(0.01)
+        self.assertEqual(len(r.skills.running_jobs()), 2)
+        r.hard_stop()
+        self.assertTrue(wait_idle(r))
+        self.assertEqual(r.skills.running_jobs(), [])
+        # task end: jobs started but never awaited are stopped when the task finishes
+        r, robot, ev = self._runner([plan(("watch_for", {"goal": "x", "max_s": 600}), ("finish", {"answer": "ok"}))] + [seen(False)] * 2000)
+        r.submit("go")
+        self.assertTrue(wait_idle(r))
+        self.assertEqual(r.skills.running_jobs(), [])
+        self.assertFalse([t for t in threading.enumerate() if t.name.startswith("job-") and t.is_alive()])

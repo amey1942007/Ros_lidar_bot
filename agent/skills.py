@@ -87,7 +87,9 @@ class Skills:
         self.hfov = float(cfg.get("camera", {}).get("hfov_deg", 62))
         self.rec_dir = a.get("record_dir", "recordings")
         self.interval_scale = 1.0       # tests shrink waits
-        self._rec = None
+        self._jobs = {}                 # job_id -> job dict (background tools)
+        self._jobs_lock = threading.Lock()
+        self._job_n = 0
 
     # ---------- helpers ----------
     def _check(self, cancel, motion=False):
@@ -143,18 +145,85 @@ class Skills:
         return {"found": found, "description": str(obj.get("description", ""))[:300], "bbox": bbox,
                 "image": {"width": w, "height": h}}
 
-    def _watch(self, cancel, goal, interval, max_s, keep_history=False, motion=False):
+    def _watch(self, cancel, goal, interval, max_s, keep_history=False, motion=False, progress=None):
         t0, frames, hist, last = time.time(), 0, [], None
+        progress = progress if progress is not None else {}
         while True:
+            self._check(cancel, motion)
             last = self.look_once(cancel, goal=goal) if goal else self.look_once(cancel)
             frames += 1
             if keep_history:
                 hist.append(last["description"])
+            progress.update(frames=frames, last=last, **({"history": hist[-20:]} if keep_history else {}))
             if goal and last["found"]:
                 return {"met": True, "frames": frames, "last": last, "history": hist[-20:], "reason": "goal"}
             if time.time() - t0 + interval * self.interval_scale > max_s * self.interval_scale:
                 return {"met": False, "frames": frames, "last": last, "history": hist[-20:], "reason": "timeout"}
             self._sleep(cancel, interval, motion)
+
+    # ---------- background jobs ----------
+    def _start_job(self, tool, fn, info=None):
+        """Run fn(job) in a thread. The job has its own cancel event; cancel_jobs() stops it."""
+        info = info or {}
+        with self._jobs_lock:
+            self._job_n += 1
+            jid = f"{tool}-{self._job_n}"
+            job = {"id": jid, "tool": tool, "cancel": threading.Event(), "done": threading.Event(),
+                   "status": "running", "result": None, "progress": {}, "info": info, "t0": time.time()}
+            self._jobs[jid] = job
+
+        def body():
+            try:
+                job["result"] = {**info, **fn(job)}
+                job["status"] = "done"
+            except Err as e:
+                job["result"] = {**info, **job["progress"], "reason": e.code.lower(),
+                                 "error": {"code": e.code, "message": str(e)}}
+                job["status"] = "cancelled" if e.code in ("CANCELLED", "HUMAN_OVERRIDE", "ESTOP_LATCHED") else "failed"
+            except Exception as e:
+                job["result"] = {**info, "error": {"code": "INTERNAL", "message": repr(e)}}
+                job["status"] = "failed"
+            finally:
+                job["done"].set()
+        job["thread"] = threading.Thread(target=body, daemon=True, name="job-" + jid)
+        job["thread"].start()
+        return {"job_id": jid, "status": "running", **info}
+
+    def _summary(self, j):
+        out = {"job_id": j["id"], "tool": j["tool"], "status": j["status"],
+               "elapsed_s": round(time.time() - j["t0"], 1)}
+        if j["done"].is_set():
+            out["result"] = j["result"]
+        else:
+            out.update(j["info"])
+            out["progress"] = dict(j["progress"])
+        return out
+
+    def _resolve(self, refs, running_only=False, skip=()):
+        """refs: job ids or tool names; empty = all (running) jobs except tools in skip."""
+        with self._jobs_lock:
+            jobs = list(self._jobs.values())
+        if not refs:
+            return [j for j in jobs if j["tool"] not in skip and (not running_only or not j["done"].is_set())]
+        out = []
+        for r in refs:
+            hit = [j for j in jobs if j["id"] == r] or [j for j in jobs if j["tool"] == r and not j["done"].is_set()] \
+                or [j for j in jobs if j["tool"] == r][-1:]
+            out += [j for j in hit if j not in out]
+        return out
+
+    def running_jobs(self):
+        return [j["id"] for j in self._resolve(None, running_only=True)]
+
+    def cancel_jobs(self, ids=None, join_s=3.0):
+        """Stop background jobs (all when ids is None) and wait for their threads to exit."""
+        with self._jobs_lock:
+            jobs = [j for j in self._jobs.values() if (ids is None or j["id"] in ids) and not j["done"].is_set()]
+        for j in jobs:
+            j["cancel"].set()
+        for j in jobs:
+            j["thread"].join(join_s)
+        return [j["id"] for j in jobs]
 
     # ---------- tools ----------
     def run(self, tool, args, cancel):
@@ -169,30 +238,47 @@ class Skills:
         return self.look_once(c, target=a.get("target"))
 
     def t_feed(self, a, c):
-        r = self._watch(c, a.get("goal"), a.get("interval_s", 2.0), a.get("max_s", 30), keep_history=True)
-        return {"purpose": a["purpose"], **r}
+        self._check(c)
+        goal, interval, max_s = a.get("goal"), a.get("interval_s", 2.0), a.get("max_s", 30)
+        return self._start_job("feed", lambda j: self._watch(j["cancel"], goal, interval, max_s, keep_history=True,
+                                                             progress=j["progress"]),
+                               {"purpose": a["purpose"], "goal": goal})
 
     def t_watch_for(self, a, c):
-        r = self._watch(c, a["goal"], 1.0, a.get("max_s", 60))
-        r.pop("history", None)
-        return r
+        self._check(c)
+        goal, max_s = a["goal"], a.get("max_s", 60)
+
+        def body(j):
+            r = self._watch(j["cancel"], goal, 1.0, max_s, progress=j["progress"])
+            r.pop("history", None)
+            return r
+        return self._start_job("watch_for", body, {"goal": goal})
+
+    def _explore_off(self):
+        try:
+            self.robot.call("map", {"action": "explore", "enable": False}, new_id("k"), None, timeout_s=10)
+        except Exception:
+            pass
 
     def t_start_exploring(self, a, c):
         args = {"action": "explore", "enable": True}
         if "max_s" in a:
             args["max_s"] = a["max_s"]
         self._call("map", args, c, 10)
-        if not a.get("until_seen"):
-            return {"exploring": True, "stopped_because": None, "last": None}
-        try:
-            r = self._watch(c, f"a {a['until_seen']} is visible", a.get("check_interval_s", 2.0),
-                            a.get("max_s", 600), motion=True)
-        finally:
+        until, max_s = a.get("until_seen"), a.get("max_s")
+
+        def body(j):
             try:
-                self.robot.call("map", {"action": "explore", "enable": False}, new_id("k"), None, timeout_s=10)
-            except Exception:
-                pass
-        return {"exploring": False, "stopped_because": "seen" if r["met"] else "timeout", "last": r["last"]}
+                if until:
+                    r = self._watch(j["cancel"], f"a {until} is visible", a.get("check_interval_s", 2.0),
+                                    max_s or 600, motion=True, progress=j["progress"])
+                    return {"exploring": False, "stopped_because": "seen" if r["met"] else "timeout", "last": r["last"]}
+                self._sleep(j["cancel"], max_s if max_s else 1e9, motion=True)
+                return {"exploring": False, "stopped_because": "timeout", "last": None}
+            finally:
+                self._explore_off()          # always switch exploration off when the job ends
+        r = self._start_job("start_exploring", body, {"until_seen": until, "max_s": max_s})
+        return {**r, "exploring": True}
 
     def t_stop_exploring(self, a, c):
         res = self.robot.call("map", {"action": "explore", "enable": False}, new_id("k"), None, timeout_s=10)
@@ -294,31 +380,63 @@ class Skills:
             self._call("move", {"turn_deg": self._bearing(last), "distance_m": 0.0 if near else 0.3}, c, 30)
 
     def t_record_video(self, a, c):
+        running = self._resolve(["record_video"], running_only=True)
+        running = [j for j in running if not j["done"].is_set()]
         if a["action"] == "stop":
-            r = self._rec
-            if not r:
+            if not running:
                 return {"recording": False, "dir": None, "frames": 0}
-            r["stop"].set()
-            r["thread"].join(3)
-            self._rec = None
-            return {"recording": False, "dir": str(r["dir"]), "frames": r["n"]}
-        if self._rec:
-            return {"recording": True, "dir": str(self._rec["dir"]), "frames": self._rec["n"]}
+            self.cancel_jobs([j["id"] for j in running])
+            j = running[0]
+            return {"job_id": j["id"], **(j["result"] or {})}
+        if running:
+            j = running[0]
+            return {"job_id": j["id"], "status": "running", "recording": True, **j["info"],
+                    "frames": j["progress"].get("frames", 0)}
         d = Path(self.rec_dir) / time.strftime("rec-%Y%m%d-%H%M%S")
         d.mkdir(parents=True, exist_ok=True)
-        r = {"dir": d, "n": 0, "stop": threading.Event()}
         period = 1.0 / a.get("fps", 2.0)
 
-        def loop():
-            while not r["stop"].is_set():
+        def body(j):
+            n = 0
+            while not j["cancel"].is_set():
                 try:
                     jpeg, _ = self.robot.snapshot()
-                    (d / f"{r['n']:06d}.jpg").write_bytes(jpeg)
-                    r["n"] += 1
+                    (d / f"{n:06d}.jpg").write_bytes(jpeg)
+                    n += 1
+                    j["progress"]["frames"] = n
                 except Exception:
                     pass
-                r["stop"].wait(period)
-        r["thread"] = threading.Thread(target=loop, daemon=True, name="record")
-        r["thread"].start()
-        self._rec = r
-        return {"recording": True, "dir": str(d), "frames": 0}
+                j["cancel"].wait(period)
+            return {"recording": False, "frames": n}
+        r = self._start_job("record_video", body, {"dir": str(d)})
+        return {**r, "recording": True, "frames": 0}
+
+    def t_await(self, a, c):
+        mode = a.get("mode", "any")
+        jobs = self._resolve(a.get("job_ids"), running_only=not a.get("job_ids"), skip=("record_video",))
+        if not jobs:
+            raise Err("NO_JOBS", "no matching background jobs to await")
+        stop_others = a.get("stop_others", mode == "any")
+        end = time.time() + a.get("timeout_s", 600) * self.interval_scale
+        timed_out = False
+        while True:
+            done = [j for j in jobs if j["done"].is_set()]
+            if (mode == "any" and done) or len(done) == len(jobs):
+                break
+            if time.time() >= end:
+                timed_out = True
+                break
+            self._check(c)
+            time.sleep(0.02)
+        finished = [j["id"] for j in jobs if j["done"].is_set()]
+        stopped = self.cancel_jobs([j["id"] for j in jobs if not j["done"].is_set()]) if stop_others else []
+        return {"timed_out": timed_out, "finished": finished, "stopped": stopped,
+                "jobs": [self._summary(j) for j in jobs]}
+
+    def t_job_status(self, a, c):
+        return {"jobs": [self._summary(j) for j in self._resolve(a.get("job_ids"))]}
+
+    def t_cancel_job(self, a, c):
+        jobs = self._resolve(a.get("job_ids"), running_only=not a.get("job_ids"))
+        stopped = self.cancel_jobs([j["id"] for j in jobs])
+        return {"cancelled": stopped, "jobs": [self._summary(j) for j in jobs]}

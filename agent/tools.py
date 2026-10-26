@@ -112,32 +112,32 @@ NEW_TOOLS = {
     },
     "feed": {
         "runs_on": "laptop",
-        "description": "Camera feed at an interval: take a frame every interval_s for up to max_s, describe each; stops early if 'goal' is seen. Use to search a region. Always say why in 'purpose'; it is echoed back so you can judge if the task is done.",
+        "description": "BACKGROUND. Camera feed at an interval: take a frame every interval_s for up to max_s, describe each; ends early if 'goal' is seen. Returns a job_id at once and the plan continues; get the result with await. Always say why in 'purpose'; it is echoed back so you can judge if the task is done.",
         "args": {"type": "object", "required": ["purpose"], "additionalProperties": False,
                  "properties": {"purpose": {"type": "string", "minLength": 1},
                                 "goal": {"type": "string"},
                                 "interval_s": {"type": "number", "minimum": 0.5, "maximum": 30},
                                 "max_s": {"type": "number", "minimum": 1, "maximum": 600}}},
-        "outputs": "{purpose: str (why the feed was run), met: bool, frames: int, last: {found, description, bbox}, history: [descriptions], reason: goal|timeout}",
+        "outputs": "at once: {job_id, status: running, purpose, goal}. Job result (via await/job_status): {purpose, goal, met: bool, frames: int, last: {found, description, bbox}, history: [descriptions], reason: goal|timeout|cancelled}",
         "timeout_s": 660,
     },
     "watch_for": {
         "runs_on": "laptop",
-        "description": "Describe the scene continuously, one frame per second, until 'goal' is seen or max_s passes.",
+        "description": "BACKGROUND. Describe the scene continuously, one frame per second, until 'goal' is seen or max_s passes. Returns a job_id at once; get the result with await.",
         "args": {"type": "object", "required": ["goal"], "additionalProperties": False,
                  "properties": {"goal": {"type": "string"},
                                 "max_s": {"type": "number", "minimum": 1, "maximum": 600}}},
-        "outputs": "{met: bool, frames: int, last: {found, description, bbox}, reason: goal|timeout}",
+        "outputs": "at once: {job_id, status: running, goal}. Job result: {goal, met: bool, frames: int, last: {found, description, bbox}, reason: goal|timeout|cancelled}",
         "timeout_s": 660,
     },
     "start_exploring": {
         "runs_on": "laptop",
-        "description": "Turn on frontier exploration (it keeps going by itself). Optional condition: until_seen (stop when that object is seen) and/or max_s.",
+        "description": "BACKGROUND. Turn on frontier exploration. Returns a job_id at once while exploring carries on; exploration is switched off when max_s passes, until_seen is seen, the job is cancelled, or the task ends.",
         "args": {"type": "object", "additionalProperties": False,
                  "properties": {"max_s": {"type": "integer", "minimum": 10, "maximum": 1800},
                                 "until_seen": {"type": "string"},
                                 "check_interval_s": {"type": "number", "minimum": 1, "maximum": 30}}},
-        "outputs": "{exploring: bool, stopped_because: seen|timeout|null, last: {...}|null} (without until_seen it returns at once while exploration carries on)",
+        "outputs": "at once: {job_id, status: running, exploring: true, until_seen, max_s}. Job result: {exploring: false, stopped_because: seen|timeout, last: {...}|null} or reason: cancelled",
         "timeout_s": 1900,
     },
     "stop_exploring": {
@@ -250,14 +250,42 @@ NEW_TOOLS = {
     },
     "record_video": {
         "runs_on": "laptop",
-        "description": "Start or stop recording camera frames to disk.",
+        "description": "BACKGROUND. Start or stop recording camera frames to disk. start returns a job_id at once; stop (or cancel_job, or task end) ends it. await ignores it unless named.",
         "args": {"type": "object", "required": ["action"], "additionalProperties": False,
                  "properties": {"action": {"enum": ["start", "stop"]},
                                 "fps": {"type": "number", "minimum": 0.5, "maximum": 10}}},
-        "outputs": "{recording: bool, dir: path, frames: int}",
+        "outputs": "start: {job_id, status: running, recording: true, dir, frames}. stop: {job_id, dir, recording: false, frames: int}",
         "timeout_s": 5,
     },
 }
+
+JOB_IDS = {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 10}
+NEW_TOOLS.update({
+    "await": {
+        "runs_on": "laptop",
+        "description": "Wait for background jobs. job_ids are ids or tool names (default: all running jobs except record_video). mode 'any' returns when the first job ends (goal found, feed stopped, or exploring expired); 'all' waits for every job. stop_others (default true for 'any') stops the jobs still running.",
+        "args": {"type": "object", "additionalProperties": False,
+                 "properties": {"job_ids": JOB_IDS, "mode": {"enum": ["any", "all"]},
+                                "timeout_s": {"type": "number", "minimum": 1, "maximum": 1800},
+                                "stop_others": {"type": "boolean"}}},
+        "outputs": "{timed_out: bool, finished: [job_id], stopped: [job_id], jobs: [{job_id, tool, status, result (incl. feed purpose, met, last {found, description, bbox})}]}",
+        "timeout_s": 1900,
+    },
+    "job_status": {
+        "runs_on": "laptop",
+        "description": "Check background jobs without waiting: status and latest results.",
+        "args": {"type": "object", "additionalProperties": False, "properties": {"job_ids": JOB_IDS}},
+        "outputs": "{jobs: [{job_id, tool, status: running|done|cancelled|failed, progress {frames, last} or result}]}",
+        "timeout_s": 2,
+    },
+    "cancel_job": {
+        "runs_on": "laptop",
+        "description": "Stop background jobs (ids or tool names; default all running). Stopping start_exploring switches exploration off.",
+        "args": {"type": "object", "additionalProperties": False, "properties": {"job_ids": JOB_IDS}},
+        "outputs": "{cancelled: [job_id], jobs: [{job_id, tool, status, result}]}",
+        "timeout_s": 10,
+    },
+})
 
 OLD_OUTPUTS = {
     "snapshot": "{note}; the new image is attached to your next turn",
