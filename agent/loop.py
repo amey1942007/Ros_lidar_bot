@@ -13,7 +13,8 @@ import threading
 import time
 from pathlib import Path
 
-from .tools import TOOLS, MOTION_TOOLS, validate_step, catalogue_text
+from .tools import TOOLS, MOTION_TOOLS, SKILL_TOOLS, validate_step, catalogue_text
+from .skills import Skills
 from robot.base import new_id
 
 SYSTEM = """You are the reasoning brain of a small indoor robot. You never move hardware directly; your tools do that.
@@ -60,6 +61,7 @@ class AgentRunner:
         self.max_retries = a.get("max_parse_retries", 2)
         self.model = model
         self.robot = robot
+        self.skills = Skills(cfg, model, robot)
         self.estop = estop_sender
         self.on_event = on_event or (lambda ev: None)
         self.log = log or JsonlLog(a.get("log_dir", "logs"))
@@ -183,7 +185,7 @@ class AgentRunner:
         self._set_state("observing", task=text, depth=depth)
         jpeg, meta = self._observe()
         messages = [{"role": "system", "content": sys_msg},
-                    {"role": "user", "content": prefix + text + f"\n(image attached: {json.dumps({k: v for k, v in meta.items() if k != 'jpeg'}, default=str)})",
+                    {"role": "user", "content": prefix + text + self._locations_line() + f"\n(image attached: {json.dumps({k: v for k, v in meta.items() if k != 'jpeg'}, default=str)})",
                      "images": [jpeg]}]
         steps = 0
         while True:
@@ -259,6 +261,10 @@ class AgentRunner:
             else:
                 messages.append({"role": "user", "content": fb + "\nContinue."})
 
+    def _locations_line(self):
+        b = self.skills.store.brief()
+        return f"\n{b}" if b else ""
+
     def _reobserve_msg(self, text):
         jpeg, meta = self._observe()
         return {"role": "user", "content": text, "images": [jpeg]}
@@ -290,6 +296,11 @@ class AgentRunner:
                 res = {"ok": True, "data": {"note": "new image will be attached"}}
             elif tool in ("finish", "ask_user"):
                 res = {"ok": True}
+            elif tool in SKILL_TOOLS:
+                if self.robot.estop_latched and tool in MOTION_TOOLS:
+                    res = {"ok": False, "error": {"code": "ESTOP_LATCHED", "message": "refused locally: E-STOP latched"}}
+                else:
+                    res = self.skills.run(tool, args, cancel)
             else:
                 if self.robot.estop_latched and tool in MOTION_TOOLS:
                     res = {"ok": False, "error": {"code": "ESTOP_LATCHED", "message": "refused locally: E-STOP latched"}}

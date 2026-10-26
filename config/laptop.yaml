@@ -36,3 +36,8 @@ agent:
   max_parse_retries: 2   # the "two-retry parse rule"
   tool_timeout_s: 30
   log_dir: logs
+  locations_file: "~/.vlm_bridge/locations.json"   # named locations + notes
+  record_dir: recordings  # record_video output
+
+camera:
+  hfov_deg: 62           # horizontal field of view, used to turn toward a bounding box

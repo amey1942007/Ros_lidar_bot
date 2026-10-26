@@ -78,6 +78,8 @@ class StubRobot(RobotBase):
             data["note"] += "; Pi YOLO not available, use the VLM on the snapshot instead"
         elif tool == "map":
             data["map"] = None
+        elif tool == "set_speed":
+            data["max_mps"] = max(0.05, min(0.5, float(args.get("max_mps", 0.2))))
         elif tool == "get_status":
             data = self.status()
         else:
