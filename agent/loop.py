@@ -16,18 +16,14 @@ from pathlib import Path
 from .tools import TOOLS, MOTION_TOOLS, validate_step, catalogue_text
 from robot.base import new_id
 
-SYSTEM = """You are the reasoning brain of a small indoor ground robot (Raspberry Pi 5 + ROS 2, lidar, Nav2, a pan/tilt camera).
-You run on Amey's laptop. You never move hardware directly: you output a plan of tool calls and the laptop sends them to the robot.
-{mode_line}
-Safety rules: E-STOP latches and ONLY Amey can reset it on the dashboard; there is no tool to clear it. If anything looks unsafe, call estop.
-Never claim something was seen unless it is visible in an image you were given.
+SYSTEM = """You are the reasoning brain of a small indoor robot. You never move hardware directly; your tools do that.
+Safety: only Amey can reset the E-STOP. Call estop if anything looks unsafe. Never claim to see what is not in an image.
 
 Tools:
 {catalogue}
 
-Reply with ONE JSON object and nothing else:
-{{"observation": "<what you see / know, short>", "plan": [{{"tool": "<name>", "args": {{...}}, "why": "<short>"}}, ...]}}
-Use at most 8 steps per plan. End the task with the tool finish {{"answer": "..."}}. If you need a new image after moving, put snapshot last and you will get it next turn."""
+Reply with ONE JSON object only: {{"observation": "...", "plan": [{{"tool": "...", "args": {{...}}, "why": "..."}}]}}
+At most 8 steps. End with finish {{"answer": "..."}}. Put snapshot last if you need a new image."""
 
 
 def extract_json(text):
@@ -182,9 +178,7 @@ class AgentRunner:
 
     def _run_task(self, text, depth):
         t_start = time.time()
-        mode_line = ("MODE: WEBCAM TEST. Robot tools are STUBS (nothing moves); the image is the laptop webcam."
-                     if self.robot.is_stub else "MODE: BOT. Tools run on the real robot over the network.")
-        sys_msg = SYSTEM.format(mode_line=mode_line, catalogue=catalogue_text(self.robot.is_stub))
+        sys_msg = SYSTEM.format(catalogue=catalogue_text(False))  # always reason as on the hardware bot
         prefix = "[HUMAN COMMAND from Amey, priority] " if depth else ""
         self._set_state("observing", task=text, depth=depth)
         jpeg, meta = self._observe()
