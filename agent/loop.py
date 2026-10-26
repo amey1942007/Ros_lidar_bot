@@ -24,7 +24,7 @@ Safety: only the user can reset the E-STOP. Call estop if anything looks unsafe,
 Tools (name, what it does, inputs, outputs):
 {catalogue}
 
-If the request needs no tools (a question, or describing the image you already have), just answer it in plain text, briefly. Do not output JSON and do not over-think it.
+If the request needs no tools (a question, or describing the image you already have), answer directly in plain text, briefly. No plan is needed then.
 If it needs tools, reply with ONE JSON object only: {{"observation": "...", "plan": [{{"tool": "...", "args": {{...}}, "why": "..."}}]}}
 End with finish {{"answer": "..."}}. Put snapshot last if you need a new image."""
 
@@ -220,10 +220,18 @@ class AgentRunner:
                     self._emit("finished", answer=content.strip())
                     return "finished"
                 try:
+                    obj = extract_json(content)
+                except Exception:
+                    obj = None
+                if isinstance(obj, dict) and "plan" not in obj and isinstance(obj.get("answer"), str):
+                    # {"answer": ...} with no plan = direct answer, no tools needed
+                    self._emit("finished", answer=obj["answer"])
+                    return "finished"
+                try:
                     plan = validate_step(extract_json(content))
                     break
                 except Exception as e:
-                    err = f"Your reply was invalid: {e}. Reply again with ONLY the JSON object in the required format."
+                    err = f"Your reply was invalid: {e}. If no tools are needed, just answer in plain text. Otherwise reply with ONLY the JSON plan object."
                     self._emit("parse_error", attempt=attempt, error=str(e))
                     messages.append({"role": "user", "content": err})
             if plan is None:

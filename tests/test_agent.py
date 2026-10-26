@@ -93,6 +93,14 @@ class TestLoop(unittest.TestCase):
         self.assertEqual(r.model.calls, 1)
         self.assertTrue(any(e["type"] == "finished" and "desk" in e["answer"] for e in ev))
 
+    def test_answer_json_without_plan_is_direct_answer(self):
+        r, _, _, ev = make(['thinking... {"answer": "I see two fingers."}'])
+        r.submit("how many fingers?")
+        self.assertTrue(wait_idle(r))
+        self.assertEqual(r.model.calls, 1)
+        self.assertFalse(any(e["type"] == "parse_error" for e in ev))
+        self.assertTrue(any(e["type"] == "finished" and "two" in e["answer"] for e in ev))
+
     def test_two_retry_parse_rule(self):
         r, _, _, ev = make(["{garbage", "{still garbage", "{\"plan\": 5}"])
         r.submit("x")
