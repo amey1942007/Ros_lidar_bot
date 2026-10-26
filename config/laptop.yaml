@@ -1,0 +1,38 @@
+# Laptop-side config for the VLM pipeline. Everything is configurable; nothing is hardcoded in code.
+mode: webcam            # webcam | bot  (the GUI toggle overrides this at runtime)
+
+model:
+  name: qwen3-vl:8b      # fallback: qwen3-vl:4b
+  ollama_url: http://127.0.0.1:11434
+  think: true            # stream the model's reasoning ("thinking") when the model supports it
+  temperature: 0.2
+  num_ctx: 8192
+  keep_alive: 10m
+  request_timeout_s: 180
+
+webcam:
+  index: 0
+  width: 640
+  height: 480
+  test_image: null       # path to a JPEG used when no webcam is available
+
+bot:
+  tailscale_ip: null     # Pi's Tailscale 100.x address - Amey to fill in
+  ports:
+    api: 8090            # REST /v1/* and WebSocket /v1/stream
+    estop: 8091          # separate E-STOP listener (POST /estop), no token required
+    gui: 8070            # reserved for the laptop GUI (Tkinter GUI does not listen on it today)
+  token_file: "%USERPROFILE%\\.vlm_bridge\\token"   # file holding the bearer token; never committed
+  heartbeat_ms: 500
+  link_timeout_ms: 3000
+  snapshot_max_age_ms: 500
+
+robot:
+  pan_home_deg: null     # Amey supplies this later; `look pan home` is refused while null
+
+agent:
+  max_steps: 40
+  max_task_s: 900
+  max_parse_retries: 2   # the "two-retry parse rule"
+  tool_timeout_s: 30
+  log_dir: logs

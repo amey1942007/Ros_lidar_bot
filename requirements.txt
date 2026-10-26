@@ -1,0 +1,11 @@
+# Laptop-side only. Install into the existing venv D:\Vision-Pipeline.
+# torch is intentionally NOT listed: the venv keeps its CPU-only torch and nothing here needs it.
+requests
+httpx
+websockets>=12
+jsonschema
+pillow
+opencv-python
+numpy
+PyYAML
+# Tkinter ships with CPython on Windows (no pip package needed).
