@@ -94,7 +94,7 @@ def _launch_setup(context, *args, **kwargs):
         respawn=True,
         respawn_delay=3.0,
         parameters=[{
-            "serial_port": "/dev/ttyACM2",
+            "serial_port": "/dev/ttyACM1",
             "baud_rate": 500000,
             "output_topic": "/imu",
             "frame_id": "imu_link",
@@ -365,7 +365,7 @@ def _launch_setup(context, *args, **kwargs):
         odom_node,
         lidar_node,
         scan_filter,
-        # camera_servo,  # DISABLED — no camera hardware connected
+        camera_servo,
         ekf_node,
     ])
     
